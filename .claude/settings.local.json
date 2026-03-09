@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:developers.llamaindex.ai)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:docs.llamaindex.ai)",
+      "WebFetch(domain:ollama.com)",
+      "WebSearch",
+      "Bash(python3.12:*)",
+      "Bash(ollama list:*)",
+      "Bash(docker compose:*)",
+      "Bash(python3:*)",
+      "Bash(uv:*)",
+      "Bash(source:*)",
+      "Bash(open:*)",
+      "Bash(ollama pull:*)",
+      "Bash(curl:*)",
+      "Bash(python -c \":*)",
+      "Bash(python scripts/test_query.py -q \"What is the carry-over limit for annual leave?\")"
+    ]
+  }
+}

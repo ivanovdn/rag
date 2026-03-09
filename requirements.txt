@@ -1,0 +1,15 @@
+pydantic-settings>=2.0
+python-docx>=1.1
+python-slugify>=8.0
+llama-index-core>=0.12
+llama-index-llms-ollama>=0.5
+llama-index-embeddings-ollama>=0.5
+qdrant-client>=1.12
+fastapi>=0.115
+uvicorn>=0.34
+sqlalchemy>=2.0
+aiofiles>=24.0
+arize-phoenix>=8.0
+openinference-instrumentation-llama-index>=3.0
+opentelemetry-api>=1.0
+opentelemetry-sdk>=1.0

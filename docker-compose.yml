@@ -1,0 +1,21 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "${PHOENIX_PORT:-6006}:6006"
+    volumes:
+      - phoenix_data:/data
+    environment:
+      - PHOENIX_WORKING_DIR=/data
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  phoenix_data:
