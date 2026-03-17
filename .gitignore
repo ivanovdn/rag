@@ -34,3 +34,7 @@ frontend/build/
 
 # Policies (may contain sensitive docs)
 policies/*.docx
+.bm25_index.json
+
+# Notebooks
+notebooks/

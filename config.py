@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 6
     min_confidence_score: float = 0.45
 
+    # Hybrid search
+    bm25_enabled: bool = True
+    hybrid_vector_candidates: int = 20
+    hybrid_bm25_candidates: int = 20
+
     # Agent
     agent_max_iterations: int = 8
     agent_timeout: int = 120

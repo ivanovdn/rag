@@ -1,19 +1,35 @@
 from llama_index.core.tools import FunctionTool
 
 from config import settings
-from rag.embeddings import embed_query
-from rag.vector_store import search_vectors
 
 
 def search_policies(query: str, top_k: int = 6) -> str:
     """
-    Search the approved internal policy and procedure documents
-    using semantic similarity. Use this tool FIRST for any compliance question.
-    Returns relevant policy chunks with their exact section references.
-    Input: a natural language query describing what policy information is needed.
-    Output: list of matching policy chunks with doc title, section path, clause number, and text.
-    Always call this tool before attempting to answer any compliance question.
+    Search approved compliance policy documents for information relevant to the query.
+    Uses hybrid search (semantic + keyword matching) for best accuracy.
+
+    Args:
+        query: Natural language search query describing what policy info you need.
+               Be specific — include relevant terms, clause numbers, or policy names.
+        top_k: Number of most relevant policy sections to return (default 6).
+
+    Returns:
+        Formatted policy excerpts with document name, section, clause number,
+        and link. Returns "NO_RELEVANT_POLICY_FOUND" if no policies match.
     """
+    if settings.bm25_enabled:
+        from rag.hybrid_search import hybrid_search_formatted
+
+        return hybrid_search_formatted(
+            query=query,
+            top_k=top_k,
+            min_confidence=settings.min_confidence_score,
+        )
+
+    # Fallback: vector-only search
+    from rag.embeddings import embed_query
+    from rag.vector_store import search_vectors
+
     query_vector = embed_query(query)
     results = search_vectors(query_vector, top_k=top_k)
 
