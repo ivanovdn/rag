@@ -35,6 +35,9 @@ frontend/build/
 # Policies (may contain sensitive docs)
 policies/*.docx
 .bm25_index.json
+eval/datasets/*.json
+eval/results
+eval/*.xlsx
 
 # Notebooks
 notebooks/
