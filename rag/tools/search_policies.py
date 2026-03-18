@@ -39,18 +39,17 @@ def search_policies(query: str, top_k: int = 6) -> str:
     formatted = []
     for r in results:
         p = r.payload
-        clause = p.get("clause_number", "")
-        section_ref = f"Section: {p['section_display']}"
-        if clause:
-            section_ref += f" | Clause: {clause}"
-        formatted.append(
-            f"[SCORE: {r.score:.2f}] "
-            f"Document: {p['doc_title']} | "
-            f"{section_ref} | "
-            f"Doc ID: {p['doc_id']} | "
-            f"Link: {p['doc_link']}\n"
-            f"Text: {p['text']}\n"
-        )
+        section_str = f"{p.get('section_number', '')}. {p.get('section', '')}" if p.get("section_number") else p.get("section", "")
+        clause_str = f"{p.get('clause_number', '')}. {p.get('clause', '')}" if p.get("clause_number") and p.get("clause") else p.get("clause_number", "") or p.get("clause", "")
+
+        line = f"[SCORE: {r.score:.2f}] Document: {p['doc_title']}"
+        if section_str:
+            line += f" | Section: {section_str}"
+        if clause_str:
+            line += f" | Clause: {clause_str}"
+        line += f" | Doc ID: {p['doc_id']} | Link: {p['doc_link']}"
+        line += f"\nText: {p['text']}\n"
+        formatted.append(line)
 
     return "\n---\n".join(formatted)
 

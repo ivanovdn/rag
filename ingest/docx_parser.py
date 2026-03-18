@@ -9,6 +9,7 @@ from slugify import slugify
 
 from config import settings
 from ingest.chunk_models import PolicyChunk
+from ingest.numbering import NumberingResolver
 
 
 def extract_heading_level(paragraph) -> int | None:
@@ -33,6 +34,32 @@ def extract_label(text: str) -> str | None:
     """Extract 'Label:' prefix from List Paragraph items (e.g. 'Acceptable Use: ...')."""
     match = re.match(r"^([A-Z][A-Za-z\s&\-/()]+):\s", text.strip())
     return match.group(1).strip() if match else None
+
+
+def extract_clause_name(para) -> str:
+    """
+    Extract clause name from the bold first run of a paragraph.
+
+    ilvl=1 paragraphs look like:
+        runs = [bold:"Blogging and Social Media:", normal:" Limited and occasional..."]
+
+    Returns "Blogging and Social Media" (bold text, colon stripped).
+    Returns empty string if first run is not bold.
+    """
+    runs = para.runs
+    if not runs or not runs[0].bold:
+        return ""
+
+    # Collect all consecutive bold runs (sometimes name spans multiple runs)
+    bold_parts = []
+    for run in runs:
+        if run.bold:
+            bold_parts.append(run.text)
+        else:
+            break
+
+    name = "".join(bold_parts).strip().rstrip(":").strip()
+    return name
 
 
 def _estimate_tokens(text: str) -> int:
@@ -89,32 +116,42 @@ def _table_to_text(table) -> str:
     return "\n".join(lines)
 
 
-def _build_section_display(section_path: list[str]) -> str:
-    """Build display string like 'Section A > Subsection B > Clause C'."""
-    return " > ".join(p for p in section_path if p)
-
-
 def _make_chunk(
     text: str,
     doc_id: str,
     doc_title: str,
     doc_filename: str,
     doc_link: str,
-    section_path: list[str],
+    section: str,
+    section_number: str,
+    clause: str,
     clause_number: str,
     chunk_index: int,
     last_updated: str,
 ) -> PolicyChunk:
-    clean_path = [p for p in section_path if p]
+    # Build display string
+    parts = []
+    if section_number and section:
+        parts.append(f"{section_number}. {section}")
+    elif section:
+        parts.append(section)
+    if clause_number and clause:
+        parts.append(f"{clause_number}. {clause}")
+    elif clause:
+        parts.append(clause)
+    section_display = " > ".join(parts)
+
     return PolicyChunk(
         chunk_id=str(uuid.uuid4()),
         doc_id=doc_id,
         doc_title=doc_title,
         doc_filename=doc_filename,
         doc_link=doc_link,
-        section_path=clean_path,
-        section_display=_build_section_display(clean_path),
+        section=section,
+        section_number=section_number,
+        clause=clause,
         clause_number=clause_number,
+        section_display=section_display,
         text=text.strip(),
         char_count=len(text.strip()),
         chunk_index=chunk_index,
@@ -125,6 +162,7 @@ def _make_chunk(
 def parse_docx(filepath: Path, doc_link: str) -> list[PolicyChunk]:
     """Main parser. Returns flat list of PolicyChunk objects."""
     doc = Document(filepath)
+    resolver = NumberingResolver(doc)
 
     doc_filename = filepath.name
     doc_title = filepath.stem.replace("_", " ").title()
@@ -132,15 +170,17 @@ def parse_docx(filepath: Path, doc_link: str) -> list[PolicyChunk]:
     last_updated = datetime.now(timezone.utc).isoformat()
 
     chunks: list[PolicyChunk] = []
-    current_headings = ["", "", ""]  # h1, h2, h3
-    current_text_buffer: list[str] = []
+    current_section = ""
+    current_section_number = ""
+    current_clause = ""
     current_clause_number = ""
+    current_text_buffer: list[str] = []
     # Accumulator for undersized chunks within the same section
     pending_small: list[str] = []
     pending_clause = ""
     chunk_index = 0
 
-    def _emit_chunk(text: str, clause: str):
+    def _emit_chunk(text: str, clause_num: str):
         """Create chunk(s) from text, splitting if oversized."""
         nonlocal chunk_index
         parts = _split_oversized(text, settings.chunk_max_tokens)
@@ -151,8 +191,10 @@ def parse_docx(filepath: Path, doc_link: str) -> list[PolicyChunk]:
                 doc_title=doc_title,
                 doc_filename=doc_filename,
                 doc_link=doc_link,
-                section_path=list(current_headings),
-                clause_number=clause,
+                section=current_section,
+                section_number=current_section_number,
+                clause=current_clause,
+                clause_number=current_clause_number or clause_num,
                 chunk_index=chunk_index,
                 last_updated=last_updated,
             )
@@ -208,18 +250,53 @@ def parse_docx(filepath: Path, doc_link: str) -> list[PolicyChunk]:
             if not text:
                 continue
 
+            # -- Resolve Word auto-numbering --
+            num_info = resolver.resolve(element)
             level = extract_heading_level(para)
+
+            if num_info and num_info["numFmt"] == "decimal":
+                resolved = num_info["resolved"]  # e.g. "7.5."
+                # Strip trailing dot for clean number
+                clean_number = resolved.rstrip(".")  # "7" or "7.5"
+
+                # Prepend number to text for the chunk content
+                text = f"{resolved} {text}"
+
+                if num_info["ilvl"] == 0:
+                    # Section level (Heading 1)
+                    flush_all()
+                    current_section = para.text.strip()  # original text WITHOUT number
+                    current_section_number = clean_number
+                    current_clause = ""
+                    current_clause_number = ""
+                    level = None  # already handled, skip the level block below
+
+                elif num_info["ilvl"] == 1:
+                    # Clause level
+                    flush_all()
+                    current_clause = extract_clause_name(para) or para.text.strip()
+                    current_clause_number = clean_number
+                    # The text goes into the buffer as chunk content
+                    current_text_buffer.append(text)
+                    level = None  # skip heading block
+
             if level:
+                # Standard heading processing (for docs without numbering)
                 flush_all()
                 idx = min(level, 3) - 1
-                current_headings[idx] = text
-                for i in range(idx + 1, 3):
-                    current_headings[i] = ""
-                current_clause_number = ""
-            else:
+                if idx == 0:
+                    current_section = text
+                    current_section_number = ""
+                    current_clause = ""
+                    current_clause_number = ""
+                elif idx == 1:
+                    current_clause = text
+                    current_clause_number = ""
+
+            elif num_info is None or num_info["numFmt"] != "decimal":
+                # Regular paragraph or bullet — existing clause detection logic
                 clause_num = extract_clause_number(text)
                 if not clause_num:
-                    # Check for "Label:" pattern in List Paragraphs
                     label = extract_label(text)
                     if label and para.style.name == "List Paragraph":
                         clause_num = label

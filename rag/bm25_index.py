@@ -69,8 +69,11 @@ class BM25Index:
             self.documents[chunk.chunk_id] = {
                 "doc_id": chunk.doc_id,
                 "doc_title": chunk.doc_title,
-                "section_display": chunk.section_display,
+                "section": chunk.section,
+                "section_number": chunk.section_number,
+                "clause": chunk.clause,
                 "clause_number": chunk.clause_number,
+                "section_display": chunk.section_display,
                 "doc_link": chunk.doc_link,
                 "text": chunk.text,
                 "tokens": tokens,

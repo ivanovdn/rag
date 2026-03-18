@@ -66,8 +66,11 @@ def hybrid_search(
             "chunk_id": cid,
             "doc_id": p.get("doc_id", ""),
             "doc_title": p.get("doc_title", ""),
-            "section_display": p.get("section_display", ""),
+            "section": p.get("section", ""),
+            "section_number": p.get("section_number", ""),
+            "clause": p.get("clause", ""),
             "clause_number": p.get("clause_number", ""),
+            "section_display": p.get("section_display", ""),
             "doc_link": p.get("doc_link", ""),
             "text": p.get("text", ""),
             "vector_score": point.score,
@@ -86,8 +89,11 @@ def hybrid_search(
                 "chunk_id": cid,
                 "doc_id": meta.get("doc_id", ""),
                 "doc_title": meta.get("doc_title", ""),
-                "section_display": meta.get("section_display", ""),
+                "section": meta.get("section", ""),
+                "section_number": meta.get("section_number", ""),
+                "clause": meta.get("clause", ""),
                 "clause_number": meta.get("clause_number", ""),
+                "section_display": meta.get("section_display", ""),
                 "doc_link": meta.get("doc_link", ""),
                 "text": meta.get("text", ""),
                 "vector_score": 0.0,
@@ -146,9 +152,8 @@ def hybrid_search_formatted(
 
     formatted = []
     for r in results:
-        section_ref = f"Section: {r['section_display']}"
-        if r["clause_number"]:
-            section_ref += f" | Clause: {r['clause_number']}"
+        section_str = f"{r['section_number']}. {r['section']}" if r["section_number"] else r["section"]
+        clause_str = f"{r['clause_number']}. {r['clause']}" if r["clause_number"] and r["clause"] else r["clause_number"] or r["clause"]
 
         score_info = f"[RRF: {r['rrf_score']:.4f}"
         if r["vector_rank"] is not None:
@@ -157,13 +162,14 @@ def hybrid_search_formatted(
             score_info += f" | bm25={r['bm25_score']:.1f} rank={r['bm25_rank']}"
         score_info += "]"
 
-        formatted.append(
-            f"{score_info} "
-            f"Document: {r['doc_title']} | "
-            f"{section_ref} | "
-            f"Doc ID: {r['doc_id']} | "
-            f"Link: {r['doc_link']}\n"
-            f"Text: {r['text']}\n"
-        )
+        line = f"{score_info} Document: {r['doc_title']}"
+        if section_str:
+            line += f" | Section: {section_str}"
+        if clause_str:
+            line += f" | Clause: {clause_str}"
+        line += f" | Doc ID: {r['doc_id']} | Link: {r['doc_link']}"
+        line += f"\nText: {r['text']}\n"
+
+        formatted.append(line)
 
     return "\n---\n".join(formatted)

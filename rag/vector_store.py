@@ -40,6 +40,21 @@ def init_collection() -> None:
         )
         client.create_payload_index(
             collection_name=settings.qdrant_collection,
+            field_name="section",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        client.create_payload_index(
+            collection_name=settings.qdrant_collection,
+            field_name="section_number",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        client.create_payload_index(
+            collection_name=settings.qdrant_collection,
+            field_name="clause",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        client.create_payload_index(
+            collection_name=settings.qdrant_collection,
             field_name="clause_number",
             field_schema=PayloadSchemaType.KEYWORD,
         )
