@@ -1,11 +1,12 @@
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
-    llm_model: str = "qwen2.5:14b"
+    llm_model: str = "qwen3:14b"
     embedding_model: str = "nomic-embed-text"
     llm_temperature: float = 0.0
     llm_request_timeout: int = 120

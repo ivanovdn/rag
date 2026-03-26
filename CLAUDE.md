@@ -8,7 +8,7 @@ If an answer cannot be grounded in policy, it escalates to the Compliance team w
 
 **LLM: Local only via Ollama. No external API calls for inference.**
 
-**Current state:** Ingestion pipeline, agent with 4 tools, hybrid search (vector + BM25), observability (Phoenix), and evaluation harness are all implemented and working. API, DB, and frontend are not yet built.
+**Current state:** Ingestion pipeline, agent with 3 tools (structured JSON output), hybrid search (vector + BM25), observability (Phoenix), and Phoenix-based evaluation (Datasets + Experiments) are all implemented and working. API, DB, and frontend are not yet built.
 
 ---
 
@@ -22,10 +22,10 @@ If an answer cannot be grounded in policy, it escalates to the Compliance team w
 | Keyword Search | BM25 (pure Python, JSON persistence) | Toggleable via `BM25_ENABLED` |
 | Search Fusion | Reciprocal Rank Fusion (RRF, k=60) | Combines vector + BM25 |
 | RAG Framework | LlamaIndex | `AgentWorkflow` (ReAct) |
-| Agent | LlamaIndex `AgentWorkflow` | 4 tools, `temperature=0.0` |
+| Agent | LlamaIndex `AgentWorkflow` | 3 tools, structured JSON output, `temperature=0.0` |
 | Document Parsing | `python-docx` + `NumberingResolver` | Resolves Word auto-numbering |
 | Observability | Arize Phoenix (Docker, port 6006) | Traces all LLM/tool/retrieval calls |
-| Evaluation | 4-tier harness (`scripts/run_eval.py`) | Retrieval, E2E, Escalation, Chatbot |
+| Evaluation | Phoenix Datasets + Experiments | 3 active tiers (Tier 1, 2, Chatbot) |
 | Backend API | FastAPI | **Not yet implemented** |
 | Frontend | React + Tailwind CSS | **Not yet implemented** |
 | Metadata DB | SQLite (via SQLAlchemy) | **Not yet implemented** |
@@ -66,24 +66,24 @@ compliance-bot/
 │
 ├── eval/
 │   ├── __init__.py
-│   ├── datasets/
-│   │   ├── retrieval_test.json       # 70 test cases — retrieval accuracy
-│   │   ├── e2e_test.json             # 25 test cases — full pipeline Q&A
-│   │   ├── escalation_test.json      # 6 test cases — should-escalate
-│   │   └── chatbot_test_cases.json   # 120 test cases — positive/negative pairs
-│   └── results/                      # Auto-generated eval run outputs
+│   ├── evaluators.py                 # Shared evaluator functions (all tiers)
+│   ├── agent_wrapper.py              # Instrumented agent (logs tool calls)
+│   ├── run_experiment.py             # CLI: runs Phoenix experiments
+│   └── datasets/
+│       ├── retrieval_test.json       # 70 test cases — retrieval accuracy
+│       ├── e2e_test.json             # 25 test cases — full pipeline Q&A
+│       ├── escalation_test.json      # 6 test cases — should-escalate (Tier 3, TODO)
+│       └── chatbot_test_cases.json   # 61 test cases — chatbot Q&A (same format as e2e)
 │
 ├── scripts/
 │   ├── ingest_all.py                 # CLI: ingest all DOCX from folder
 │   ├── test_query.py                 # CLI: test agent with a query
-│   ├── run_eval.py                   # CLI: run evaluation harness (4 tiers)
-│   ├── convert_eval_xlsx.py          # XLSX → JSON for 3-tier eval datasets
-│   └── convert_chatbot_xlsx.py       # XLSX → JSON for chatbot test cases
+│   ├── run_eval.py                   # CLI: legacy eval harness (kept for reference)
+│   ├── make_dataset.py               # CLI: upload JSON → Phoenix Dataset
+│   └── convert_eval_xlsx.py          # XLSX → JSON for all 4 tiers
 │
 ├── notebooks/
-│   ├── test_chunking_retrieval.ipynb  # Interactive chunking + search testing
-│   ├── eval.ipynb
-│   └── test.ipynb
+│   └── test_chunking_retrieval.ipynb # Interactive chunking + search testing
 │
 ├── api/                              # FastAPI — NOT YET IMPLEMENTED
 │   ├── __init__.py
@@ -141,6 +141,8 @@ class PolicyChunk(BaseModel):
     last_updated: str = ""
 ```
 
+**Important:** `section` and `clause` store **names only** (no numbers). Numbers are in `section_number` and `clause_number`. The `section_display` field is a formatted combination for display purposes. Evaluation matching uses `section` and `clause` (not `section_display`).
+
 ### Ingestion Pipeline — `ingest/pipeline.py`
 
 ```
@@ -155,7 +157,7 @@ On re-ingestion: old chunks deleted from both Qdrant and BM25 before inserting n
 PYTHONPATH=. python scripts/ingest_all.py --folder ./policies
 ```
 
-Current stats: **52 documents, 1878 chunks**.
+Current stats: **52 documents, ~1514 chunks**.
 
 ---
 
@@ -179,23 +181,32 @@ When `BM25_ENABLED=false`: vector-only search (original behavior).
 
 **Confidence threshold:** If no result has `vector_score >= 0.45` → returns `NO_RELEVANT_POLICY_FOUND`.
 
-### Search Output Format
-
-```
-Document: Acceptable Use Policy [Internal] | Section: 4. Corporate Workstation and Software Use | Clause: 4.7. Software Installation | Doc ID: acceptable-use-policy-internal | Link: ...
-Text: 4.7. Software Installation: Team Members are forbidden to install...
-```
+**Metadata in search results:** Both hybrid and vector-only paths return `section`, `section_number`, `clause`, `clause_number` as separate fields (not just `section_display`). This is required for evaluation matching and for the agent to copy into structured JSON citations.
 
 ---
 
-## The 4 Agent Tools
+## The 3 Agent Tools
 
 | Tool | File | Purpose |
 |------|------|---------|
 | `search_policies` | `rag/tools/search_policies.py` | Hybrid/vector search over policy docs. Always call FIRST. |
 | `get_section` | `rag/tools/get_section.py` | Fetch full section text by doc_id + section_name |
-| `ask_clarification` | `rag/tools/clarify.py` | Ask user for clarity when question is ambiguous |
 | `escalate_to_compliance` | `rag/tools/escalate.py` | Escalate when no policy found or answer is uncertain |
+
+`ask_clarification` (`rag/tools/clarify.py`) exists on disk but is **not imported or used** — agent should always search first.
+
+### Search Output Format
+
+Each result has separate fields the agent copies directly into citations:
+```
+--- Result 1 [RRF Score: 0.0328] ---
+Document: Acceptable Use Policy [Internal]
+Section: Corporate Workstation and Software Use
+Clause: Software Installation
+Clause Number: 4.7
+Doc ID: acceptable-use-policy-internal
+Text: 4.7. Software Installation: Team Members are forbidden to install...
+```
 
 ---
 
@@ -204,7 +215,31 @@ Text: 4.7. Software Installation: Team Members are forbidden to install...
 - Uses `AgentWorkflow.from_tools_or_functions()` (LlamaIndex)
 - LLM: `Ollama(model=settings.llm_model, temperature=0.0)`
 - **temperature=0.0 is mandatory** — compliance answers must be deterministic
-- System prompt enforces: search first → cite verbatim → escalate if unsure → respond in English
+- **Structured JSON output** — agent returns `ComplianceAnswer` schema (answer + citations + escalation)
+- System prompt enforces: search first → cite verbatim → escalate if unsure → respond in English → final response must be valid JSON
+- `ask_clarification` tool removed — agent always searches first
+
+### Response Schema — `ComplianceAnswer`
+
+```python
+class Citation(BaseModel):
+    doc_title: str    # copied from search results
+    section: str      # copied from search results
+    clause: str       # copied from search results
+    clause_number: str  # e.g. "4.3"
+    quote: str        # verbatim from policy text
+
+class Escalation(BaseModel):
+    needed: bool      # True only if NO_RELEVANT_POLICY_FOUND
+    reason: str
+
+class ComplianceAnswer(BaseModel):
+    answer: str                # direct answer pointing to policy
+    citations: list[Citation]  # one or more policy sources
+    escalation: Escalation     # needed=true only if no policy found
+```
+
+The agent's final response must be **pure JSON** matching this schema. The eval system parses it via `eval/agent_wrapper.py:parse_agent_response()`.
 
 ---
 
@@ -218,35 +253,136 @@ Text: 4.7. Software Installation: Team Members are forbidden to install...
 
 ---
 
-## Evaluation Harness — `scripts/run_eval.py`
+## Evaluation System — Phoenix Datasets + Experiments
 
-4-tier evaluation system:
+### Architecture
 
-| Tier | Cases | What it tests | LLM needed? |
-|------|-------|---------------|-------------|
-| `retrieval` | 70 | Correct chunk in top-k by doc_title, section, clause, text match | No |
-| `e2e` | 25 | Full agent Q&A — citation accuracy + fact coverage | Yes |
-| `escalation` | 6 | Bot correctly escalates (doesn't answer) | Yes |
-| `chatbot` | 60 unique Qs | Positive vs negative answer scoring (pass if pos > neg) | Yes |
-
-**Usage:**
-```bash
-PYTHONPATH=. python scripts/run_eval.py --tier retrieval  --tag "baseline"
-PYTHONPATH=. python scripts/run_eval.py --tier all        --tag "baseline"
+```
+eval/datasets/*.json          ← Source of truth (from XLSX)
+        ↓
+scripts/make_dataset.py       ← Uploads to Phoenix as a Dataset
+        ↓
+Phoenix Dataset               ← Stores examples (input/output/metadata)
+        ↓
+eval/run_experiment.py        ← Runs task + evaluators against dataset
+        ↓
+Phoenix Experiment            ← Stores results, metrics, traces
 ```
 
-Results saved to `eval/results/{tier}_{tag}_{timestamp}.json` with config snapshot.
+### Active Tiers
 
-**Important matching rules (retrieval tier):**
-- `expected_doc_id` in test JSON contains display title (e.g. "Whistleblowing Policy [Internal]")
-- Matched against `doc_title` from Qdrant using normalized slugification
-- `expected_text_contains` can be string OR list (any item match = pass)
+| Tier | Dataset | Cases | What it tests | LLM? |
+|------|---------|-------|---------------|------|
+| Tier 1 (`tier1`) | `retrieval-test-v1` | 70 | Correct chunk in top-k by doc+section+clause | No |
+| Tier 2 (`tier2`) | `e2e-test-v1` | 25 | Full agent Q&A — citation + answer coverage | Yes |
+| Chatbot (`chatbot`) | `chatbot-test-v1` | 61 | Same as Tier 2, realistic user questions | Yes |
+| Tier 3 (`escalation`) | — | 6 | Bot correctly escalates | **TODO** |
 
-**XLSX converters:**
-```bash
-python scripts/convert_eval_xlsx.py <3-tier.xlsx>       # → retrieval, e2e, escalation JSONs
-python scripts/convert_chatbot_xlsx.py <chatbot.xlsx>    # → chatbot_test_cases.json
+**Tier 3 is not yet implemented** — dataset exists but evaluators are not written.
+
+### Evaluators — `eval/evaluators.py`
+
+**Retrieval evaluators** (all tiers):
+| Evaluator | What it measures |
+|---|---|
+| `hit_evaluator` | Did ANY result match expected doc+section+clause? (1.0 or 0.0) |
+| `mrr_evaluator` | 1/rank of first match (1.0=rank1, 0.5=rank2, ...) |
+| `retrieval_doc_hit` | Right document found? (loose) |
+| `retrieval_section_hit` | Right doc+section found? |
+
+**Generation evaluators** (Tier 2 + Chatbot):
+| Evaluator | What it measures |
+|---|---|
+| `answer_coverage` | Fraction of expected items found in response (≥50% word overlap) |
+| `citation_doc_accuracy` | Did JSON citations reference the correct document? |
+| `citation_section_accuracy` | Did JSON citations reference the correct doc+section? |
+| `citation_clause_accuracy` | Did JSON citations reference the correct doc+section+clause? (skips if no expected clause) |
+| `json_parse_success` | Did agent return valid JSON matching ComplianceAnswer schema? |
+
+**Agent behavior evaluators** (Tier 2 + Chatbot):
+| Evaluator | What it measures |
+|---|---|
+| `agent_search_count` | 0=hallucinated, 1-3=good, 4+=thrashing |
+| `agent_used_get_section` | Did agent fetch full section? (0.5 if skipped, not penalized) |
+
+### Parallel Evaluator Structure
+
+| Level | Retrieval layer | Citation layer |
+|---|---|---|
+| Document only | `retrieval_doc_hit` | `citation_doc_accuracy` |
+| Doc + Section | `retrieval_section_hit` | `citation_section_accuracy` |
+| Doc + Section + Clause | `hit_evaluator` | `citation_clause_accuracy` |
+
+### Eval Matching Rules
+
+| Expected field | Compared against | Method |
+|---|---|---|
+| `expected_doc` / `doc_id` | `doc_title` in Qdrant payload | Case-insensitive exact match |
+| `expected_section` / `section` | `section` in Qdrant payload | Case-insensitive substring (`in`) |
+| `expected_clause` / `clause` | `clause` in Qdrant payload | Case-insensitive substring (`in`) |
+
+**No slugification or normalization.** Test JSON uses display titles as-is.
+
+### Instrumented Agent — `eval/agent_wrapper.py`
+
+All 3 tools are wrapped with logging to capture the agent's actual behavior:
+- `search_policies` → logs query + raw hybrid search results
+- `get_section` → logs doc_id, section_name, found status
+- `escalate_to_compliance` → logs reason
+
+Also includes `parse_agent_response()` — extracts JSON from the agent's final response (handles code fences, embedded JSON, fallback to raw text). Returns `parse_success` flag used by `json_parse_success` evaluator.
+
+**Critical:** Wrapped tool `name=` parameter must match system prompt references.
+Fresh agent built per question to avoid state leakage.
+
+### Test Case Formats
+
+**Tier 1** (`retrieval_test.json`):
+```json
+{"id": "RET-001", "question": "...", "expected_doc_id": "...", "expected_section_contains": "...", "expected_clause": "..."}
 ```
+
+**Tier 2 / Chatbot** (`e2e_test.json`, `chatbot_test_cases.json`) — **same format**:
+```json
+{"id": "E2E-001", "question": "...", "expected_answer": ["fact1", "fact2"], "expected_citations": [{"doc_id": "...", "section": "...", "clause": "..."}]}
+```
+Chatbot IDs use `CB-` prefix, e2e uses `E2E-` prefix.
+
+### Running Evaluations
+
+```bash
+# 1. Upload datasets to Phoenix (first time / after changes)
+python scripts/make_dataset.py eval/datasets/retrieval_test.json
+python scripts/make_dataset.py eval/datasets/e2e_test.json
+python scripts/make_dataset.py eval/datasets/chatbot_test_cases.json
+
+# 2. Run experiments
+python eval/run_experiment.py --tier tier1 --name baseline-hybrid-v1
+python eval/run_experiment.py --tier tier2 --name baseline-e2e-v1
+python eval/run_experiment.py --tier chatbot --name baseline-chatbot-v1
+
+# After changes, re-run with new name for comparison
+python eval/run_experiment.py --tier tier1 --name reranker-test-v1
+```
+
+### XLSX → JSON Conversion
+
+Single converter for all 4 tiers:
+```bash
+python scripts/convert_eval_xlsx.py eval/eval_dataset_template.xlsx
+```
+
+Reads 4 sheets from XLSX:
+1. Tier 1 (retrieval): columns `id, question, expected_doc, expected_section, expected_clause, expected_text`
+2. Tier 2 (e2e): columns `id, question, expected_answer, expected_doc, expected_section, expected_clause`
+3. Tier 3 (escalation): columns `id, question, reason, category, should_escalate`
+4. Tier 4 (chatbot): **reads columns by header name** (no id column — auto-generates `CB-001`, `CB-002`, etc.)
+   - Headers: `Expected Document, Expected Section, Expected Clause, Policy Rule, User Goal, Question, Expected Answer`
+
+### Baseline Results (as of 2026-03-24)
+
+**Tier 1 — Retrieval:** Hit Rate 81%, MRR 0.67, Doc Hit 95%
+**Tier 2 — E2E:** Answer Coverage 88%, Citation Accuracy 96%
 
 ---
 
@@ -338,14 +474,17 @@ PYTHONPATH=. python scripts/ingest_all.py
 - [x] `ingest/pipeline.py` — parse → embed → Qdrant + BM25
 - [x] `rag/embeddings.py` + `rag/vector_store.py`
 - [x] `rag/bm25_index.py` — pure Python BM25
-- [x] `rag/hybrid_search.py` — RRF fusion
-- [x] 4 agent tools (`search_policies`, `get_section`, `clarify`, `escalate`)
-- [x] `rag/agent.py` — AgentWorkflow with system prompt
+- [x] `rag/hybrid_search.py` — RRF fusion with full metadata fields
+- [x] 3 agent tools (`search_policies`, `get_section`, `escalate`) — `ask_clarification` disabled
+- [x] `rag/agent.py` — AgentWorkflow with structured JSON output (ComplianceAnswer schema)
 - [x] `rag/observability.py` — Phoenix tracing
-- [x] `scripts/ingest_all.py` — 52 docs, 1878 chunks ingested
+- [x] `scripts/ingest_all.py` — 52 docs, ~1514 chunks ingested
 - [x] `scripts/test_query.py` — interactive agent testing
-- [x] `scripts/run_eval.py` — 4-tier evaluation harness
-- [x] XLSX → JSON converter scripts
+- [x] `scripts/convert_eval_xlsx.py` — XLSX → JSON for all 4 tiers (header-based chatbot parser)
+- [x] `scripts/make_dataset.py` — JSON → Phoenix Dataset uploader
+- [x] `eval/evaluators.py` — shared evaluators (retrieval, citation accuracy, generation, agent behavior)
+- [x] `eval/agent_wrapper.py` — instrumented agent for eval
+- [x] `eval/run_experiment.py` — Phoenix Experiments runner (Tier 1, 2, Chatbot)
 - [x] Notebooks for interactive testing
 
 ### Not Yet Implemented
@@ -354,6 +493,7 @@ PYTHONPATH=. python scripts/ingest_all.py
 - [ ] `notification/email.py` — SMTP escalation emails
 - [ ] `frontend/` — React chat UI
 - [ ] `tests/` — pytest suite
+- [ ] Tier 3 escalation evaluators
 
 ---
 
@@ -385,7 +525,8 @@ PYTHONPATH=. python scripts/ingest_all.py
 |---|---|
 | Chunking by token count | Always chunk by document structure (headings + ilvl numbering) |
 | Missing clause numbers in DOCX | Use `NumberingResolver` — Word auto-numbers are NOT in `para.text` |
-| `expected_doc_id` mismatch in eval | Test JSONs use display title; match against `doc_title` with `normalize_doc_id()` |
+| Eval matching uses `section_display` | Match against `section` and `clause` fields (name only, no numbers) |
+| Eval matching uses slugification | Simple case-insensitive compare: exact for doc, substring for section/clause |
 | Single retrieval call per question | For complex questions, agent must call `search_policies` multiple times |
 | Hallucinated citations | Citations must only come from retrieved chunk metadata |
 | Large DOCX tables broken | Convert all table cells to key:value text before chunking |
@@ -393,3 +534,6 @@ PYTHONPATH=. python scripts/ingest_all.py
 | Qdrant empty results on first run | Always run `ingest_all.py` before starting |
 | BM25 index stale after re-ingestion | Pipeline auto-syncs BM25 on ingest (if `BM25_ENABLED=true`) |
 | PYTHONPATH not set for scripts | Run all scripts with `PYTHONPATH=. python scripts/...` |
+| Agent tool names in eval wrapper | `name=` parameter must match system prompt references exactly |
+| nest_asyncio missing for eval | Install `pip install nest_asyncio` — required for Phoenix experiment runner |
+| Chatbot XLSX has no ID column | `convert_eval_xlsx.py` reads by header name, auto-generates `CB-NNN` IDs |

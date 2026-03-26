@@ -67,26 +67,6 @@ def config_snapshot() -> dict:
     }
 
 
-def normalize_doc_id(s: str) -> str:
-    """Normalize doc id for flexible matching: lowercase, strip brackets, slugify."""
-    import re
-
-    s = s.lower().strip()
-    s = re.sub(r"[\[\]()]", "", s)  # remove brackets
-    s = re.sub(r"[^a-z0-9]+", "-", s)  # non-alphanum to dash
-    s = s.strip("-")
-    return s
-
-
-def text_contains(haystack: str, needle) -> bool:
-    """Check if needle (string or list of strings) is found in haystack."""
-    h = haystack.lower()
-    if isinstance(needle, list):
-        return any(item.lower() in h for item in needle if item)
-    if isinstance(needle, str) and needle:
-        return needle.lower() in h
-    return True  # empty needle = no constraint
-
 
 def similarity(a: str, b: str) -> float:
     """SequenceMatcher ratio between two strings."""
@@ -151,8 +131,11 @@ def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
                         {
                             "doc_id": r["doc_id"],
                             "doc_title": r["doc_title"],
-                            "section_display": r["section_display"],
-                            "clause_number": r["clause_number"],
+                            "section": r.get("section", ""),
+                            "section_number": r.get("section_number", ""),
+                            "clause": r.get("clause", ""),
+                            "clause_number": r.get("clause_number", ""),
+                            "section_display": r.get("section_display", ""),
                             "text": r["text"],
                             "score": r["rrf_score"],
                         }
@@ -167,8 +150,11 @@ def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
                         {
                             "doc_id": p.get("doc_id", ""),
                             "doc_title": p.get("doc_title", ""),
-                            "section_display": p.get("section_display", ""),
+                            "section": p.get("section", ""),
+                            "section_number": p.get("section_number", ""),
+                            "clause": p.get("clause", ""),
                             "clause_number": p.get("clause_number", ""),
+                            "section_display": p.get("section_display", ""),
                             "text": p.get("text", ""),
                             "score": r.score,
                         }
@@ -180,36 +166,30 @@ def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
             # Check for hit
             hit = False
             hit_rank = None
-            expected_doc = tc.get("expected_doc_id", "")
-            expected_clause = tc.get("expected_clause", "")
-            expected_section = tc.get("expected_section_contains", "")
-            expected_text = tc.get("expected_text_contains", "")
-
-            norm_expected_doc = normalize_doc_id(expected_doc) if expected_doc else ""
+            expected_doc = tc.get("expected_doc_id", "").strip()
+            expected_section = tc.get("expected_section_contains", "").strip()
+            expected_clause = tc.get("expected_clause", "").strip()
 
             for rank, sr in enumerate(search_results, start=1):
-                # Match expected_doc_id against both doc_title and doc_id
-                norm_result_id = normalize_doc_id(sr["doc_id"])
-                norm_result_title = normalize_doc_id(sr.get("doc_title", ""))
+                # Document: case-insensitive exact match against doc_title
                 doc_match = (
                     not expected_doc
-                    or norm_expected_doc == norm_result_id
-                    or norm_expected_doc == norm_result_title
-                    or norm_expected_doc in norm_result_id
-                    or norm_expected_doc in norm_result_title
+                    or expected_doc.lower() == sr.get("doc_title", "").lower()
                 )
-                clause_match = (
-                    not expected_clause
-                    or expected_clause.lower() in sr["clause_number"].lower()
-                    or expected_clause.lower() in sr["section_display"].lower()
-                )
+
+                # Section: match against section name
                 section_match = (
                     not expected_section
-                    or expected_section.lower() in sr["section_display"].lower()
+                    or expected_section.lower() in sr.get("section", "").lower()
                 )
-                text_match = text_contains(sr["text"], expected_text)
 
-                if doc_match and clause_match and section_match and text_match:
+                # Clause: match against clause name
+                clause_match = (
+                    not expected_clause
+                    or expected_clause.lower() in sr.get("clause", "").lower()
+                )
+
+                if doc_match and section_match and clause_match:
                     hit = True
                     hit_rank = rank
                     break
@@ -223,6 +203,16 @@ def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
             span.set_attribute("eval.hit", hit)
             span.set_attribute("eval.hit_rank", hit_rank or 0)
             span.set_attribute("eval.top_score", top_score)
+            span.set_attribute("eval.expected_doc", expected_doc)
+            span.set_attribute("eval.expected_section", expected_section)
+            span.set_attribute("eval.expected_clause", expected_clause)
+
+            # Log ALL returned results so you can inspect in Phoenix
+            for ri, sr in enumerate(search_results):
+                span.set_attribute(f"eval.result.{ri}.doc_title", sr.get("doc_title", ""))
+                span.set_attribute(f"eval.result.{ri}.section", sr.get("section", ""))
+                span.set_attribute(f"eval.result.{ri}.clause", sr.get("clause", ""))
+                span.set_attribute(f"eval.result.{ri}.score", sr.get("score", 0.0))
 
             results.append(
                 {
@@ -231,13 +221,38 @@ def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
                     "hit": hit,
                     "hit_rank": hit_rank,
                     "top_score": top_score,
-                    "expected_doc_id": expected_doc,
+                    "expected_doc": expected_doc,
+                    "expected_section": expected_section,
                     "expected_clause": expected_clause,
+                    "matched_doc": search_results[hit_rank - 1]["doc_title"] if hit else "",
+                    "matched_section": search_results[hit_rank - 1].get("section", "") if hit else "",
+                    "matched_clause": search_results[hit_rank - 1].get("clause", "") if hit else "",
+                    "search_results": [
+                        {
+                            "rank": ri + 1,
+                            "doc_title": sr.get("doc_title", ""),
+                            "section": sr.get("section", ""),
+                            "clause": sr.get("clause", ""),
+                            "score": round(sr.get("score", 0.0), 4),
+                        }
+                        for ri, sr in enumerate(search_results)
+                    ],
                 }
             )
 
-            status = f"HIT@{hit_rank}" if hit else "MISS"
-            logger.info(f"  [{tc['id']}] {status} (top_score={top_score:.3f})")
+            if hit:
+                matched = search_results[hit_rank - 1]
+                logger.info(
+                    f"  [{tc['id']}] HIT@{hit_rank} (score={top_score:.3f}) "
+                    f"doc={matched.get('doc_title', '')[:30]} | sec={matched.get('section', '')[:20]} | cls={matched.get('clause', '')[:20]}"
+                )
+            else:
+                top = search_results[0] if search_results else {}
+                logger.info(
+                    f"  [{tc['id']}] MISS (score={top_score:.3f}) "
+                    f"expected: doc={expected_doc[:30]} sec={expected_section[:20]} cls={expected_clause[:20]} | "
+                    f"got: doc={top.get('doc_title', '')[:30]} sec={top.get('section', '')[:20]} cls={top.get('clause', '')[:20]}"
+                )
 
     # Compute metrics
     n = len(test_cases)
@@ -481,7 +496,7 @@ async def run_escalation_eval(dataset_path: Path, tag: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Tier 4: Chatbot Evaluation (Positive/Negative)
+# Tier 4: Chatbot Evaluation (same format as E2E)
 # ---------------------------------------------------------------------------
 
 
@@ -490,149 +505,77 @@ async def run_chatbot_eval(dataset_path: Path, tag: str) -> dict:
 
     tracer = get_tracer()
     data = load_dataset(dataset_path)
-    positive_cases = data.get("positive_cases", [])
-    negative_cases = data.get("negative_cases", [])
+    test_cases = data["test_cases"]
     agent = build_agent()
 
-    # Group by question text so we only run the agent once per unique question
-    pos_by_q: dict[str, list] = {}
-    for pc in positive_cases:
-        pos_by_q.setdefault(pc["question"], []).append(pc)
-
-    neg_by_q: dict[str, list] = {}
-    for nc in negative_cases:
-        neg_by_q.setdefault(nc["question"], []).append(nc)
-
-    all_questions = list(dict.fromkeys(
-        [pc["question"] for pc in positive_cases]
-        + [nc["question"] for nc in negative_cases]
-    ))
-
-    logger.info(
-        f"Running chatbot eval: {len(all_questions)} unique questions "
-        f"({len(positive_cases)} pos, {len(negative_cases)} neg)"
-    )
-
-    # Run agent once per unique question
-    answers: dict[str, str] = {}
-    for i, q in enumerate(all_questions):
-        logger.info(f"  Query {i+1}/{len(all_questions)}: {q[:60]}...")
-        answers[q] = await run_agent_query(agent, q)
-
-    # Evaluate
     results = []
-    passes = 0
-    positive_wins = 0
-    negative_avoided = 0
-    policy_cited = 0
-    positive_scores = []
-    negative_scores = []
-    policy_breakdown: dict[str, dict] = {}
+    citation_correct_count = 0
+    fact_coverages = []
+    latencies = []
 
-    for q in all_questions:
-        answer = answers[q]
-        answer_lower = answer.lower()
-        pos_list = pos_by_q.get(q, [])
-        neg_list = neg_by_q.get(q, [])
+    logger.info(f"Running chatbot eval: {len(test_cases)} cases")
 
-        # Best positive score
-        best_pos_score = 0.0
-        best_pos_id = ""
-        for pc in pos_list:
-            expected = pc.get("expected_answer", "")
-            if isinstance(expected, list):
-                hits = sum(1 for item in expected if item.lower() in answer_lower)
-                score = hits / len(expected) if expected else 0.0
-            else:
-                score = similarity(expected, answer)
-            if score > best_pos_score:
-                best_pos_score = score
-                best_pos_id = pc["id"]
-
-        # Best (worst) negative score
-        best_neg_score = 0.0
-        best_neg_id = ""
-        for nc in neg_list:
-            incorrect = nc.get("incorrect_answer", "")
-            score = similarity(incorrect, answer)
-            if score > best_neg_score:
-                best_neg_score = score
-                best_neg_id = nc["id"]
-
-        # Policy citation check
-        policy_name = ""
-        if pos_list:
-            policy_name = pos_list[0].get("policy", "")
-        elif neg_list:
-            policy_name = neg_list[0].get("policy", "")
-
-        policy_is_cited = False
-        if policy_name:
-            policy_words = [
-                w for w in policy_name.lower().split() if len(w) > 3
-            ]
-            policy_is_cited = any(w in answer_lower for w in policy_words)
-
-        # Pass/fail
-        passed = best_pos_score > best_neg_score and best_neg_score < 0.4
-
-        if passed:
-            passes += 1
-        if best_pos_score > best_neg_score:
-            positive_wins += 1
-        if best_neg_score < 0.4:
-            negative_avoided += 1
-        if policy_is_cited:
-            policy_cited += 1
-        positive_scores.append(best_pos_score)
-        negative_scores.append(best_neg_score)
-
-        # Policy breakdown
-        if policy_name:
-            if policy_name not in policy_breakdown:
-                policy_breakdown[policy_name] = {"total": 0, "passed": 0}
-            policy_breakdown[policy_name]["total"] += 1
-            if passed:
-                policy_breakdown[policy_name]["passed"] += 1
-
+    for tc in test_cases:
         with tracer.start_as_current_span("eval.chatbot") as span:
-            span.set_attribute("eval.question", q[:200])
-            span.set_attribute("eval.positive_score", best_pos_score)
-            span.set_attribute("eval.negative_score", best_neg_score)
-            span.set_attribute("eval.passed", passed)
-            span.set_attribute("eval.policy_cited", policy_is_cited)
+            span.set_attribute("eval.test_id", tc["id"])
+            span.set_attribute("eval.question", tc["question"])
 
-        results.append(
-            {
-                "question": q[:200],
-                "positive_id": best_pos_id,
-                "negative_id": best_neg_id,
-                "positive_score": round(best_pos_score, 3),
-                "negative_score": round(best_neg_score, 3),
-                "passed": passed,
-                "policy_cited": policy_is_cited,
-                "policy": policy_name,
-                "answer": answer[:500],
-            }
-        )
+            start = time.time()
+            answer = await run_agent_query(agent, tc["question"])
+            latency = time.time() - start
+            latencies.append(latency)
 
-    n = len(all_questions)
-    # Compute policy breakdown rates
-    policy_rates = {}
-    for pname, counts in sorted(policy_breakdown.items()):
-        policy_rates[pname] = round(
-            counts["passed"] / counts["total"] if counts["total"] else 0, 3
-        )
+            # Check citation accuracy
+            citation_correct = False
+            expected_cits = tc.get("expected_citations", [])
+            if expected_cits:
+                answer_lower = answer.lower()
+                for cit in expected_cits:
+                    doc_id = cit.get("doc_id", "")
+                    doc_words = [
+                        w
+                        for w in doc_id.lower().replace("-", " ").split()
+                        if len(w) > 3
+                    ]
+                    if doc_words and any(w in answer_lower for w in doc_words):
+                        citation_correct = True
+                        break
+            else:
+                citation_correct = True
 
+            if citation_correct:
+                citation_correct_count += 1
+
+            # Fact coverage
+            fc = fact_coverage(tc.get("expected_answer", ""), answer)
+            fact_coverages.append(fc)
+
+            span.set_attribute("eval.citation_correct", citation_correct)
+            span.set_attribute("eval.fact_coverage", fc)
+            span.set_attribute("eval.latency_seconds", latency)
+
+            results.append(
+                {
+                    "id": tc["id"],
+                    "question": tc["question"],
+                    "answer": answer[:500],
+                    "citation_correct": citation_correct,
+                    "fact_coverage": round(fc, 3),
+                    "latency_seconds": round(latency, 2),
+                }
+            )
+
+            logger.info(
+                f"  [{tc['id']}] cit={'OK' if citation_correct else 'MISS'} "
+                f"fc={fc:.2f} latency={latency:.1f}s"
+            )
+
+    n = len(test_cases)
     metrics = {
-        "pass_rate": passes / n if n else 0,
-        "positive_wins_rate": positive_wins / n if n else 0,
-        "negative_avoided_rate": negative_avoided / n if n else 0,
-        "policy_citation_rate": policy_cited / n if n else 0,
-        "avg_positive_score": sum(positive_scores) / n if n else 0,
-        "avg_negative_score": sum(negative_scores) / n if n else 0,
-        "total_questions": n,
-        "policy_breakdown": policy_rates,
+        "citation_accuracy": citation_correct_count / n if n else 0,
+        "fact_coverage": sum(fact_coverages) / n if n else 0,
+        "avg_latency_seconds": sum(latencies) / n if n else 0,
+        "total_cases": n,
     }
 
     output = {
@@ -650,17 +593,10 @@ async def run_chatbot_eval(dataset_path: Path, tag: str) -> dict:
     path = save_results(output, "chatbot", tag)
 
     print("\n=== Chatbot Evaluation Results ===")
-    print(f"  Pass Rate:            {metrics['pass_rate']:.1%} ({passes}/{n})")
-    print(f"  Positive Wins Rate:   {metrics['positive_wins_rate']:.1%}")
-    print(f"  Negative Avoided:     {metrics['negative_avoided_rate']:.1%}")
-    print(f"  Policy Citation Rate: {metrics['policy_citation_rate']:.1%}")
-    print(f"  Avg Positive Score:   {metrics['avg_positive_score']:.3f}")
-    print(f"  Avg Negative Score:   {metrics['avg_negative_score']:.3f}")
-    if policy_rates:
-        print("  Policy Breakdown:")
-        for pname, rate in policy_rates.items():
-            print(f"    {pname}: {rate:.1%}")
-    print(f"  Results saved to:     {path}")
+    print(f"  Citation Accuracy: {metrics['citation_accuracy']:.1%}")
+    print(f"  Fact Coverage:     {metrics['fact_coverage']:.1%}")
+    print(f"  Avg Latency:       {metrics['avg_latency_seconds']:.1f}s")
+    print(f"  Results saved to:  {path}")
 
     return output
 

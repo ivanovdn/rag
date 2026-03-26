@@ -1,5 +1,5 @@
 """
-Convert evaluation XLSX (3 sheets) into JSON datasets.
+Convert evaluation XLSX (4 sheets) into JSON datasets.
 
 Usage:
     python scripts/convert_eval_xlsx.py eval_dataset.xlsx
@@ -8,6 +8,7 @@ Output:
     eval/datasets/retrieval_test.json
     eval/datasets/e2e_test.json
     eval/datasets/escalation_test.json
+    eval/datasets/chatbot_test_cases.json
 """
 
 import json
@@ -77,7 +78,8 @@ def convert_tier1(ws) -> dict:
     }
 
 
-def convert_tier2(ws) -> dict:
+def convert_qa_tier(ws, id_prefix: str = "E2E", name: str = "End-to-End Q&A Test Set", description: str = "Tests full pipeline: retrieval + LLM generation.") -> dict:
+    """Convert a Q&A sheet with columns: id, question, expected_answer, expected_doc, expected_section, expected_clause."""
     rows = read_rows(ws)
     test_cases = []
     for cells in rows:
@@ -91,7 +93,7 @@ def convert_tier2(ws) -> dict:
                 cit["clause"] = cells[5]
             citations.append(cit)
         tc = {
-            "id": cells[0] or f"E2E-{len(test_cases)+1:03d}",
+            "id": cells[0] or f"{id_prefix}-{len(test_cases)+1:03d}",
             "question": cells[1],
             "expected_answer": expected_answer,
             "expected_citations": citations,
@@ -99,9 +101,82 @@ def convert_tier2(ws) -> dict:
         test_cases.append(tc)
     return {
         "metadata": {
-            "name": "End-to-End Q&A Test Set",
+            "name": name,
             "version": "1.0",
-            "description": "Tests full pipeline: retrieval + LLM generation.",
+            "description": description,
+            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "total_cases": len(test_cases),
+        },
+        "test_cases": test_cases,
+    }
+
+
+def convert_chatbot(ws) -> dict:
+    """Convert chatbot sheet — reads columns by header name, auto-generates IDs.
+
+    Expected headers (any order):
+        Expected Document, Expected Section, Expected Clause,
+        Policy Rule, User Goal, Question, Expected Answer
+    """
+    # Read header row to build column map
+    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+    headers = [cell_val(c).lower() for c in header_row]
+
+    col = {}
+    header_aliases = {
+        "question": "question",
+        "expected answer": "expected_answer",
+        "expected document": "expected_doc",
+        "expected section": "expected_section",
+        "expected clause": "expected_clause",
+    }
+    for idx, h in enumerate(headers):
+        for alias, key in header_aliases.items():
+            if alias in h:
+                col[key] = idx
+                break
+
+    missing = [k for k in ["question", "expected_answer", "expected_doc"] if k not in col]
+    if missing:
+        raise ValueError(f"Chatbot sheet missing required headers: {missing}. Found: {headers}")
+
+    test_cases = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        cells = [cell_val(c) for c in row]
+        while len(cells) <= max(col.values()):
+            cells.append("")
+
+        question = cells[col["question"]]
+        if not question:
+            continue
+
+        expected_answer = parse_pipe_list(cells[col["expected_answer"]])
+        expected_doc = cells[col.get("expected_doc", -1)] if "expected_doc" in col else ""
+        expected_section = cells[col.get("expected_section", -1)] if "expected_section" in col else ""
+        expected_clause = cells[col.get("expected_clause", -1)] if "expected_clause" in col else ""
+
+        citations = []
+        if expected_doc:
+            cit = {"doc_id": expected_doc}
+            if expected_section:
+                cit["section"] = expected_section
+            if expected_clause:
+                cit["clause"] = expected_clause
+            citations.append(cit)
+
+        tc = {
+            "id": f"CB-{len(test_cases)+1:03d}",
+            "question": question,
+            "expected_answer": expected_answer,
+            "expected_citations": citations,
+        }
+        test_cases.append(tc)
+
+    return {
+        "metadata": {
+            "name": "Chatbot Q&A Test Set",
+            "version": "1.0",
+            "description": "Tests chatbot answers against expected policy responses.",
             "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "total_cases": len(test_cases),
         },
@@ -146,9 +221,10 @@ def main():
     wb = load_workbook(xlsx_path, read_only=True, data_only=True)
     data_sheets = [s for s in wb.sheetnames if "instruct" not in s.lower()]
     converters = [
-        ("retrieval_test.json", convert_tier1),
-        ("e2e_test.json", convert_tier2),
-        ("escalation_test.json", convert_tier3),
+        ("retrieval_test.json", lambda ws: convert_tier1(ws)),
+        ("e2e_test.json", lambda ws: convert_qa_tier(ws, id_prefix="E2E", name="End-to-End Q&A Test Set", description="Tests full pipeline: retrieval + LLM generation.")),
+        ("escalation_test.json", lambda ws: convert_tier3(ws)),
+        ("chatbot_test_cases.json", lambda ws: convert_chatbot(ws)),
     ]
     for i, (output_name, converter) in enumerate(converters):
         if i >= len(data_sheets):
@@ -163,7 +239,7 @@ def main():
     wb.close()
     # Print first entry from each file
     print()
-    for fname in ["retrieval_test.json", "e2e_test.json", "escalation_test.json"]:
+    for fname in ["retrieval_test.json", "e2e_test.json", "escalation_test.json", "chatbot_test_cases.json"]:
         fpath = output_dir / fname
         if fpath.exists():
             data = json.loads(fpath.read_text())
