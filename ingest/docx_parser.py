@@ -62,6 +62,45 @@ def extract_clause_name(para) -> str:
     return name
 
 
+def _is_bold_heading(para, num_info) -> bool:
+    """
+    Detect bold-as-heading pattern: short, all-bold Normal paragraphs
+    that serve as section headings in documents without Heading styles.
+    """
+    if not para.style.name.startswith("Normal"):
+        return False
+
+    # Skip if has Word auto-numbering (handled by NumberingResolver)
+    if num_info and num_info["numFmt"] == "decimal":
+        return False
+
+    text = para.text.strip()
+    if not text:
+        return False
+
+    # Must have runs, all bold
+    text_runs = [r for r in para.runs if r.text.strip()]
+    if not text_runs:
+        return False
+    if not all(r.bold for r in text_runs):
+        return False
+
+    # Short text only (headings are brief)
+    if len(text.split()) > 10:
+        return False
+
+    # Skip metadata lines
+    skip_prefixes = {"version", "date", "created by", "approved by", "managed by", "sensitivity"}
+    if any(text.lower().startswith(p) for p in skip_prefixes):
+        return False
+
+    # Skip if it looks like a clause number (e.g., "4.2 Something")
+    if re.match(r"^\d+(\.\d+)*\.?\s", text):
+        return False
+
+    return True
+
+
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: ~4 chars per token."""
     return len(text) // 4
@@ -262,16 +301,32 @@ def parse_docx(filepath: Path, doc_link: str) -> list[PolicyChunk]:
                 # Prepend number to text for the chunk content
                 text = f"{resolved} {text}"
 
-                if num_info["ilvl"] == 0:
-                    # Section level (Heading 1)
+                # Use number depth to determine level (more reliable than ilvl)
+                # "4" → depth 1 (section), "4.2" → depth 2 (clause), "4.2.1" → depth 3+
+                num_depth = len(clean_number.split("."))
+
+                if num_depth == 1:
+                    # Section level
                     flush_all()
-                    current_section = para.text.strip()  # original text WITHOUT number
+                    # Use bold text as section name if available (cleaner),
+                    # otherwise fall back to full paragraph text
+                    section_name = extract_clause_name(para)  # gets bold prefix
+                    if not section_name:
+                        # Truncate long section names to first phrase
+                        raw = para.text.strip()
+                        if len(raw.split()) > 8:
+                            for sep in [":", ",", "."]:
+                                if sep in raw:
+                                    raw = raw[:raw.index(sep)].strip()
+                                    break
+                        section_name = raw
+                    current_section = section_name
                     current_section_number = clean_number
                     current_clause = ""
                     current_clause_number = ""
                     level = None  # already handled, skip the level block below
 
-                elif num_info["ilvl"] == 1:
+                elif num_depth >= 2:
                     # Clause level
                     flush_all()
                     current_clause = extract_clause_name(para) or para.text.strip()
@@ -293,13 +348,26 @@ def parse_docx(filepath: Path, doc_link: str) -> list[PolicyChunk]:
                     current_clause = text
                     current_clause_number = ""
 
+            elif _is_bold_heading(para, num_info):
+                # Bold-as-heading: treat as section heading
+                flush_all()
+                current_section = text
+                current_section_number = ""
+                current_clause = ""
+                current_clause_number = ""
+
             elif num_info is None or num_info["numFmt"] != "decimal":
-                # Regular paragraph or bullet — existing clause detection logic
+                # Regular paragraph or bullet — clause detection logic
                 clause_num = extract_clause_number(text)
                 if not clause_num:
                     label = extract_label(text)
                     if label and para.style.name == "List Paragraph":
-                        clause_num = label
+                        # Label goes to clause NAME, not clause_number
+                        flush_buffer()
+                        current_clause = label
+                        current_clause_number = ""
+                        current_text_buffer.append(text)
+                        continue
                 if clause_num and current_text_buffer:
                     flush_buffer()
                     current_clause_number = clause_num
@@ -315,4 +383,37 @@ def parse_docx(filepath: Path, doc_link: str) -> list[PolicyChunk]:
                     current_text_buffer.append(table_text)
 
     flush_all()
-    return chunks
+
+    # ── Filter noise chunks ──
+    NOISE_SECTIONS = {
+        "revision history",
+        "change history",
+        "table of contents",
+        "document control",
+        "version control",
+        "approval history",
+    }
+
+    filtered = []
+    for c in chunks:
+        section_lower = (c.section or "").lower().strip()
+
+        # Skip noise sections
+        if section_lower in NOISE_SECTIONS:
+            continue
+
+        # Skip title-only chunks (document name with no real content)
+        if not c.section and not c.clause and _estimate_tokens(c.text) < 15:
+            continue
+
+        # Skip near-empty chunks
+        if len(c.text.strip()) < 20:
+            continue
+
+        filtered.append(c)
+
+    # Re-index
+    for i, c in enumerate(filtered):
+        c.chunk_index = i
+
+    return filtered

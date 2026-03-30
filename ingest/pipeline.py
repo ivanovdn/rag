@@ -46,7 +46,7 @@ def ingest_folder(folder: Path, base_url: str) -> dict[str, int]:
     """Batch ingest all .docx files in a folder. Returns {filename: chunk_count}."""
     init_collection()
     results = {}
-    docx_files = sorted(folder.glob("*.docx"))
+    docx_files = sorted(f for f in folder.glob("*.docx") if not f.name.startswith("~$"))
 
     if not docx_files:
         print(f"No .docx files found in {folder}")
