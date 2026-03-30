@@ -22,7 +22,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
 
         results = hybrid_search(query=query, top_k=top_k)
 
-        if not results or results[0].get("rrf_score", 0) < settings.min_confidence_score:
+        if not results:
             return "NO_RELEVANT_POLICY_FOUND"
 
         formatted = []

@@ -130,24 +130,15 @@ def hybrid_search(
 def hybrid_search_formatted(
     query: str,
     top_k: int = 6,
-    min_confidence: float | None = None,
 ) -> str:
     """
     Run hybrid search and return formatted string for the agent tool.
-    Falls back to NO_RELEVANT_POLICY_FOUND if no results above threshold.
+    Returns NO_RELEVANT_POLICY_FOUND if no results.
+    No confidence threshold — RRF scores are not comparable to cosine similarity.
     """
-    threshold = min_confidence if min_confidence is not None else settings.min_confidence_score
     results = hybrid_search(query, top_k=top_k)
 
     if not results:
-        return "NO_RELEVANT_POLICY_FOUND"
-
-    # Filter: at least one result must have a vector_score above threshold
-    # (BM25-only results don't have a cosine score to compare against)
-    has_confident = any(
-        r["vector_score"] >= threshold for r in results
-    )
-    if not has_confident:
         return "NO_RELEVANT_POLICY_FOUND"
 
     formatted = []

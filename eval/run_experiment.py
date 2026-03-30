@@ -24,23 +24,46 @@ def setup_async():
         print("WARNING: pip install nest_asyncio")
 
 
-def make_tier1_task(top_k: int = 6):
-    from rag.hybrid_search import hybrid_search
+def make_tier1_task(top_k: int):
+    from config import settings
 
-    def retrieval_task(input):
-        results = hybrid_search(input["question"], top_k=top_k)
-        return {
-            "search_results": [
-                {
-                    "doc_title": r["doc_title"],
-                    "section": r["section"],
-                    "clause": r.get("clause", ""),
-                    "clause_number": r.get("clause_number", ""),
-                    "rrf_score": round(r["rrf_score"], 4),
-                }
-                for r in results
-            ]
-        }
+    if settings.bm25_enabled:
+        from rag.hybrid_search import hybrid_search
+
+        def retrieval_task(input):
+            results = hybrid_search(input["question"], top_k=top_k)
+            return {
+                "search_results": [
+                    {
+                        "doc_title": r["doc_title"],
+                        "section": r["section"],
+                        "clause": r.get("clause", ""),
+                        "clause_number": r.get("clause_number", ""),
+                        "score": round(r["rrf_score"], 4),
+                    }
+                    for r in results
+                ]
+            }
+    else:
+        from rag.embeddings import embed_query
+        from rag.vector_store import search_vectors
+
+        def retrieval_task(input):
+            vector = embed_query(input["question"])
+            results = search_vectors(vector, top_k=top_k)
+            return {
+                "search_results": [
+                    {
+                        "doc_title": r.payload.get("doc_title", ""),
+                        "section": r.payload.get("section", ""),
+                        "clause": r.payload.get("clause", ""),
+                        "clause_number": r.payload.get("clause_number", ""),
+                        "score": round(r.score, 4),
+                    }
+                    for r in results
+                ]
+            }
+
     return retrieval_task
 
 
@@ -113,7 +136,7 @@ def main():
     parser.add_argument("--name", required=True, help="Experiment name")
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--description", default=None)
-    parser.add_argument("--top-k", type=int, default=6)
+    parser.add_argument("--top-k", type=int, default=None, help="Override retrieval_top_k from .env")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--phoenix-url", default=None)
     args = parser.parse_args()
@@ -123,6 +146,7 @@ def main():
     from eval.evaluators import TIER1_EVALUATORS, TIER2_EVALUATORS, CHATBOT_EVALUATORS
     from config import settings
 
+    top_k = args.top_k if args.top_k is not None else settings.retrieval_top_k
     tier_cfg = TIER_CONFIG[args.tier]
     dataset_name = args.dataset or tier_cfg["default_dataset"]
     description = args.description or tier_cfg["description"]
@@ -142,17 +166,23 @@ def main():
     print(f"  Tier:        {args.tier}")
     print(f"  Dataset:     {dataset.name} ({len(dataset)} examples)")
     print(f"  Experiment:  {args.name}")
+    print(f"  Embedding:   {settings.embedding_model}")
+    print(f"  LLM:         {settings.llm_model}")
+    print(f"  top_k:       {top_k} (from {'--top-k' if args.top_k is not None else '.env'})")
+    print(f"  BM25:        {'on' if settings.bm25_enabled else 'off'}")
+
+    search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
 
     if args.tier == "tier1":
-        task = make_tier1_task(top_k=args.top_k)
+        task = make_tier1_task(top_k=top_k)
         evaluators = TIER1_EVALUATORS
-        metadata = {"search_type": "hybrid_rrf", "embedding_model": "nomic-embed-text",
-                     "top_k": args.top_k, "tier": "tier1"}
+        metadata = {"search_type": search_type, "embedding_model": settings.embedding_model,
+                     "top_k": top_k, "tier": "tier1"}
     else:
         task = make_agent_task(verbose=args.verbose)
         evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
-        metadata = {"llm": settings.llm_model, "search_type": "hybrid_rrf",
-                     "agent_type": "react", "top_k": args.top_k, "tier": args.tier,
+        metadata = {"llm": settings.llm_model, "search_type": search_type,
+                     "agent_type": "react", "top_k": top_k, "tier": args.tier,
                      "structured_output": True}
 
     print(f"  Evaluators:  {[e.__name__ for e in evaluators]}")
