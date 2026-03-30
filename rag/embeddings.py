@@ -1,17 +1,20 @@
-from llama_index.embeddings.ollama import OllamaEmbedding
+import os
+
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 from config import settings
 
-_embedding_model: OllamaEmbedding | None = None
+_embedding_model: HuggingFaceEmbedding | None = None
 
 
-def get_embedding_model() -> OllamaEmbedding:
+def get_embedding_model() -> HuggingFaceEmbedding:
     global _embedding_model
     if _embedding_model is None:
-        _embedding_model = OllamaEmbedding(
+        if settings.hf_token:
+            os.environ["HF_TOKEN"] = settings.hf_token
+        _embedding_model = HuggingFaceEmbedding(
             model_name=settings.embedding_model,
-            base_url=settings.ollama_base_url,
-            ollama_additional_kwargs={"mirostat": 0},
+            trust_remote_code=True,
         )
     return _embedding_model
 

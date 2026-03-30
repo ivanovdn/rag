@@ -4,6 +4,9 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    # HuggingFace
+    hf_token: str = ""
+
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     llm_model: str = "qwen3:14b"
@@ -21,7 +24,7 @@ class Settings(BaseSettings):
     policy_base_url: str = "http://intranet.company.com/policies"
 
     # Retrieval
-    retrieval_top_k: int = 6
+    retrieval_top_k: int = 10
     min_confidence_score: float = 0.45
 
     # Hybrid search
