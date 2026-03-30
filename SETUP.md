@@ -38,13 +38,17 @@ cp .env.example .env
 
 ### Key `.env` settings to review
 
+`.env` is the **single source of truth** for all runtime configuration. `config.py` only has fallback defaults — `.env` always wins.
+
 | Variable | Default | When to change |
 |----------|---------|----------------|
-| `LLM_MODEL` | `qwen2.5:14b` | Use `qwen2.5:1.5b` for fast dev/testing on limited hardware |
+| `LLM_MODEL` | `qwen3:14b` | Use a smaller model for dev/testing on limited hardware |
+| `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5` | Any HuggingFace model (see Embedding Models below) |
 | `POLICY_DOCS_FOLDER` | `./policies` | Change if your DOCX files are elsewhere |
 | `POLICY_BASE_URL` | `http://intranet.company.com/policies` | Set to wherever documents are hosted internally |
-| `MIN_CONFIDENCE_SCORE` | `0.45` | Lower = more lenient answers, higher = more escalations |
-| `RETRIEVAL_TOP_K` | `6` | Number of chunks returned per search |
+| `RETRIEVAL_TOP_K` | `10` | Number of chunks returned per search |
+| `BM25_ENABLED` | `true` | Set `false` for vector-only search |
+| `MIN_CONFIDENCE_SCORE` | `0.45` | Only used in vector-only mode (not hybrid) |
 
 ---
 
@@ -65,12 +69,12 @@ pip install -r requirements.txt
 ### Verify installation
 
 ```bash
-python -c "from config import settings; print('Config OK:', settings.llm_model)"
+python -c "from config import settings; print('Config OK:', settings.llm_model, settings.embedding_model)"
 ```
 
 Expected output:
 ```
-Config OK: qwen2.5:1.5b
+Config OK: qwen3:14b nomic-ai/nomic-embed-text-v1.5
 ```
 
 ---
@@ -83,7 +87,7 @@ docker compose up -d
 
 This starts two services:
 - **Qdrant** (port 6333) — vector database for policy chunks
-- **Phoenix** (port 6006) — observability UI for tracing agent queries
+- **Phoenix** (port 6006) — observability UI for tracing agent queries + evaluation experiments
 
 ### Verify services are healthy
 
@@ -99,33 +103,28 @@ open http://localhost:6006
 
 ---
 
-## Step 4 — Pull Ollama Models
+## Step 4 — Pull Ollama LLM Model
 
-You need two models: an LLM for reasoning and an embedding model for vector search.
+Ollama is only used for the LLM (reasoning). Embeddings use HuggingFace (downloaded automatically on first use).
 
 ```bash
-# Embedding model (required, ~274 MB)
-ollama pull nomic-embed-text
-
 # LLM — pick ONE based on your hardware:
 
-# Option A: Small model for development (1 GB, fast, lower quality tool-calling)
-ollama pull qwen2.5:1.5b
+# Option A: Recommended (9 GB, good tool-calling + structured JSON output)
+ollama pull qwen3:14b
 
-# Option B: Recommended for production (9 GB, good tool-calling)
+# Option B: Smaller alternative
 ollama pull qwen2.5:14b
 
 # Option C: Best quality (40 GB, requires 48+ GB RAM)
 ollama pull llama3.3:70b
 ```
 
-### Verify models are available
+### Verify model is available
 
 ```bash
 ollama list
 ```
-
-You should see both your chosen LLM and `nomic-embed-text` listed.
 
 > **Important:** Make sure `LLM_MODEL` in `.env` matches the model you pulled.
 
@@ -133,7 +132,7 @@ You should see both your chosen LLM and `nomic-embed-text` listed.
 
 | Model | RAM Required | Disk | Response Time (M4 Pro) |
 |-------|-------------|------|----------------------|
-| `qwen2.5:1.5b` | 4 GB | 1 GB | ~2–5s |
+| `qwen3:14b` | 16 GB | 9 GB | ~10–25s |
 | `qwen2.5:14b` | 16 GB | 9 GB | ~10–25s |
 | `llama3.3:70b` | 48 GB | 40 GB | ~30–60s |
 
@@ -155,57 +154,29 @@ cp /path/to/your/policies/*.docx policies/
 
 - **File type:** `.docx` only (not `.doc`, `.pdf`, or `.txt`)
 - **Headings:** Use Word's built-in Heading 1, Heading 2, Heading 3 styles for section hierarchy
-- **Numbered clauses:** Clauses like `4.2.1 Data Retention` are auto-detected
+- **Numbered clauses:** Clauses like `4.2.1 Data Retention` are auto-detected via `NumberingResolver`
 - **Tables:** Automatically converted to text
-
-### Sample test document
-
-If you don't have documents yet, create a test one:
-
-```bash
-python -c "
-from docx import Document
-doc = Document()
-doc.add_heading('Test Policy', level=1)
-doc.add_heading('1. Scope', level=2)
-doc.add_paragraph('1.1 This policy applies to all employees of the company across all departments and locations.')
-doc.add_heading('2. Rules', level=2)
-doc.add_paragraph('2.1 Employees must complete mandatory training within 30 days of joining the company.')
-doc.add_paragraph('2.2 All incidents must be reported to the compliance team within 24 hours of discovery.')
-doc.save('policies/test_policy.docx')
-print('Created policies/test_policy.docx')
-"
-```
 
 ---
 
 ## Step 6 — Ingest Documents
 
-This parses all DOCX files, generates embeddings, and stores them in Qdrant.
+This parses all DOCX files, generates embeddings, and stores them in Qdrant (+ BM25 index if enabled).
 
 ```bash
 python scripts/ingest_all.py
-```
-
-With custom options:
-
-```bash
-python scripts/ingest_all.py \
-  --folder ./policies \
-  --base-url http://intranet.company.com/policies
 ```
 
 ### Expected output
 
 ```
 Ingesting documents from: policies
-Base URL: http://intranet.company.com/policies
 
-Ingested annual_leave_policy.docx: 6 chunks
-Ingested data_privacy_policy.docx: 12 chunks
-Ingested remote_work_policy.docx: 8 chunks
+Ingested Acceptable Use Policy [Internal].docx: 51 chunks
+Ingested Access Management Policy [Internal].docx: 36 chunks
+...
 
-Done. Ingested 3 documents, 26 total chunks.
+Done. Ingested 52 documents, 1514 total chunks.
 ```
 
 ### Verify chunks are in Qdrant
@@ -214,11 +185,9 @@ Done. Ingested 3 documents, 26 total chunks.
 curl -s http://localhost:6333/collections/compliance_policies | python3 -m json.tool | grep points_count
 ```
 
-Expected: `"points_count": 26` (or however many chunks were created).
-
 ### Re-ingesting documents
 
-Running `ingest_all.py` again is safe — it deletes old chunks for each document before inserting new ones. Use this after updating policy files.
+Running `ingest_all.py` again is safe — it deletes old chunks for each document before inserting new ones (both Qdrant and BM25). Use this after updating policy files or changing the embedding model.
 
 ---
 
@@ -227,7 +196,7 @@ Running `ingest_all.py` again is safe — it deletes old chunks for each documen
 ### Single query
 
 ```bash
-python scripts/test_query.py -q "How many days of annual leave do employees get?"
+python scripts/test_query.py -q "What is forbidden to install for team members?"
 ```
 
 ### Interactive mode
@@ -236,40 +205,37 @@ python scripts/test_query.py -q "How many days of annual leave do employees get?
 python scripts/test_query.py -i
 ```
 
-```
-Compliance Q&A Bot — Interactive Mode
-Type 'quit' or 'exit' to stop.
-
-You: How many days of annual leave do employees get?
-Searching policies...
-
-Bot: **Answer:** Full-time employees are entitled to 25 days...
-
-**Policy Sources:**
-- Annual Leave Policy | 2. Entitlement | Clause 2.1
-  > "Full-time employees are entitled to 25 days of paid annual leave..."
-  Link: http://intranet.company.com/policies/annual_leave_policy.docx
-
-You: quit
-Goodbye!
-```
-
 ### What to expect
+
+The agent returns **structured JSON** with `answer`, `citations`, and `escalation`:
+
+```json
+{
+  "answer": "According to the Acceptable Use Policy...",
+  "citations": [
+    {
+      "doc_title": "Acceptable Use Policy [Internal]",
+      "section": "Corporate Workstation and Software Use",
+      "clause": "Software Installation",
+      "clause_number": "4.7",
+      "quote": "Team Members are forbidden from installing..."
+    }
+  ],
+  "escalation": {"needed": false, "reason": ""}
+}
+```
 
 | Query Type | Expected Behavior |
 |-----------|-------------------|
-| Clear policy question | Answer with citations from policy documents |
-| No matching policy | `"NO_RELEVANT_POLICY_FOUND"` → agent escalates automatically |
-| Ambiguous question | Agent may ask for clarification first |
+| Clear policy question | Answer with structured JSON citations |
+| No matching policy | `NO_RELEVANT_POLICY_FOUND` → agent escalates |
 | Multi-area question | Agent calls `search_policies` multiple times |
-
-> **Note on `qwen2.5:1.5b`:** This small model often skips tool calls and hallucmates answers. If you see answers without proper citations, switch to `qwen2.5:14b` in `.env`. The 14b model handles the ReAct tool-calling pattern correctly.
 
 ---
 
 ## Step 8 — View Traces in Phoenix
 
-Every query is automatically traced via OpenTelemetry. Open the Phoenix UI to inspect them:
+Every query is automatically traced via OpenTelemetry. Open the Phoenix UI:
 
 ```
 http://localhost:6006
@@ -277,37 +243,81 @@ http://localhost:6006
 
 ### What you'll see
 
-Phoenix captures the full execution trace for every agent query:
-
 - **Agent workflow** — the parent span covering the entire request
 - **ReAct steps** — each Thought/Action/Observation iteration
 - **LLM calls** — model name, full prompt, response text, token counts, latency
 - **Tool calls** — which tools were invoked, inputs, and outputs
-- **Embedding calls** — queries embedded during ingestion and search
 
-### Navigating the UI
+---
 
-1. Select the **compliance-bot** project in the sidebar
-2. Click any trace to see the full span tree
-3. Expand individual spans to see attributes (prompt text, token counts, etc.)
-4. Use the **Traces** tab to filter by time, latency, or status
+## Step 9 — Run Evaluation
 
-### Disabling tracing
-
-If you don't need observability (e.g., CI environments):
+### Upload test datasets to Phoenix
 
 ```bash
-# In .env
-PHOENIX_ENABLED=false
+python scripts/make_dataset.py eval/datasets/retrieval_test.json
+python scripts/make_dataset.py eval/datasets/e2e_test.json
+python scripts/make_dataset.py eval/datasets/chatbot_test_cases.json
 ```
 
-The application runs normally without Phoenix — tracing is fully optional.
+### Run experiments
+
+```bash
+# Tier 1 — retrieval only (fast, no LLM)
+python eval/run_experiment.py --tier tier1 --name baseline-retrieval
+
+# Tier 2 — full agent e2e (slow, calls LLM per question)
+python eval/run_experiment.py --tier tier2 --name baseline-e2e
+
+# Chatbot — realistic user questions
+python eval/run_experiment.py --tier chatbot --name baseline-chatbot
+```
+
+Settings come from `.env` (`RETRIEVAL_TOP_K`, `BM25_ENABLED`). Override with `--top-k` flag if needed.
+
+### View results
+
+Open http://localhost:6006/datasets — experiments appear with per-evaluator metrics.
+
+### After making changes
+
+```bash
+# Re-run with new experiment name for comparison
+python eval/run_experiment.py --tier tier1 --name after-reranker-v1
+```
+
+---
+
+## Embedding Models
+
+Embeddings use **HuggingFace** (via `sentence-transformers`). Models are downloaded automatically on first use.
+
+Change by editing `EMBEDDING_MODEL` in `.env`:
+
+```bash
+# Default (768d)
+EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+
+# Alternatives (768d — no Qdrant changes needed)
+EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
+
+# Larger models (1024d — update QDRANT_VECTOR_DIM=1024)
+EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+EMBEDDING_MODEL=intfloat/e5-large-v2
+```
+
+**After changing embedding model:** delete the Qdrant collection and re-ingest:
+
+```bash
+python -c "from qdrant_client import QdrantClient; QdrantClient('http://localhost:6333').delete_collection('compliance_policies')"
+python scripts/ingest_all.py
+```
+
+If the new model has different dimensions, also update `QDRANT_VECTOR_DIM` in `.env`.
 
 ---
 
 ## Quick-Start (All Steps Combined)
-
-For a fresh machine, run everything in sequence:
 
 ```bash
 # 1. Environment
@@ -318,8 +328,7 @@ uv pip install -r requirements.txt
 
 # 2. Infrastructure
 docker compose up -d
-ollama pull nomic-embed-text
-ollama pull qwen2.5:14b      # or qwen2.5:1.5b for dev
+ollama pull qwen3:14b
 
 # 3. Update .env to match your model
 # Edit LLM_MODEL= to match what you pulled
@@ -333,6 +342,10 @@ python scripts/test_query.py -q "What is the policy on annual leave?"
 
 # 6. View traces
 open http://localhost:6006
+
+# 7. Run evaluation
+python scripts/make_dataset.py eval/datasets/retrieval_test.json
+python eval/run_experiment.py --tier tier1 --name baseline
 ```
 
 ---
@@ -372,27 +385,17 @@ curl http://localhost:11434/api/tags
 ollama list
 
 # Pull the missing model
-ollama pull qwen2.5:14b
+ollama pull qwen3:14b
 
 # Make sure .env matches
 grep LLM_MODEL .env
 ```
 
-### Embedding takes too long
+### Agent doesn't call tools (hallucinated answers)
 
-First ingestion may be slow as Ollama loads the embedding model. Subsequent runs are faster. For 50 documents, expect 2–5 minutes total.
-
-### Agent doesn't call tools (hallucmates answers)
-
-This happens with `qwen2.5:1.5b` — it's too small for reliable ReAct reasoning. Fix:
-
-```bash
-# In .env, change:
-LLM_MODEL=qwen2.5:14b
-
-# Pull the model if needed
-ollama pull qwen2.5:14b
-```
+This happens with smaller models — they skip tool calls and generate answers from general knowledge. Fix:
+- Use `qwen3:14b` or larger
+- Check `json_parse_success` evaluator in Phoenix experiments
 
 ### "Collection not found" error
 
@@ -425,10 +428,6 @@ docker compose ps phoenix
 # Check Phoenix logs
 docker compose logs phoenix
 
-# Verify the OTLP endpoint is reachable
-curl -s -X POST http://localhost:6006/v1/traces
-# Should return "Unsupported content type: None" (not 404 or connection refused)
-
 # If Phoenix is running but traces don't appear, check .env:
 grep PHOENIX .env
 # PHOENIX_ENABLED=true
@@ -437,20 +436,18 @@ grep PHOENIX .env
 
 ### Search returns no results but documents are ingested
 
-Check the confidence threshold. If your queries are very different from policy language, the cosine score may fall below 0.45:
+With hybrid search (`BM25_ENABLED=true`), there's no confidence threshold — results are always returned if any match exists.
+
+With vector-only search (`BM25_ENABLED=false`), check the confidence threshold:
 
 ```bash
-# In .env, try lowering the threshold:
+# In .env, try lowering:
 MIN_CONFIDENCE_SCORE=0.3
 ```
 
-Or verify what's actually in Qdrant:
+### Embedding model download slow / fails
 
-```bash
-curl -s -X POST http://localhost:6333/collections/compliance_policies/points/scroll \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 3, "with_payload": true}' | python3 -m json.tool
-```
+HuggingFace models are cached in `~/.cache/huggingface/`. First download may take a few minutes. If behind a firewall, set `HF_HUB_OFFLINE=1` after initial download.
 
 ---
 
@@ -458,19 +455,22 @@ curl -s -X POST http://localhost:6333/collections/compliance_policies/points/scr
 
 All settings are in `.env` and loaded via `config.py`. No code changes needed.
 
+### Retrieval
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RETRIEVAL_TOP_K` | `10` | Number of chunks returned per search |
+| `BM25_ENABLED` | `true` | Toggle hybrid (vector+BM25) vs vector-only search |
+| `HYBRID_VECTOR_CANDIDATES` | `20` | Vector candidates before RRF fusion |
+| `HYBRID_BM25_CANDIDATES` | `20` | BM25 candidates before RRF fusion |
+| `MIN_CONFIDENCE_SCORE` | `0.45` | Cosine threshold — only used in vector-only mode |
+
 ### Chunking
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CHUNK_MIN_TOKENS` | `50` | Chunks smaller than this are merged with neighbors |
 | `CHUNK_MAX_TOKENS` | `400` | Chunks larger than this are split at sentence boundaries |
-
-### Retrieval
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RETRIEVAL_TOP_K` | `6` | Number of chunks returned per search |
-| `MIN_CONFIDENCE_SCORE` | `0.45` | Below this cosine score → `NO_RELEVANT_POLICY_FOUND` |
 
 ### Agent
 
@@ -492,20 +492,22 @@ All settings are in `.env` and loaded via `config.py`. No code changes needed.
 
 ## Project Status
 
-Steps 0–8 (core RAG pipeline) are complete. The system can:
+The core RAG pipeline + evaluation system are complete. The system can:
 
-- Parse DOCX files with structure-aware chunking
-- Generate embeddings and store in Qdrant
-- Search policies via semantic similarity
-- Fetch full clause text by exact identifier
-- Escalate unanswerable questions with ticket IDs
-- Run an agent that orchestrates all tools via ReAct loop
-- Trace every query end-to-end via Phoenix (LLM calls, tool invocations, latency)
+- Parse DOCX files with structure-aware chunking (headings + ilvl numbering)
+- Generate embeddings via HuggingFace models and store in Qdrant
+- Search policies via hybrid (vector + BM25 with RRF) or vector-only
+- Return structured JSON answers with citations (ComplianceAnswer schema)
+- Escalate unanswerable questions
+- Run a ReAct agent with 3 tools (search, get_section, escalate)
+- Trace every query end-to-end via Phoenix
+- Evaluate with Phoenix Datasets + Experiments (Tier 1, 2, Chatbot)
 
-**Not yet implemented** (Steps 9–13):
+**Not yet implemented:**
 
-- SQLite database for escalations and chat history (Step 9)
-- FastAPI REST API endpoints (Step 10)
-- Email notifications for escalations (Step 11)
-- React frontend chat UI (Step 12)
-- Automated tests (Step 13)
+- SQLite database for escalations and chat history
+- FastAPI REST API endpoints
+- Email notifications for escalations
+- React frontend chat UI
+- Automated tests
+- Tier 3 escalation evaluators
