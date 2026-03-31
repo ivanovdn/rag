@@ -168,6 +168,7 @@ def main():
     print(f"  Experiment:  {args.name}")
     print(f"  Embedding:   {settings.embedding_model}")
     print(f"  LLM:         {settings.llm_model}")
+    print(f"  Ollama:      {settings.active_ollama_url} ({'remote' if settings.use_remote_ollama else 'local'}, timeout={settings.active_request_timeout}s)")
     print(f"  top_k:       {top_k} (from {'--top-k' if args.top_k is not None else '.env'})")
     print(f"  BM25:        {'on' if settings.bm25_enabled else 'off'}")
 

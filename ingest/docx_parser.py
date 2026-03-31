@@ -361,8 +361,9 @@ def parse_docx(filepath: Path, doc_link: str) -> list[PolicyChunk]:
                 clause_num = extract_clause_number(text)
                 if not clause_num:
                     label = extract_label(text)
-                    if label and para.style.name == "List Paragraph":
-                        # Label goes to clause NAME, not clause_number
+                    if label and para.style.name == "List Paragraph" and not current_clause_number:
+                        # Label creates clause only when NOT inside a numbered clause.
+                        # Inside 4.5, bullets like "BambooHR: ..." are just content.
                         flush_buffer()
                         current_clause = label
                         current_clause_number = ""

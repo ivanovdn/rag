@@ -9,10 +9,21 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
+    ollama_remote_url: str = "http://192.168.100.2:11434"
+    use_remote_ollama: bool = False
     llm_model: str = "qwen3:14b"
     embedding_model: str = "nomic-embed-text"
     llm_temperature: float = 0.0
     llm_request_timeout: int = 120
+    llm_remote_request_timeout: int = 300
+
+    @property
+    def active_ollama_url(self) -> str:
+        return self.ollama_remote_url if self.use_remote_ollama else self.ollama_base_url
+
+    @property
+    def active_request_timeout(self) -> int:
+        return self.llm_remote_request_timeout if self.use_remote_ollama else self.llm_request_timeout
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"

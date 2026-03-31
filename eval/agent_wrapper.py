@@ -94,8 +94,8 @@ def build_instrumented_agent(verbose: bool = False) -> AgentWorkflow:
     """
     llm = Ollama(
         model=settings.llm_model,
-        base_url=settings.ollama_base_url,
-        request_timeout=float(settings.llm_request_timeout),
+        base_url=settings.active_ollama_url,
+        request_timeout=float(settings.active_request_timeout),
         temperature=settings.llm_temperature,
     )
     instrumented_tools = [
