@@ -28,8 +28,21 @@ def ingest_document(filepath: Path, doc_link: str) -> int:
 
     delete_document(doc_id)
 
-    # Embed and store in Qdrant
-    embeddings = embed_texts([c.text for c in chunks])
+    # Build embedding text: prepend metadata so doc/section/clause
+    # participate in cosine similarity (not just the chunk body)
+    embed_inputs = []
+    for c in chunks:
+        prefix_parts = []
+        if c.doc_title:
+            prefix_parts.append(f"Document: {c.doc_title}")
+        if c.section:
+            prefix_parts.append(f"Section: {c.section}")
+        if c.clause:
+            prefix_parts.append(f"Clause: {c.clause}")
+        prefix = " | ".join(prefix_parts)
+        embed_inputs.append(f"{prefix}\n{c.text}" if prefix else c.text)
+
+    embeddings = embed_texts(embed_inputs)
     upsert_chunks(chunks, embeddings)
 
     # Sync BM25 index
