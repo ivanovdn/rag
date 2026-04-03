@@ -176,7 +176,7 @@ TIER_CONFIG = {
 def main():
     parser = argparse.ArgumentParser(description="Run Phoenix evaluation experiment.")
     parser.add_argument("--tier", choices=["tier1", "tier2", "chatbot"], required=True)
-    parser.add_argument("--name", required=True, help="Experiment name")
+    parser.add_argument("--name", default=None, help="Experiment name (auto-generated from config if omitted)")
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--description", default=None)
     parser.add_argument("--top-k", type=int, default=None, help="Override retrieval_top_k from .env")
@@ -193,6 +193,13 @@ def main():
     tier_cfg = TIER_CONFIG[args.tier]
     dataset_name = args.dataset or tier_cfg["default_dataset"]
     description = args.description or tier_cfg["description"]
+
+    # Auto-generate experiment name from config if not provided
+    if not args.name:
+        embed_short = settings.embedding_model.split("/")[-1]
+        search = "hybrid" if settings.bm25_enabled else "vector"
+        rerank = f"_rerank-{settings.reranker_top_k}" if settings.reranker_enabled else ""
+        args.name = f"{args.tier}_{embed_short}_{search}_top{top_k}{rerank}"
 
     client_kwargs = {}
     if args.phoenix_url:
@@ -219,7 +226,6 @@ def main():
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
     reranker_info = settings.reranker_model if settings.reranker_enabled else "none"
     reranker_top_k = settings.reranker_top_k if settings.reranker_enabled else None
-
     if args.tier == "tier1":
         task = make_tier1_task(top_k=top_k)
         evaluators = TIER1_EVALUATORS

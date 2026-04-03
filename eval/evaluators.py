@@ -301,6 +301,34 @@ def agent_used_get_section(output, expected):
 
 
 # ============================================================
+# CONFIG EVALUATORS — show settings as columns in Phoenix
+# These return config values as labels, score is always 1.0.
+# Each becomes a visible column in the experiments table.
+# ============================================================
+
+def _make_config_evaluator(name: str, value_fn):
+    """Factory for config evaluators that show settings as Phoenix columns."""
+    def evaluator(output, expected):
+        val = value_fn()
+        return {"score": 1.0, "label": str(val), "explanation": f"{name}={val}"}
+    evaluator.__name__ = name
+    return evaluator
+
+
+def build_config_evaluators():
+    """Build config evaluators from current settings. Call after settings are loaded."""
+    from config import settings
+
+    return [
+        _make_config_evaluator("cfg_embedding", lambda: settings.embedding_model.split("/")[-1]),
+        _make_config_evaluator("cfg_search", lambda: "hybrid" if settings.bm25_enabled else "vector"),
+        _make_config_evaluator("cfg_top_k", lambda: settings.retrieval_top_k),
+        _make_config_evaluator("cfg_reranker", lambda: settings.reranker_model.split("/")[-1] if settings.reranker_enabled else "off"),
+        _make_config_evaluator("cfg_rerank_top_k", lambda: settings.reranker_top_k if settings.reranker_enabled else 0),
+    ]
+
+
+# ============================================================
 # EVALUATOR GROUPS
 # ============================================================
 
