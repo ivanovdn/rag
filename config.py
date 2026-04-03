@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     use_remote_ollama: bool = False
     llm_model: str = "qwen3:14b"
     embedding_model: str = "nomic-embed-text"
+    embedding_query_prefix: str = ""
+    embedding_passage_prefix: str = ""
     llm_temperature: float = 0.0
     llm_request_timeout: int = 120
     llm_remote_request_timeout: int = 300
@@ -37,6 +39,11 @@ class Settings(BaseSettings):
     # Retrieval
     retrieval_top_k: int = 10
     min_confidence_score: float = 0.45
+
+    # Reranker
+    reranker_enabled: bool = False
+    reranker_model: str = "nvidia/llama-nemotron-rerank-1b-v2"
+    reranker_top_k: int = 10  # how many to keep after reranking
 
     # Hybrid search
     bm25_enabled: bool = True

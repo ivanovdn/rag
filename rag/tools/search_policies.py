@@ -17,50 +17,69 @@ def search_policies(query: str, top_k: int = 6) -> str:
         Formatted policy excerpts with document name, section, clause, clause number,
         and full text. Returns "NO_RELEVANT_POLICY_FOUND" if no policies match.
     """
+    # Step 1: Retrieve candidates
     if settings.bm25_enabled:
         from rag.hybrid_search import hybrid_search
 
-        results = hybrid_search(query=query, top_k=top_k)
-
-        if not results:
+        raw = hybrid_search(query=query, top_k=top_k)
+        if not raw:
             return "NO_RELEVANT_POLICY_FOUND"
 
-        formatted = []
-        for i, r in enumerate(results, 1):
-            lines = [
-                f"--- Result {i} [RRF Score: {r['rrf_score']:.4f}] ---",
-                f"Document: {r['doc_title']}",
-                f"Section: {r.get('section', '')}",
-                f"Clause: {r.get('clause', '')}",
-                f"Clause Number: {r.get('clause_number', '')}",
-                f"Doc ID: {r['doc_id']}",
-                f"Text: {r['text']}",
-            ]
-            formatted.append("\n".join(lines))
+        results = [
+            {
+                "doc_title": r["doc_title"],
+                "doc_id": r["doc_id"],
+                "section": r.get("section", ""),
+                "clause": r.get("clause", ""),
+                "clause_number": r.get("clause_number", ""),
+                "text": r["text"],
+                "retrieval_score": r["rrf_score"],
+                "score_type": "rrf",
+            }
+            for r in raw
+        ]
+    else:
+        from rag.embeddings import embed_query
+        from rag.vector_store import search_vectors
 
-        return "\n\n".join(formatted)
+        query_vector = embed_query(query)
+        raw = search_vectors(query_vector, top_k=top_k)
 
-    # Fallback: vector-only search
-    from rag.embeddings import embed_query
-    from rag.vector_store import search_vectors
+        if not raw or raw[0].score < settings.min_confidence_score:
+            return "NO_RELEVANT_POLICY_FOUND"
 
-    query_vector = embed_query(query)
-    results = search_vectors(query_vector, top_k=top_k)
+        results = [
+            {
+                "doc_title": r.payload["doc_title"],
+                "doc_id": r.payload["doc_id"],
+                "section": r.payload.get("section", ""),
+                "clause": r.payload.get("clause", ""),
+                "clause_number": r.payload.get("clause_number", ""),
+                "text": r.payload["text"],
+                "retrieval_score": r.score,
+                "score_type": "cosine",
+            }
+            for r in raw
+        ]
 
-    if not results or results[0].score < settings.min_confidence_score:
-        return "NO_RELEVANT_POLICY_FOUND"
+    # Step 2: Rerank (if enabled)
+    if settings.reranker_enabled and results:
+        from rag.reranker import rerank
 
+        results = rerank(query, results, top_k=settings.reranker_top_k)
+
+    # Step 3: Format for the agent
     formatted = []
     for i, r in enumerate(results, 1):
-        p = r.payload
+        score_label = f"Rerank: {r['rerank_score']:.3f}" if "rerank_score" in r else f"{r['score_type'].upper()}: {r['retrieval_score']:.4f}"
         lines = [
-            f"--- Result {i} [Score: {r.score:.4f}] ---",
-            f"Document: {p['doc_title']}",
-            f"Section: {p.get('section', '')}",
-            f"Clause: {p.get('clause', '')}",
-            f"Clause Number: {p.get('clause_number', '')}",
-            f"Doc ID: {p['doc_id']}",
-            f"Text: {p['text']}",
+            f"--- Result {i} [{score_label}] ---",
+            f"Document: {r['doc_title']}",
+            f"Section: {r.get('section', '')}",
+            f"Clause: {r.get('clause', '')}",
+            f"Clause Number: {r.get('clause_number', '')}",
+            f"Doc ID: {r['doc_id']}",
+            f"Text: {r['text']}",
         ]
         formatted.append("\n".join(lines))
 

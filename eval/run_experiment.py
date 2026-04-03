@@ -27,11 +27,44 @@ def setup_async():
 def make_tier1_task(top_k: int):
     from config import settings
 
+    def _to_result_dicts(raw_results, is_hybrid: bool):
+        """Convert raw search results to a common dict format."""
+        if is_hybrid:
+            return [
+                {
+                    "doc_title": r["doc_title"],
+                    "section": r["section"],
+                    "clause": r.get("clause", ""),
+                    "clause_number": r.get("clause_number", ""),
+                    "text": r.get("text", ""),
+                    "retrieval_score": round(r["rrf_score"], 4),
+                }
+                for r in raw_results
+            ]
+        else:
+            return [
+                {
+                    "doc_title": r.payload.get("doc_title", ""),
+                    "section": r.payload.get("section", ""),
+                    "clause": r.payload.get("clause", ""),
+                    "clause_number": r.payload.get("clause_number", ""),
+                    "text": r.payload.get("text", ""),
+                    "retrieval_score": round(r.score, 4),
+                }
+                for r in raw_results
+            ]
+
     if settings.bm25_enabled:
         from rag.hybrid_search import hybrid_search
 
         def retrieval_task(input):
-            results = hybrid_search(input["question"], top_k=top_k)
+            raw = hybrid_search(input["question"], top_k=top_k)
+            results = _to_result_dicts(raw, is_hybrid=True)
+
+            if settings.reranker_enabled and results:
+                from rag.reranker import rerank
+                results = rerank(input["question"], results, top_k=settings.reranker_top_k)
+
             return {
                 "search_results": [
                     {
@@ -39,7 +72,9 @@ def make_tier1_task(top_k: int):
                         "section": r["section"],
                         "clause": r.get("clause", ""),
                         "clause_number": r.get("clause_number", ""),
-                        "score": round(r["rrf_score"], 4),
+                        "retrieval_score": r.get("retrieval_score", 0),
+                        "rerank_score": r.get("rerank_score"),
+                        "original_rank": r.get("original_rank"),
                     }
                     for r in results
                 ]
@@ -50,15 +85,23 @@ def make_tier1_task(top_k: int):
 
         def retrieval_task(input):
             vector = embed_query(input["question"])
-            results = search_vectors(vector, top_k=top_k)
+            raw = search_vectors(vector, top_k=top_k)
+            results = _to_result_dicts(raw, is_hybrid=False)
+
+            if settings.reranker_enabled and results:
+                from rag.reranker import rerank
+                results = rerank(input["question"], results, top_k=settings.reranker_top_k)
+
             return {
                 "search_results": [
                     {
-                        "doc_title": r.payload.get("doc_title", ""),
-                        "section": r.payload.get("section", ""),
-                        "clause": r.payload.get("clause", ""),
-                        "clause_number": r.payload.get("clause_number", ""),
-                        "score": round(r.score, 4),
+                        "doc_title": r["doc_title"],
+                        "section": r["section"],
+                        "clause": r.get("clause", ""),
+                        "clause_number": r.get("clause_number", ""),
+                        "retrieval_score": r.get("retrieval_score", 0),
+                        "rerank_score": r.get("rerank_score"),
+                        "original_rank": r.get("original_rank"),
                     }
                     for r in results
                 ]
@@ -171,18 +214,23 @@ def main():
     print(f"  Ollama:      {settings.active_ollama_url} ({'remote' if settings.use_remote_ollama else 'local'}, timeout={settings.active_request_timeout}s)")
     print(f"  top_k:       {top_k} (from {'--top-k' if args.top_k is not None else '.env'})")
     print(f"  BM25:        {'on' if settings.bm25_enabled else 'off'}")
+    print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (top_k={settings.reranker_top_k})" if settings.reranker_enabled else ""))
 
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
+    reranker_info = settings.reranker_model if settings.reranker_enabled else "none"
+    reranker_top_k = settings.reranker_top_k if settings.reranker_enabled else None
 
     if args.tier == "tier1":
         task = make_tier1_task(top_k=top_k)
         evaluators = TIER1_EVALUATORS
         metadata = {"search_type": search_type, "embedding_model": settings.embedding_model,
+                     "reranker": reranker_info, "reranker_top_k": reranker_top_k,
                      "top_k": top_k, "tier": "tier1"}
     else:
         task = make_agent_task(verbose=args.verbose)
         evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
         metadata = {"llm": settings.llm_model, "search_type": search_type,
+                     "reranker": reranker_info, "reranker_top_k": reranker_top_k,
                      "agent_type": "react", "top_k": top_k, "tier": args.tier,
                      "structured_output": True}
 
