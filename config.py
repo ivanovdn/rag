@@ -40,10 +40,13 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 10
     min_confidence_score: float = 0.45
 
-    # Reranker
+    # Reranker (llama-server)
     reranker_enabled: bool = False
-    reranker_model: str = "nvidia/llama-nemotron-rerank-1b-v2"
-    reranker_top_k: int = 10  # how many to keep after reranking
+    reranker_url: str = "http://localhost:8081"
+    reranker_model: str = "qwen3-reranker-0.6b-q8"
+    reranker_top_n: int = 6
+    reranker_candidates: int = 20
+    reranker_instruction: str = "Given an employee compliance question, retrieve the internal policy clause that answers it"
 
     # Hybrid search
     bm25_enabled: bool = True
