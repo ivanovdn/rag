@@ -1,116 +1,99 @@
 """
-Cross-encoder reranker for post-retrieval reranking.
+Reranker module — calls llama-server /v1/rerank endpoint.
 
-Default model: nvidia/llama-nemotron-rerank-1b-v2
-- Uses raw transformers API (NOT sentence-transformers CrossEncoder)
-- Prompt template: "question:{query} \n \n passage:{passage}"
-- trust_remote_code=True (custom LlamaBidirectional architecture)
-- Returns raw logit scores (higher = more relevant)
+Model: Qwen3-Reranker-0.6B (GGUF via llama-server)
+Server: llama-server on localhost:8081
+
+Query format: "<Instruct>: {instruction}\n<Query>: {user_question}"
+API: POST /v1/rerank with {query, documents, top_n}
+Response: {results: [{index, relevance_score}, ...]} sorted by score desc
+
+Falls back to original ranking if server is unavailable — never blocks the pipeline.
 """
 
 import logging
-import os
 
-import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import httpx
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-_model = None
-_tokenizer = None
 
-
-def _load_reranker():
-    """Lazy-load the reranker model and tokenizer."""
-    global _model, _tokenizer
-    if _model is None:
-        if settings.hf_token:
-            os.environ["HF_TOKEN"] = settings.hf_token
-
-        logger.info(f"Loading reranker: {settings.reranker_model}")
-        _tokenizer = AutoTokenizer.from_pretrained(
-            settings.reranker_model,
-            trust_remote_code=True,
-            padding_side="left",
-        )
-        _tokenizer.pad_token = _tokenizer.eos_token
-
-        _model = AutoModelForSequenceClassification.from_pretrained(
-            settings.reranker_model,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-        ).eval()
-
-        logger.info("Reranker loaded")
-
-
-def _prompt_template(query: str, passage: str) -> str:
-    """Format query and passage with the Nemotron prompt template."""
-    return f"question:{query} \n \n passage:{passage}"
+def _build_query(question: str) -> str:
+    """Build the reranker query with instruction prefix."""
+    instruction = settings.reranker_instruction
+    if instruction:
+        return f"<Instruct>: {instruction}\n<Query>: {question}"
+    return question
 
 
 def rerank(
     query: str,
     results: list[dict],
-    top_k: int | None = None,
+    top_n: int | None = None,
 ) -> list[dict]:
     """
-    Rerank search results using the cross-encoder.
+    Rerank search results via llama-server /v1/rerank.
 
     Args:
         query: The user's search query.
         results: List of dicts, each must have "text" key.
-        top_k: How many to keep after reranking (default: settings.reranker_top_k).
+        top_n: How many to keep after reranking (default: settings.reranker_top_n).
 
     Returns:
-        Reranked list of dicts, trimmed to top_k. Each dict gets:
-        - "rerank_score": float (raw logit from cross-encoder)
+        Reranked list of dicts, trimmed to top_n. Each dict gets:
+        - "rerank_score": float (0.0–1.0 relevance probability)
         - "original_rank": int (position before reranking, 1-indexed)
     """
     if not results:
         return results
 
-    k = top_k or settings.reranker_top_k
-    _load_reranker()
+    n = top_n or settings.reranker_top_n
+    formatted_query = _build_query(query)
+    documents = [r.get("text", "") for r in results]
 
-    # Build formatted texts using the prompt template
-    texts = [_prompt_template(query, r.get("text", "")) for r in results]
+    # Tag original ranks before reranking
+    for i, r in enumerate(results):
+        r["original_rank"] = i + 1
 
-    # Tokenize as single sequences (NOT pairs)
-    batch_dict = _tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
-        return_tensors="pt",
-        max_length=8192,
-    )
-
-    # Move to same device as model
-    device = next(_model.parameters()).device
-    batch_dict = {k: v.to(device) for k, v in batch_dict.items()}
-
-    # Score
-    with torch.inference_mode():
-        logits = _model(**batch_dict).logits
-        scores = logits.view(-1).float().tolist()
-
-    # Attach scores and original rank
-    for i, (result, score) in enumerate(zip(results, scores)):
-        result["rerank_score"] = score
-        result["original_rank"] = i + 1
-
-    # Sort by rerank score descending
-    reranked = sorted(results, key=lambda x: x["rerank_score"], reverse=True)
-
-    # Log reranking effect
-    if reranked:
-        top = reranked[0]
-        logger.info(
-            f"Reranked {len(results)} → top_k={k} | "
-            f"Best: score={top['rerank_score']:.3f} (was rank {top['original_rank']}) | "
-            f"{top.get('doc_title', '')[:40]}"
+    try:
+        response = httpx.post(
+            f"{settings.reranker_url}/v1/rerank",
+            json={
+                "query": formatted_query,
+                "documents": documents,
+                "top_n": n,
+            },
+            timeout=20.0,
         )
+        response.raise_for_status()
+        data = response.json()
 
-    return reranked[:k]
+        # Map scores back to results
+        reranked = []
+        for item in data["results"]:
+            idx = item["index"]
+            result = results[idx].copy()
+            result["rerank_score"] = item["relevance_score"]
+            reranked.append(result)
+
+        if reranked:
+            top = reranked[0]
+            logger.info(
+                f"Reranked {len(results)} → {len(reranked)} | "
+                f"Best: score={top['rerank_score']:.4f} (was rank {top['original_rank']}) | "
+                f"{top.get('doc_title', '')[:40]}"
+            )
+
+        return reranked
+
+    except httpx.ConnectError:
+        logger.warning(f"Reranker unavailable at {settings.reranker_url} — using original ranking")
+        return results[:n]
+    except httpx.TimeoutException:
+        logger.warning("Reranker timed out — using original ranking")
+        return results[:n]
+    except Exception as e:
+        logger.warning(f"Reranker error: {e} — using original ranking")
+        return results[:n]

@@ -17,11 +17,14 @@ def search_policies(query: str, top_k: int = 6) -> str:
         Formatted policy excerpts with document name, section, clause, clause number,
         and full text. Returns "NO_RELEVANT_POLICY_FOUND" if no policies match.
     """
+    # How many candidates to retrieve (more when reranker will rescore)
+    retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
+
     # Step 1: Retrieve candidates
     if settings.bm25_enabled:
         from rag.hybrid_search import hybrid_search
 
-        raw = hybrid_search(query=query, top_k=top_k)
+        raw = hybrid_search(query=query, top_k=retrieve_k)
         if not raw:
             return "NO_RELEVANT_POLICY_FOUND"
 
@@ -43,9 +46,13 @@ def search_policies(query: str, top_k: int = 6) -> str:
         from rag.vector_store import search_vectors
 
         query_vector = embed_query(query)
-        raw = search_vectors(query_vector, top_k=top_k)
+        raw = search_vectors(query_vector, top_k=retrieve_k)
 
-        if not raw or raw[0].score < settings.min_confidence_score:
+        if not raw:
+            return "NO_RELEVANT_POLICY_FOUND"
+
+        # Apply confidence threshold only when reranker is OFF
+        if not settings.reranker_enabled and raw[0].score < settings.min_confidence_score:
             return "NO_RELEVANT_POLICY_FOUND"
 
         results = [
@@ -66,12 +73,15 @@ def search_policies(query: str, top_k: int = 6) -> str:
     if settings.reranker_enabled and results:
         from rag.reranker import rerank
 
-        results = rerank(query, results, top_k=settings.reranker_top_k)
+        results = rerank(query, results, top_n=settings.reranker_top_n)
 
     # Step 3: Format for the agent
     formatted = []
     for i, r in enumerate(results, 1):
-        score_label = f"Rerank: {r['rerank_score']:.3f}" if "rerank_score" in r else f"{r['score_type'].upper()}: {r['retrieval_score']:.4f}"
+        if "rerank_score" in r:
+            score_label = f"Rerank: {r['rerank_score']:.4f}"
+        else:
+            score_label = f"{r['score_type'].upper()}: {r['retrieval_score']:.4f}"
         lines = [
             f"--- Result {i} [{score_label}] ---",
             f"Document: {r['doc_title']}",

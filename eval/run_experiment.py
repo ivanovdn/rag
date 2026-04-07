@@ -54,16 +54,18 @@ def make_tier1_task(top_k: int):
                 for r in raw_results
             ]
 
+    retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
+
     if settings.bm25_enabled:
         from rag.hybrid_search import hybrid_search
 
         def retrieval_task(input):
-            raw = hybrid_search(input["question"], top_k=top_k)
+            raw = hybrid_search(input["question"], top_k=retrieve_k)
             results = _to_result_dicts(raw, is_hybrid=True)
 
             if settings.reranker_enabled and results:
                 from rag.reranker import rerank
-                results = rerank(input["question"], results, top_k=settings.reranker_top_k)
+                results = rerank(input["question"], results, top_n=settings.reranker_top_n)
 
             return {
                 "search_results": [
@@ -85,12 +87,12 @@ def make_tier1_task(top_k: int):
 
         def retrieval_task(input):
             vector = embed_query(input["question"])
-            raw = search_vectors(vector, top_k=top_k)
+            raw = search_vectors(vector, top_k=retrieve_k)
             results = _to_result_dicts(raw, is_hybrid=False)
 
             if settings.reranker_enabled and results:
                 from rag.reranker import rerank
-                results = rerank(input["question"], results, top_k=settings.reranker_top_k)
+                results = rerank(input["question"], results, top_n=settings.reranker_top_n)
 
             return {
                 "search_results": [
@@ -198,8 +200,11 @@ def main():
     if not args.name:
         embed_short = settings.embedding_model.split("/")[-1]
         search = "hybrid" if settings.bm25_enabled else "vector"
-        rerank = f"_rerank-{settings.reranker_top_k}" if settings.reranker_enabled else ""
-        args.name = f"{args.tier}_{embed_short}_{search}_top{top_k}{rerank}"
+        if settings.reranker_enabled:
+            reranker_short = settings.reranker_model.replace("/", "-")
+            args.name = f"{args.tier}_{embed_short}_{search}_cand{settings.reranker_candidates}_{reranker_short}_top{settings.reranker_top_n}"
+        else:
+            args.name = f"{args.tier}_{embed_short}_{search}_top{top_k}"
 
     client_kwargs = {}
     if args.phoenix_url:
@@ -221,22 +226,25 @@ def main():
     print(f"  Ollama:      {settings.active_ollama_url} ({'remote' if settings.use_remote_ollama else 'local'}, timeout={settings.active_request_timeout}s)")
     print(f"  top_k:       {top_k} (from {'--top-k' if args.top_k is not None else '.env'})")
     print(f"  BM25:        {'on' if settings.bm25_enabled else 'off'}")
-    print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (top_k={settings.reranker_top_k})" if settings.reranker_enabled else ""))
+    print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (candidates={settings.reranker_candidates}, top_n={settings.reranker_top_n})" if settings.reranker_enabled else ""))
 
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
     reranker_info = settings.reranker_model if settings.reranker_enabled else "none"
-    reranker_top_k = settings.reranker_top_k if settings.reranker_enabled else None
+
     if args.tier == "tier1":
         task = make_tier1_task(top_k=top_k)
         evaluators = TIER1_EVALUATORS
         metadata = {"search_type": search_type, "embedding_model": settings.embedding_model,
-                     "reranker": reranker_info, "reranker_top_k": reranker_top_k,
+                     "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
+                     "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "top_k": top_k, "tier": "tier1"}
     else:
         task = make_agent_task(verbose=args.verbose)
         evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
         metadata = {"llm": settings.llm_model, "search_type": search_type,
-                     "reranker": reranker_info, "reranker_top_k": reranker_top_k,
+                     "reranker": reranker_info,
+                     "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
+                     "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "agent_type": "react", "top_k": top_k, "tier": args.tier,
                      "structured_output": True}
 
