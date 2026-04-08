@@ -36,17 +36,21 @@ def get_section(doc_id: str, section_name: str) -> str:
     if not results:
         return f"No section found for doc_id='{doc_id}', section='{section_name}'"
 
-    parts = []
-    for point in sorted(results, key=lambda p: p.payload.get("chunk_index", 0)):
-        p = point.payload
-        clause = p.get("clause_number", "")
-        header = f"Document: {p['doc_title']}\nSection: {p['section_display']}"
-        if clause:
-            header += f"\nClause: {clause}"
-        header += f"\nLink: {p['doc_link']}"
-        parts.append(f"{header}\nText: {p['text']}")
+    sorted_results = sorted(results, key=lambda p: p.payload.get("chunk_index", 0))
+    first = sorted_results[0].payload
 
-    return "\n\n---\n\n".join(parts)
+    lines = [
+        "=== FULL SECTION ===",
+        "",
+        f"Document: {first['doc_title']}",
+        f"Section: {first.get('section', '')}",
+        "---",
+    ]
+
+    for point in sorted_results:
+        lines.append(point.payload["text"])
+
+    return "\n".join(lines)
 
 
 get_section_tool = FunctionTool.from_defaults(fn=get_section)

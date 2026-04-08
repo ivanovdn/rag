@@ -2,6 +2,8 @@ from llama_index.core.tools import FunctionTool
 
 from config import settings
 
+_last_search_results: list[dict] = []
+
 
 def search_policies(query: str, top_k: int = 6) -> str:
     """
@@ -17,6 +19,8 @@ def search_policies(query: str, top_k: int = 6) -> str:
         Formatted policy excerpts with document name, section, clause, clause number,
         and full text. Returns "NO_RELEVANT_POLICY_FOUND" if no policies match.
     """
+    global _last_search_results
+
     # How many candidates to retrieve (more when reranker will rescore)
     retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
 
@@ -26,6 +30,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
 
         raw = hybrid_search(query=query, top_k=retrieve_k)
         if not raw:
+            _last_search_results = []
             return "NO_RELEVANT_POLICY_FOUND"
 
         results = [
@@ -49,10 +54,12 @@ def search_policies(query: str, top_k: int = 6) -> str:
         raw = search_vectors(query_vector, top_k=retrieve_k)
 
         if not raw:
+            _last_search_results = []
             return "NO_RELEVANT_POLICY_FOUND"
 
         # Apply confidence threshold only when reranker is OFF
         if not settings.reranker_enabled and raw[0].score < settings.min_confidence_score:
+            _last_search_results = []
             return "NO_RELEVANT_POLICY_FOUND"
 
         results = [
@@ -75,25 +82,42 @@ def search_policies(query: str, top_k: int = 6) -> str:
 
         results = rerank(query, results, top_n=settings.reranker_top_n)
 
-    # Step 3: Format for the agent
-    formatted = []
-    for i, r in enumerate(results, 1):
-        if "rerank_score" in r:
-            score_label = f"Rerank: {r['rerank_score']:.4f}"
-        else:
-            score_label = f"{r['score_type'].upper()}: {r['retrieval_score']:.4f}"
-        lines = [
-            f"--- Result {i} [{score_label}] ---",
-            f"Document: {r['doc_title']}",
-            f"Section: {r.get('section', '')}",
-            f"Clause: {r.get('clause', '')}",
-            f"Clause Number: {r.get('clause_number', '')}",
-            f"Doc ID: {r['doc_id']}",
-            f"Text: {r['text']}",
-        ]
-        formatted.append("\n".join(lines))
+    # Step 3: Capture structured results for eval logging
+    _last_search_results = [
+        {
+            "doc_title": r["doc_title"],
+            "section": r.get("section", ""),
+            "clause": r.get("clause", ""),
+            "clause_number": r.get("clause_number", ""),
+            "rerank_score": round(r.get("rerank_score", 0), 4),
+            "retrieval_score": round(r.get("retrieval_score", 0), 4),
+        }
+        for r in results
+    ]
 
-    return "\n\n".join(formatted)
+    # Step 4: Format for the agent
+    return format_sources(results)
+
+
+def format_sources(search_results: list[dict]) -> str:
+    """Format search results for the agent. No scores, no doc_id — just policy content."""
+    if not search_results:
+        return "=== RETRIEVED POLICY SOURCES ===\n\nNO_RELEVANT_POLICY_FOUND"
+
+    lines = ["=== RETRIEVED POLICY SOURCES ==="]
+
+    for i, r in enumerate(search_results):
+        lines.append("")  # blank line between sources
+        lines.append(f"[Source {i + 1}] {r['doc_title']}")
+        lines.append(f"Section: {r['section']}")
+        if r.get("clause") and r.get("clause_number"):
+            lines.append(f"Clause {r['clause_number']}: {r['clause']}")
+        elif r.get("clause"):
+            lines.append(f"Clause: {r['clause']}")
+        lines.append("---")
+        lines.append(r["text"])
+
+    return "\n".join(lines)
 
 
 search_policies_tool = FunctionTool.from_defaults(fn=search_policies)

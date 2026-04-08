@@ -11,7 +11,6 @@ from llama_index.core.agent.workflow import AgentWorkflow
 from llama_index.llms.ollama import Ollama
 
 from config import settings
-from rag.hybrid_search import hybrid_search
 from rag.tools.search_policies import search_policies as _original_search
 from rag.tools.get_section import get_section as _original_get_section
 from rag.tools.escalate import escalate_to_compliance as _original_escalate
@@ -36,23 +35,19 @@ def clear_log() -> None:
 # ============================================================
 
 def _logged_search_policies(query: str, top_k: int = 6) -> str:
-    raw_results = hybrid_search(query, top_k=top_k)
+    """Logged version — calls the real search pipeline (with reranker) and captures results."""
+    from rag.tools.search_policies import _last_search_results
+
+    result_text = _original_search(query, top_k)
+
     _tool_call_log.append({
         "tool": "search_policies",
         "query": query,
         "top_k": top_k,
-        "results": [
-            {
-                "doc_title": r["doc_title"],
-                "section": r["section"],
-                "clause": r.get("clause", ""),
-                "clause_number": r.get("clause_number", ""),
-                "rrf_score": round(r["rrf_score"], 4),
-            }
-            for r in raw_results
-        ],
+        "results": list(_last_search_results),
     })
-    return _original_search(query, top_k)
+
+    return result_text
 
 
 def _logged_get_section(doc_id: str, section_name: str) -> str:
