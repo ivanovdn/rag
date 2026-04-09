@@ -1,12 +1,11 @@
-from pydantic import BaseModel, Field
 from llama_index.core.agent.workflow import AgentWorkflow
 from llama_index.llms.ollama import Ollama
+from pydantic import BaseModel, Field
 
 from config import settings
-from rag.tools.search_policies import search_policies_tool
-from rag.tools.get_section import get_section_tool
 from rag.tools.escalate import escalate_to_compliance_tool
-
+from rag.tools.get_section import get_section_tool
+from rag.tools.search_policies import search_policies_tool
 
 # ============================================================
 # Response schema
@@ -14,23 +13,43 @@ from rag.tools.escalate import escalate_to_compliance_tool
 
 
 class Citation(BaseModel):
-    source_number: int = Field(default=0, description="Matches [Source N] from search results")
-    doc_title: str = Field(description="Full document title exactly as shown in search results")
+    source_number: int = Field(
+        default=0, description="Matches [Source N] from search results"
+    )
+    doc_title: str = Field(
+        description="Full document title exactly as shown in search results"
+    )
     section: str = Field(description="Section name exactly as shown in search results")
-    clause: str = Field(description="Clause name exactly as shown in search results (empty string if no clause)")
-    clause_number: str = Field(description="Clause number exactly as shown in search results, e.g. '4.7' (empty string if no clause)")
-    quote: str = Field(description="Exact quote from the policy text that answers the question. Copy verbatim, do not paraphrase.")
+    clause: str = Field(
+        description="Clause name exactly as shown in search results (empty string if no clause)"
+    )
+    clause_number: str = Field(
+        description="Clause number exactly as shown in search results, e.g. '4.7' (empty string if no clause)"
+    )
+    quote: str = Field(
+        description="Exact quote from the policy text that answers the question. Copy verbatim, do not paraphrase."
+    )
 
 
 class Escalation(BaseModel):
-    needed: bool = Field(description="True ONLY if search_policies returned NO_RELEVANT_POLICY_FOUND or the question requires legal interpretation beyond policy text")
-    reason: str = Field(default="", description="Why escalation is needed. Empty string if not needed.")
+    needed: bool = Field(
+        description="True ONLY if search_policies returned NO_RELEVANT_POLICY_FOUND or the question requires legal interpretation beyond policy text"
+    )
+    reason: str = Field(
+        default="", description="Why escalation is needed. Empty string if not needed."
+    )
 
 
 class ComplianceAnswer(BaseModel):
-    answer: str = Field(description="Direct answer pointing the user to the relevant policy. Do NOT interpret or paraphrase policy — state what the policy says and where to find it.")
-    citations: list[Citation] = Field(description="One or more policy sources. Copy doc_title, section, clause, clause_number exactly from search results.")
-    escalation: Escalation = Field(description="Set needed=true only if no relevant policy was found.")
+    answer: str = Field(
+        description="Direct answer pointing the user to the relevant policy. Do NOT interpret or paraphrase policy — state what the policy says and where to find it."
+    )
+    citations: list[Citation] = Field(
+        description="One or more policy sources. Copy doc_title, section, clause, clause_number exactly from search results."
+    )
+    escalation: Escalation = Field(
+        description="Set needed=true only if no relevant policy was found."
+    )
 
 
 # ============================================================
