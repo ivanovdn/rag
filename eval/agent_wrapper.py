@@ -36,7 +36,7 @@ def clear_log() -> None:
 
 def _logged_search_policies(query: str, top_k: int = 6) -> str:
     """Logged version — calls the real search pipeline (with reranker) and captures results."""
-    from rag.tools.search_policies import _last_search_results
+    import rag.tools.search_policies as _sp_module
 
     result_text = _original_search(query, top_k)
 
@@ -44,7 +44,7 @@ def _logged_search_policies(query: str, top_k: int = 6) -> str:
         "tool": "search_policies",
         "query": query,
         "top_k": top_k,
-        "results": list(_last_search_results),
+        "results": list(_sp_module._last_search_results),
     })
 
     return result_text
