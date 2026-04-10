@@ -29,8 +29,18 @@ class Settings(BaseSettings):
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
+    qdrant_remote_url: str = "http://localhost:6333"
+    use_remote_qdrant: bool = False
     qdrant_collection: str = "compliance_policies"
     qdrant_vector_dim: int = 768
+
+    @property
+    def active_qdrant_url(self) -> str:
+        return self.qdrant_remote_url if self.use_remote_qdrant else self.qdrant_url
+
+    # Embeddings
+    embedding_source: str = "huggingface"  # "huggingface" or "ollama"
+    ollama_embedding_url: str = "http://localhost:11434"
 
     # Documents
     policy_docs_folder: str = "./policies"
@@ -40,10 +50,11 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 10
     min_confidence_score: float = 0.45
 
-    # Reranker (llama-server)
+    # Reranker (any /v1/rerank-compatible server: llama-server, vLLM, etc.)
     reranker_enabled: bool = False
     reranker_url: str = "http://localhost:8081"
     reranker_model: str = "qwen3-reranker-0.6b-q8"
+    reranker_query_template: str = "<Instruct>: {instruction}\n<Query>: {query}"
     reranker_top_n: int = 6
     reranker_candidates: int = 20
     reranker_instruction: str = "Given an employee compliance question, retrieve the internal policy clause that answers it"

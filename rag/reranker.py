@@ -1,11 +1,8 @@
 """
-Reranker module — calls llama-server /v1/rerank endpoint.
+Reranker module — calls any /v1/rerank-compatible endpoint (llama-server, vLLM, etc.)
 
-Model: Qwen3-Reranker-0.6B (GGUF via llama-server)
-Server: llama-server on localhost:8081
-
-Query format: "<Instruct>: {instruction}\n<Query>: {user_question}"
-API: POST /v1/rerank with {query, documents, top_n}
+Query template is configurable via RERANKER_QUERY_TEMPLATE.
+API: POST /v1/rerank with {model, query, documents, top_n}
 Response: {results: [{index, relevance_score}, ...]} sorted by score desc
 
 Falls back to original ranking if server is unavailable — never blocks the pipeline.
@@ -21,11 +18,16 @@ logger = logging.getLogger(__name__)
 
 
 def _build_query(question: str) -> str:
-    """Build the reranker query with instruction prefix."""
-    instruction = settings.reranker_instruction
-    if instruction:
-        return f"<Instruct>: {instruction}\n<Query>: {question}"
-    return question
+    """Build the reranker query from configurable template."""
+    template = settings.reranker_query_template
+    if not template or template == "{query}":
+        return question
+    # .env files store \n as literal two chars — convert to real newline
+    template = template.replace("\\n", "\n")
+    return template.format(
+        instruction=settings.reranker_instruction,
+        query=question,
+    )
 
 
 def rerank(
@@ -61,6 +63,7 @@ def rerank(
         response = httpx.post(
             f"{settings.reranker_url}/v1/rerank",
             json={
+                "model": settings.reranker_model,
                 "query": formatted_query,
                 "documents": documents,
                 "top_n": n,
