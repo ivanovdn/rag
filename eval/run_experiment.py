@@ -182,6 +182,8 @@ def main():
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--description", default=None)
     parser.add_argument("--top-k", type=int, default=None, help="Override retrieval_top_k from .env")
+    parser.add_argument("--mode", choices=["agentic", "vanilla"], default="agentic",
+                        help="Pipeline mode: 'agentic' (ReAct agent) or 'vanilla' (single LLM call)")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--phoenix-url", default=None)
     args = parser.parse_args()
@@ -198,13 +200,14 @@ def main():
 
     # Auto-generate experiment name from config if not provided
     if not args.name:
+        mode_prefix = "vanilla" if args.mode == "vanilla" else "agentic"
         embed_short = settings.embedding_model.split("/")[-1]
         search = "hybrid" if settings.bm25_enabled else "vector"
         if settings.reranker_enabled:
             reranker_short = settings.reranker_model.replace("/", "-")
-            args.name = f"{args.tier}_{embed_short}_{search}_cand{settings.reranker_candidates}_{reranker_short}_top{settings.reranker_top_n}"
+            args.name = f"{mode_prefix}_{args.tier}_{embed_short}_{search}_cand{settings.reranker_candidates}_{reranker_short}_top{settings.reranker_top_n}"
         else:
-            args.name = f"{args.tier}_{embed_short}_{search}_top{top_k}"
+            args.name = f"{mode_prefix}_{args.tier}_{embed_short}_{search}_top{top_k}"
 
     client_kwargs = {}
     if args.phoenix_url:
@@ -219,6 +222,7 @@ def main():
         sys.exit(1)
 
     print(f"  Tier:        {args.tier}")
+    print(f"  Mode:        {args.mode}")
     print(f"  Dataset:     {dataset.name} ({len(dataset)} examples)")
     print(f"  Experiment:  {args.name}")
     print(f"  Embedding:   {settings.embedding_model}")
@@ -238,6 +242,16 @@ def main():
                      "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "top_k": top_k, "tier": "tier1"}
+    elif args.mode == "vanilla":
+        from eval.pipeline_wrapper import run_pipeline_task
+        task = run_pipeline_task
+        evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
+        metadata = {"llm": settings.llm_model, "search_type": search_type,
+                     "reranker": reranker_info,
+                     "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
+                     "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
+                     "agent_type": "vanilla", "top_k": top_k, "tier": args.tier,
+                     "structured_output": True}
     else:
         task = make_agent_task(verbose=args.verbose)
         evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
