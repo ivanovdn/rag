@@ -69,11 +69,26 @@ def _match_result(r, exp):
 # ============================================================
 
 def hit_evaluator(output, expected):
-    """Did ANY retrieved chunk match expected doc+section+clause?"""
+    """Did ANY retrieved chunk match expected doc+section+clause?
+    match_mode='any': pass if ANY expected citation is found in search results.
+    match_mode='all' (default): pass only if ALL expected citations are found.
+    """
     results = _get_search_results(output)
     if results is None:
         return {"score": 0.0, "label": "error", "explanation": "Task returned None"}
     expectations = _extract_expected(expected)
+    match_mode = expected.get("match_mode", "all")
+
+    if match_mode == "any":
+        for exp in expectations:
+            for rank, r in enumerate(results, start=1):
+                if _match_result(r, exp):
+                    return {"score": 1.0, "label": f"any_hit@{rank}",
+                            "explanation": f"Matched: {exp['doc']} > {exp['section']} > {exp['clause']} at rank {rank}"}
+        return {"score": 0.0, "label": "any_miss",
+                "explanation": f"None of {len(expectations)} valid citations found in results"}
+
+    # Default: all mode
     for exp in expectations:
         found = False
         for rank, r in enumerate(results, start=1):
@@ -179,7 +194,10 @@ def answer_coverage(output, expected):
 
 
 def citation_doc_accuracy(output, expected):
-    """Did the agent's JSON citations reference the correct DOCUMENT?"""
+    """Did the agent's JSON citations reference the correct DOCUMENT?
+    match_mode='any': pass if ANY of the expected docs were cited.
+    match_mode='all' (default): fraction of expected docs that were cited.
+    """
     if output is None:
         return {"score": 0.0, "label": "error", "explanation": "Task returned None"}
     agent_citations = output.get("citations", [])
@@ -188,6 +206,21 @@ def citation_doc_accuracy(output, expected):
         return {"score": 1.0, "label": "skip", "explanation": "No expected doc"}
     if not agent_citations:
         return {"score": 0.0, "label": "no_citations", "explanation": "Agent returned no citations"}
+
+    match_mode = expected.get("match_mode", "all")
+
+    if match_mode == "any":
+        for exp in expectations:
+            if not exp["doc"]:
+                continue
+            found = any(exp["doc"].lower() == c.get("doc_title", "").strip().lower() for c in agent_citations)
+            if found:
+                return {"score": 1.0, "label": "any_hit",
+                        "explanation": f"Matched: {exp['doc']}"}
+        return {"score": 0.0, "label": "any_miss",
+                "explanation": f"None of {len(expectations)} valid docs were cited"}
+
+    # Default: all mode
     hits, misses = [], []
     for exp in expectations:
         if not exp["doc"]:
@@ -201,7 +234,9 @@ def citation_doc_accuracy(output, expected):
 
 
 def citation_section_accuracy(output, expected):
-    """Did the agent's JSON citations reference the correct DOCUMENT + SECTION?"""
+    """Did the agent's JSON citations reference the correct DOCUMENT + SECTION?
+    match_mode='any': pass if ANY of the expected doc+section were cited.
+    """
     if output is None:
         return {"score": 0.0, "label": "error", "explanation": "Task returned None"}
     agent_citations = output.get("citations", [])
@@ -210,6 +245,24 @@ def citation_section_accuracy(output, expected):
         return {"score": 1.0, "label": "skip", "explanation": "No expected citations"}
     if not agent_citations:
         return {"score": 0.0, "label": "no_citations", "explanation": "Agent returned no citations"}
+
+    match_mode = expected.get("match_mode", "all")
+
+    if match_mode == "any":
+        for exp in expectations:
+            if not exp["section"]:
+                continue
+            found = any(
+                (not exp["doc"] or exp["doc"].lower() == c.get("doc_title", "").strip().lower())
+                and exp["section"].lower() in c.get("section", "").strip().lower()
+                for c in agent_citations)
+            if found:
+                return {"score": 1.0, "label": "any_hit",
+                        "explanation": f"Matched: {exp['doc']} > {exp['section']}"}
+        return {"score": 0.0, "label": "any_miss",
+                "explanation": f"None of {len(expectations)} valid sections were cited"}
+
+    # Default: all mode
     hits, misses = [], []
     for exp in expectations:
         if not exp["section"]:
@@ -228,7 +281,9 @@ def citation_section_accuracy(output, expected):
 
 def citation_clause_accuracy(output, expected):
     """Did the agent's JSON citations reference the correct DOC + SECTION + CLAUSE?
-    Skips if no expected clause specified."""
+    Skips if no expected clause specified.
+    match_mode='any': pass if ANY of the expected doc+section+clause were cited.
+    """
     if output is None:
         return {"score": 0.0, "label": "error", "explanation": "Task returned None"}
     agent_citations = output.get("citations", [])
@@ -238,6 +293,25 @@ def citation_clause_accuracy(output, expected):
         return {"score": 1.0, "label": "skip", "explanation": "No expected clauses in dataset"}
     if not agent_citations:
         return {"score": 0.0, "label": "no_citations", "explanation": "Agent returned no citations"}
+
+    match_mode = expected.get("match_mode", "all")
+
+    if match_mode == "any":
+        for exp in expectations:
+            if not exp["clause"]:
+                continue
+            found = any(
+                (not exp["doc"] or exp["doc"].lower() == c.get("doc_title", "").strip().lower())
+                and (not exp["section"] or exp["section"].lower() in c.get("section", "").strip().lower())
+                and exp["clause"].lower() in c.get("clause", "").strip().lower()
+                for c in agent_citations)
+            if found:
+                return {"score": 1.0, "label": "any_hit",
+                        "explanation": f"Matched: {exp['doc']} > {exp['section']} > {exp['clause']}"}
+        return {"score": 0.0, "label": "any_miss",
+                "explanation": f"None of {len(expectations)} valid clauses were cited"}
+
+    # Default: all mode
     hits, misses = [], []
     for exp in expectations:
         if not exp["clause"]:
