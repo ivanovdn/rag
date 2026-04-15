@@ -35,6 +35,11 @@ class NumberingResolver:
         self.num_to_abstract: dict[str, str] = {}
         self.abstract_levels: dict[str, dict] = {}
         self.counters: dict[str, dict[str, int]] = {}
+        # Track the last counter value seen at each ilvl across decimal numIds.
+        # Word continues numbering across different numIds that share the same
+        # visual sequence (e.g. "1. Section A" then "2. Section B" even if
+        # they reference different numId entries).
+        self.last_decimal_counter: dict[str, int] = {}
 
         self._parse_numbering(doc)
 
@@ -112,10 +117,20 @@ class NumberingResolver:
 
         # Initialize level counter if needed
         if ilvl not in self.counters[num_id]:
-            start = level_def.get("start", 1)
-            self.counters[num_id][ilvl] = start
+            # For decimal numbering at level 0, continue from the previous
+            # numId's counter (Word renders sequential sections this way even
+            # when they technically reference different numIds).
+            if num_fmt == "decimal" and ilvl_int == 0 and ilvl in self.last_decimal_counter:
+                self.counters[num_id][ilvl] = self.last_decimal_counter[ilvl] + 1
+            else:
+                start = level_def.get("start", 1)
+                self.counters[num_id][ilvl] = start
         else:
             self.counters[num_id][ilvl] += 1
+
+        # Track the last decimal counter value at each level for cross-numId continuation
+        if num_fmt == "decimal":
+            self.last_decimal_counter[ilvl] = self.counters[num_id][ilvl]
 
         # Reset deeper levels
         for deeper_ilvl in list(self.counters[num_id].keys()):
