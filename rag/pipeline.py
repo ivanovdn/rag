@@ -8,11 +8,13 @@ Usage:
 """
 
 import json
+import time
 import httpx
 
 from config import settings
 from rag.tools.search_policies import search_policies
 from rag.agent import SYSTEM_PROMPT
+from rag.observability import get_tracer
 
 
 def run_query(question: str) -> dict:
@@ -26,26 +28,44 @@ def run_query(question: str) -> dict:
         "escalation": {"needed": bool, "reason": str}
     }
     """
-    # Step 1: Search + rerank (reuses existing search_policies with reranker)
-    sources = search_policies(question)
+    tracer = get_tracer()
 
-    # Step 2: Programmatic escalation if nothing found
-    if "NO_RELEVANT_POLICY_FOUND" in sources:
-        return {
-            "answer": "",
-            "citations": [],
-            "escalation": {"needed": True, "reason": "No relevant policy found."},
-        }
+    with tracer.start_as_current_span("vanilla_rag_pipeline") as span:
+        span.set_attribute("question", question)
+        span.set_attribute("pipeline_mode", "vanilla")
+        start = time.time()
 
-    # Step 3: Build prompt and make single LLM call
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"{sources}\n\nQuestion: {question}"},
-    ]
-    llm_response = _call_ollama(messages)
+        # Step 1: Search + rerank
+        with tracer.start_as_current_span("search_policies") as search_span:
+            sources = search_policies(question)
+            search_span.set_attribute("no_results", "NO_RELEVANT_POLICY_FOUND" in sources)
 
-    # Step 4: Parse JSON response
-    return _parse_response(llm_response)
+        # Step 2: Programmatic escalation if nothing found
+        if "NO_RELEVANT_POLICY_FOUND" in sources:
+            span.set_attribute("escalated", True)
+            span.set_attribute("latency_ms", int((time.time() - start) * 1000))
+            return {
+                "answer": "",
+                "citations": [],
+                "escalation": {"needed": True, "reason": "No relevant policy found."},
+            }
+
+        # Step 3: Build prompt and make single LLM call
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"{sources}\n\nQuestion: {question}"},
+        ]
+        with tracer.start_as_current_span("llm_call") as llm_span:
+            llm_span.set_attribute("model", settings.llm_model)
+            llm_response = _call_ollama(messages)
+            llm_span.set_attribute("response_length", len(llm_response))
+
+        # Step 4: Parse JSON response
+        result = _parse_response(llm_response)
+        span.set_attribute("escalated", result.get("escalation", {}).get("needed", False))
+        span.set_attribute("num_citations", len(result.get("citations", [])))
+        span.set_attribute("latency_ms", int((time.time() - start) * 1000))
+        return result
 
 
 def _call_ollama(messages: list[dict]) -> str:

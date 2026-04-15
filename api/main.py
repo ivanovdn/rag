@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Initialize Phoenix tracing before any LlamaIndex/RAG imports
+from rag.observability import init_observability
+init_observability()
+
 from config import settings
 from api.routes.query import router
 
