@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     llm_request_timeout: int = 120
     llm_remote_request_timeout: int = 300
 
+    # LLM backend
+    llm_backend: str = "ollama"  # "ollama" or "openai-compatible"
+    openai_api_base: str = "http://localhost:8082/v1"
+    openai_api_key: str = "not-needed"
+    openai_model: str = "qwen2.5-32b"
+
     @property
     def active_ollama_url(self) -> str:
         return self.ollama_remote_url if self.use_remote_ollama else self.ollama_base_url
