@@ -97,6 +97,17 @@ class Settings(BaseSettings):
     # SQLite
     database_url: str = "sqlite:///./compliance_bot.db"
 
+    # Teams Bot
+    teams_tenant_id: str = ""
+    teams_client_id: str = ""
+    teams_client_secret: str = ""
+    teams_refresh_token: str = ""
+    teams_poll_interval: int = 5
+    teams_api_timeout: int = 10
+    teams_initial_lookback_minutes: int = 5
+    teams_max_consecutive_errors: int = 5
+    teams_max_processed_messages: int = 1000
+
     # Observability (Phoenix)
     phoenix_enabled: bool = True
     phoenix_endpoint: str = "http://localhost:6006/v1/traces"

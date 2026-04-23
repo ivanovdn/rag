@@ -41,3 +41,6 @@ eval/*.xlsx
 
 # Notebooks
 notebooks/
+
+# Teams bot data (tokens, state)
+channels/teams/data/
