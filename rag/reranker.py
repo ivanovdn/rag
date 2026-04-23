@@ -17,17 +17,40 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
+_VLLM_SYSTEM = (
+    "Judge whether the Document meets the requirements based on the Query "
+    "and the Instruct provided. Note that the answer can only be \"yes\" or \"no\"."
+)
+
+_VLLM_DOC_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
 def _build_query(question: str) -> str:
-    """Build the reranker query from configurable template."""
+    """Build the reranker query. Format depends on backend."""
+    instruction = settings.reranker_instruction
+
+    if settings.reranker_backend == "vllm":
+        # vLLM Qwen3-Reranker: full chat template in query string
+        return (
+            f"<|im_start|>system\n{_VLLM_SYSTEM}<|im_end|>\n"
+            f"<|im_start|>user\n"
+            f"<Instruct>: {instruction}\n"
+            f"<Query>: {question}\n"
+        )
+
+    # llama-server: simple instruction+query template
     template = settings.reranker_query_template
     if not template or template == "{query}":
         return question
-    # .env files store \n as literal two chars — convert to real newline
     template = template.replace("\\n", "\n")
-    return template.format(
-        instruction=settings.reranker_instruction,
-        query=question,
-    )
+    return template.format(instruction=instruction, query=question)
+
+
+def _build_documents(texts: list[str]) -> list[str]:
+    """Wrap document texts if backend requires it."""
+    if settings.reranker_backend == "vllm":
+        return [f"<Document>: {t}{_VLLM_DOC_SUFFIX}" for t in texts]
+    return texts
 
 
 def rerank(
@@ -53,7 +76,7 @@ def rerank(
 
     n = top_n or settings.reranker_top_n
     formatted_query = _build_query(query)
-    documents = [r.get("text", "") for r in results]
+    documents = _build_documents([r.get("text", "") for r in results])
 
     # Tag original ranks before reranking
     for i, r in enumerate(results):

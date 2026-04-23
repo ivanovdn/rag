@@ -58,6 +58,7 @@ class Settings(BaseSettings):
 
     # Reranker (any /v1/rerank-compatible server: llama-server, vLLM, etc.)
     reranker_enabled: bool = False
+    reranker_backend: str = "llama-server"  # "llama-server" or "vllm"
     reranker_url: str = "http://localhost:8081"
     reranker_model: str = "qwen3-reranker-0.6b-q8"
     reranker_query_template: str = "<Instruct>: {instruction}\n<Query>: {query}"

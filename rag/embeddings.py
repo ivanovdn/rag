@@ -33,6 +33,9 @@ def get_embedding_model():
 def _ollama_embed(texts: list[str], prefix: str = "") -> list[list[float]]:
     """Call Ollama /api/embed endpoint."""
     url = f"{settings.ollama_embedding_url}/api/embed"
+    # .env stores \n as literal two chars — convert to real newline
+    if prefix:
+        prefix = prefix.replace("\\n", "\n")
     prefixed = [f"{prefix}{t}" if prefix else t for t in texts]
     resp = httpx.post(
         url,

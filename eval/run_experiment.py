@@ -234,11 +234,22 @@ def main():
 
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
     reranker_info = settings.reranker_model if settings.reranker_enabled else "none"
+    infra = "remote" if settings.use_remote_ollama else "local"
+    infra_meta = {
+        "infra": infra,
+        "llm_backend": settings.llm_backend,
+        "llm_url": settings.active_ollama_url,
+        "embedding_source": settings.embedding_source,
+        "embedding_url": settings.ollama_embedding_url if settings.embedding_source == "ollama" else "local",
+        "qdrant_url": settings.active_qdrant_url,
+        "reranker_backend": settings.reranker_backend if settings.reranker_enabled else "none",
+        "reranker_url": settings.reranker_url if settings.reranker_enabled else "none",
+    }
 
     if args.tier == "tier1":
         task = make_tier1_task(top_k=top_k)
         evaluators = TIER1_EVALUATORS
-        metadata = {"search_type": search_type, "embedding_model": settings.embedding_model,
+        metadata = {**infra_meta, "search_type": search_type, "embedding_model": settings.embedding_model,
                      "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "top_k": top_k, "tier": "tier1"}
@@ -246,7 +257,7 @@ def main():
         from eval.pipeline_wrapper import run_pipeline_task
         task = run_pipeline_task
         evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
-        metadata = {"llm": settings.llm_model, "search_type": search_type,
+        metadata = {**infra_meta, "llm": settings.llm_model, "search_type": search_type,
                      "reranker": reranker_info,
                      "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
@@ -255,7 +266,7 @@ def main():
     else:
         task = make_agent_task(verbose=args.verbose)
         evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
-        metadata = {"llm": settings.llm_model, "search_type": search_type,
+        metadata = {**infra_meta, "llm": settings.llm_model, "search_type": search_type,
                      "reranker": reranker_info,
                      "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
