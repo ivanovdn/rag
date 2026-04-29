@@ -14,15 +14,24 @@ from config import settings
 from channels.teams.utils import safe_get_nested, strip_html
 from channels.teams.renderer import (
     LOADING_HTML,
+    RATING_PROMPT_HTML,
+    RATING_THANKS_HTML,
     WELCOME_HTML,
     render_answer,
     render_escalation,
     render_error,
 )
+from channels.teams.feedback import save_feedback
 
 GRAPH_API = "https://graph.microsoft.com/v1.0"
 STATE_FILE = Path("channels/teams/data/bot_state.json")
 PID_FILE = Path("channels/teams/data/bot.pid")
+
+_VALID_RATINGS = {"0", "1", "2"}
+
+# Pending ratings: chat_id → context dict
+# Lost on restart — acceptable
+_pending_ratings: dict[str, dict] = {}
 
 
 def _run_rag(question: str) -> dict:
@@ -169,18 +178,37 @@ class TeamsBot:
     # Message processing
     # ------------------------------------------------------------------
 
-    def _send_reply(self, chat_id, message_text):
+    def _send_reply(self, chat_id, message_text, sender_name="Unknown"):
         if not message_text or not message_text.strip():
             return False
 
         text = message_text.strip()
 
         if text.lower() in ("start", "/start", "help", "/help"):
+            _pending_ratings.pop(chat_id, None)
             self._send_message(chat_id, WELCOME_HTML)
             return True
 
         if text == "[media/emoji]":
             return True
+
+        # Check if this is a rating for a pending answer
+        if chat_id in _pending_ratings and text in _VALID_RATINGS:
+            ctx = _pending_ratings.pop(chat_id)
+            save_feedback(
+                question=ctx["question"],
+                answer=ctx["answer"],
+                citations=ctx["citations"],
+                rating=int(text),
+                user=ctx["user"],
+                chat_id=chat_id,
+            )
+            self._send_message(chat_id, RATING_THANKS_HTML)
+            print(f"Feedback saved: rating={text} for '{ctx['question'][:50]}...'")
+            return True
+
+        # Not a rating — clear any pending state and process as question
+        _pending_ratings.pop(chat_id, None)
 
         # Show loading indicator
         self._send_message(chat_id, LOADING_HTML)
@@ -200,6 +228,14 @@ class TeamsBot:
         sent = self._send_message(chat_id, html)
         if sent:
             print("Reply sent")
+            # Send rating prompt and store pending context
+            self._send_message(chat_id, RATING_PROMPT_HTML)
+            _pending_ratings[chat_id] = {
+                "question": text,
+                "answer": result.get("answer", ""),
+                "citations": result.get("citations", []),
+                "user": sender_name,
+            }
         return bool(sent)
 
     def _get_my_user_id(self):
@@ -308,7 +344,7 @@ class TeamsBot:
                 print(f'\nNew message from {sender_name}: "{display}"')
 
                 self.processed_messages.add(message_id)
-                self._send_reply(chat_id, clean_message)
+                self._send_reply(chat_id, clean_message, sender_name=sender_name)
 
         if newest_message_time > self.last_check:
             self.last_check = newest_message_time

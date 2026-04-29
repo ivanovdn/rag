@@ -1,15 +1,36 @@
-pydantic-settings>=2.0
-python-docx>=1.1
+# Core config
+pydantic>=2.12
+pydantic-settings>=2.13
+python-dotenv>=1.0
+
+# Document parsing & ingestion
+python-docx>=1.2
 python-slugify>=8.0
-llama-index-core>=0.12
-llama-index-llms-ollama>=0.5
-llama-index-embeddings-ollama>=0.5
-qdrant-client>=1.12
-fastapi>=0.115
-uvicorn>=0.34
-sqlalchemy>=2.0
-aiofiles>=24.0
-arize-phoenix>=8.0
-openinference-instrumentation-llama-index>=3.0
-opentelemetry-api>=1.0
-opentelemetry-sdk>=1.0
+
+# Vector DB
+qdrant-client>=1.17
+
+# LLM / Agent framework
+llama-index-core>=0.14
+llama-index-llms-ollama>=0.9
+llama-index-llms-openai-like>=0.7
+llama-index-embeddings-huggingface>=0.7
+
+# Embeddings (Sentence Transformers backend for HuggingFaceEmbedding)
+sentence-transformers>=5.0
+transformers>=5.0
+
+# HTTP clients
+httpx>=0.28
+requests>=2.32
+
+# API server
+fastapi>=0.135
+uvicorn>=0.41
+
+# Observability
+arize-phoenix>=13.0
+openinference-instrumentation-llama-index>=4.0
+
+# Eval (Phoenix experiments need this)
+nest-asyncio>=1.6

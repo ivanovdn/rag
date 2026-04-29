@@ -78,3 +78,10 @@ def render_error(question: str, error: str) -> str:
         f"<p>{error}</p>"
         "<p>Please try again or contact the Compliance team directly.</p>"
     )
+
+
+RATING_PROMPT_HTML = (
+    "<p><i>Was this helpful? Reply <b>0</b> (wrong), <b>1</b> (partially), or <b>2</b> (correct)</i></p>"
+)
+
+RATING_THANKS_HTML = "<p><i>Thanks for the feedback!</i></p>"

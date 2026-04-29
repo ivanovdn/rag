@@ -173,7 +173,8 @@ def get_llm():
             base_url=settings.active_ollama_url,
             request_timeout=float(settings.active_request_timeout),
             temperature=settings.llm_temperature,
-            additional_kwargs={"num_predict": 4096},
+            thinking=False,
+            additional_kwargs={"num_predict": 4096, "num_ctx": 8192},
         )
 
 
