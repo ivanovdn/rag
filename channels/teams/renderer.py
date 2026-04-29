@@ -81,7 +81,11 @@ def render_error(question: str, error: str) -> str:
 
 
 RATING_PROMPT_HTML = (
-    "<p><i>Was this helpful? Reply <b>0</b> (wrong), <b>1</b> (partially), or <b>2</b> (correct)</i></p>"
+    "<p><i>Was this helpful? Reply "
+    "<b>-1</b> (should have been escalated), "
+    "<b>0</b> (wrong), "
+    "<b>1</b> (partially), or "
+    "<b>2</b> (correct)</i></p>"
 )
 
 RATING_THANKS_HTML = "<p><i>Thanks for the feedback!</i></p>"

@@ -27,7 +27,7 @@ GRAPH_API = "https://graph.microsoft.com/v1.0"
 STATE_FILE = Path("channels/teams/data/bot_state.json")
 PID_FILE = Path("channels/teams/data/bot.pid")
 
-_VALID_RATINGS = {"0", "1", "2"}
+_VALID_RATINGS = {"-1", "0", "1", "2"}
 
 # Pending ratings: chat_id → context dict
 # Lost on restart — acceptable
