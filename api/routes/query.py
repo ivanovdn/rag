@@ -25,7 +25,7 @@ async def query(request: QueryRequest):
 async def _run_agentic(question: str) -> dict:
     """Run the LlamaIndex agent and parse its response."""
     from rag.agent import build_agent
-    from eval.agent_wrapper import parse_agent_response
+    from rag.response import parse_agent_response
 
     agent = build_agent()
     response = await agent.run(user_msg=question)

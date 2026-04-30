@@ -3,18 +3,16 @@ Instrumented agent wrapper for evaluation.
 Wraps tools with logging. Parses structured JSON responses.
 """
 
-import json
-import re
-
 from llama_index.core.agent.workflow import AgentWorkflow
 from llama_index.core.tools import FunctionTool
-from llama_index.llms.ollama import Ollama
 
-from config import settings
 from rag.agent import SYSTEM_PROMPT, get_llm
+from rag.response import parse_agent_response  # re-exported for backwards compat
 from rag.tools.escalate import escalate_to_compliance as _original_escalate
 from rag.tools.get_section import get_section as _original_get_section
 from rag.tools.search_policies import search_policies as _original_search
+
+__all__ = ["build_instrumented_agent", "get_log", "clear_log", "parse_agent_response"]
 
 # ============================================================
 # Global tool call log
@@ -112,57 +110,4 @@ def build_instrumented_agent(verbose: bool = False) -> AgentWorkflow:
     )
 
 
-# ============================================================
-# Response parser
-# ============================================================
-
-
-def parse_agent_response(raw_response: str) -> dict:
-    """Parse agent's JSON response. Handles code fences, embedded JSON, fallback."""
-    raw = raw_response.strip()
-    json_str = _extract_json(raw)
-
-    if json_str:
-        try:
-            parsed = json.loads(json_str)
-            return {
-                "answer": parsed.get("answer", ""),
-                "citations": parsed.get("citations", []),
-                "escalation": parsed.get("escalation", {"needed": False, "reason": ""}),
-                "parse_success": True,
-                "raw_response": raw,
-            }
-        except json.JSONDecodeError:
-            pass
-
-    return {
-        "answer": raw,
-        "citations": [],
-        "escalation": {"needed": False, "reason": ""},
-        "parse_success": False,
-        "raw_response": raw,
-    }
-
-
-def _extract_json(text: str) -> str | None:
-    """Extract JSON object from text."""
-    stripped = text.strip()
-    if stripped.startswith("{"):
-        return stripped
-
-    fence_match = re.search(r"```(?:json)?\s*\n?(\{.*?\})\s*\n?```", text, re.DOTALL)
-    if fence_match:
-        return fence_match.group(1)
-
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    return None
+# parse_agent_response is now imported from rag.response (see top of file).

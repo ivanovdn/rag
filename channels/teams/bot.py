@@ -43,7 +43,7 @@ def _run_rag(question: str) -> dict:
         else:
             import asyncio
             from rag.agent import build_agent
-            from eval.agent_wrapper import parse_agent_response
+            from rag.response import parse_agent_response
 
             async def _run():
                 agent = build_agent()
