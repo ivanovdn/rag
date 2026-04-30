@@ -1,0 +1,35 @@
+services:
+  bot:
+    build: .
+    image: compliance-bot:latest
+    env_file:
+      - .env
+    environment:
+      # Override .env: inside the network, Phoenix is reachable by service name
+      - PHOENIX_ENDPOINT=http://phoenix:6006/v1/traces
+    volumes:
+      - teams_data:/app/channels/teams/data
+    depends_on:
+      phoenix:
+        condition: service_healthy
+    restart: unless-stopped
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "${PHOENIX_PORT:-6006}:6006"
+    volumes:
+      - phoenix_data:/data
+    environment:
+      - PHOENIX_WORKING_DIR=/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  teams_data:
+  phoenix_data:

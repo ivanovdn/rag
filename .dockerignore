@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment & secrets — never bake into image (mounted via env_file)
+.env
+.env.*
+
+# Local data (mounted as volumes in production)
+channels/teams/data/
+qdrant_data/
+phoenix_data/
+*.db
+.bm25_index.json
+
+# Source documents (ingested separately, not needed at runtime)
+policies/
+
+# Eval datasets (not needed at runtime)
+eval/datasets/
+eval/results/
+eval/*.xlsx
+eval/run_experiment.py
+eval/pipeline_wrapper.py
+eval/evaluators.py
+
+# Dev tooling
+notebooks/
+.idea/
+.vscode/
+.git/
+.gitignore
+.DS_Store
+
+# Build artifacts
+dist/
+build/
+
+# Frontend (not part of bot)
+frontend/
+
+# Docs / planning
+*.md
+!README.md
