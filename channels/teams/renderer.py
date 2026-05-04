@@ -28,32 +28,46 @@ LOADING_HTML = (
 
 
 def render_answer(result: dict) -> str:
-    """Render a successful ComplianceAnswer as Teams HTML."""
-    answer = result.get("answer", "")
+    """Render a successful ComplianceAnswer as Teams HTML.
+    Each citation is rendered as a separate block: bold location + verbatim quote.
+    Multiple citations are separated with <hr>.
+    """
     citations = result.get("citations", [])
+    answer = result.get("answer", "")
 
-    parts = [f"<p>{answer}</p>"]
+    if not citations:
+        # Fallback to prose answer when there are no structured citations
+        return f"<p>{answer}</p>"
 
-    if citations:
-        parts.append("<hr>")
-        parts.append("<p><b>Sources:</b></p>")
-        parts.append("<ul>")
-        for c in citations:
-            doc = c.get("doc_title", "")
-            section = c.get("section", "")
-            clause = c.get("clause", "")
-            clause_num = c.get("clause_number", "")
+    parts = []
+    if len(citations) > 1:
+        parts.append(f"<p>This is addressed in {len(citations)} policies:</p>")
 
-            location = doc
-            if section:
-                location += f" &gt; {section}"
-            if clause and clause_num:
-                location += f" &gt; Clause {clause_num}: {clause}"
-            elif clause:
-                location += f" &gt; {clause}"
+    for i, c in enumerate(citations):
+        if i > 0:
+            parts.append("<hr>")
 
-            parts.append(f"<li>{location}</li>")
-        parts.append("</ul>")
+        doc = c.get("doc_title", "")
+        section = c.get("section", "")
+        clause = c.get("clause", "")
+        clause_num = c.get("clause_number", "")
+        quote = c.get("quote", "")
+
+        # Location line: bold labels for Document / Section / Clause
+        location_lines = []
+        if doc:
+            location_lines.append(f"<b>📄 {doc}</b>")
+        if section:
+            location_lines.append(f"<b>Section:</b> {section}")
+        if clause and clause_num:
+            location_lines.append(f"<b>Clause {clause_num}:</b> {clause}")
+        elif clause:
+            location_lines.append(f"<b>Clause:</b> {clause}")
+
+        parts.append(f"<p>{'<br>'.join(location_lines)}</p>")
+
+        if quote:
+            parts.append(f"<p><i>\"{quote}\"</i></p>")
 
     return "\n".join(parts)
 
