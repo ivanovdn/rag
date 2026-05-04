@@ -1,9 +1,15 @@
 """
-Reranker module — calls any /v1/rerank-compatible endpoint (llama-server, vLLM, etc.)
+Reranker module — calls a rerank-compatible endpoint.
 
-Query template is configurable via RERANKER_QUERY_TEMPLATE.
-API: POST /v1/rerank with {model, query, documents, top_n}
-Response: {results: [{index, relevance_score}, ...]} sorted by score desc
+Supports three backends:
+- llama-server: POST /v1/rerank, simple {model, query, documents, top_n} payload
+- vllm:        POST /v1/rerank, query/docs wrapped in Qwen3 chat template
+- vllm-score:  POST /v1/score with {model, text_1, text_2}; same wrapping as `vllm`
+                (newer vLLM cross-encoder models expose /v1/score instead of /v1/rerank)
+
+The Qwen3 chat-template wrapping (system prompt + <Instruct>/<Query> + <Document>: + think
+suffix) is required for both vLLM modes — without it, score discrimination collapses
+(e.g. 0.91 vs 0.32 instead of 0.997 vs 0.0003 on a clearly-relevant vs irrelevant doc pair).
 
 Falls back to original ranking if server is unavailable — never blocks the pipeline.
 """
@@ -24,12 +30,14 @@ _VLLM_SYSTEM = (
 
 _VLLM_DOC_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
+_VLLM_BACKENDS = {"vllm", "vllm-score"}
+
 
 def _build_query(question: str) -> str:
     """Build the reranker query. Format depends on backend."""
     instruction = settings.reranker_instruction
 
-    if settings.reranker_backend == "vllm":
+    if settings.reranker_backend in _VLLM_BACKENDS:
         # vLLM Qwen3-Reranker: full chat template in query string
         return (
             f"<|im_start|>system\n{_VLLM_SYSTEM}<|im_end|>\n"
@@ -48,7 +56,7 @@ def _build_query(question: str) -> str:
 
 def _build_documents(texts: list[str]) -> list[str]:
     """Wrap document texts if backend requires it."""
-    if settings.reranker_backend == "vllm":
+    if settings.reranker_backend in _VLLM_BACKENDS:
         return [f"<Document>: {t}{_VLLM_DOC_SUFFIX}" for t in texts]
     return texts
 
@@ -59,7 +67,7 @@ def rerank(
     top_n: int | None = None,
 ) -> list[dict]:
     """
-    Rerank search results via llama-server /v1/rerank.
+    Rerank search results.
 
     Args:
         query: The user's search query.
@@ -83,25 +91,19 @@ def rerank(
         r["original_rank"] = i + 1
 
     try:
-        response = httpx.post(
-            f"{settings.reranker_url}/v1/rerank",
-            json={
-                "model": settings.reranker_model,
-                "query": formatted_query,
-                "documents": documents,
-                "top_n": n,
-            },
-            timeout=20.0,
-        )
-        response.raise_for_status()
-        data = response.json()
+        if settings.reranker_backend == "vllm-score":
+            scored = _call_score(formatted_query, documents)
+        else:
+            scored = _call_rerank(formatted_query, documents, n)
 
-        # Map scores back to results
+        # Sort by score desc and trim to top_n (score endpoint preserves input order)
+        scored.sort(key=lambda x: x[1], reverse=True)
+        scored = scored[:n]
+
         reranked = []
-        for item in data["results"]:
-            idx = item["index"]
+        for idx, score in scored:
             result = results[idx].copy()
-            result["rerank_score"] = item["relevance_score"]
+            result["rerank_score"] = score
             reranked.append(result)
 
         if reranked:
@@ -123,3 +125,36 @@ def rerank(
     except Exception as e:
         logger.warning(f"Reranker error: {e} — using original ranking")
         return results[:n]
+
+
+def _call_rerank(query: str, documents: list[str], top_n: int) -> list[tuple[int, float]]:
+    """POST /v1/rerank — returns list of (index, relevance_score)."""
+    response = httpx.post(
+        f"{settings.reranker_url}/v1/rerank",
+        json={
+            "model": settings.reranker_model,
+            "query": query,
+            "documents": documents,
+            "top_n": top_n,
+        },
+        timeout=20.0,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return [(item["index"], item["relevance_score"]) for item in data["results"]]
+
+
+def _call_score(query: str, documents: list[str]) -> list[tuple[int, float]]:
+    """POST /v1/score — returns list of (index, score)."""
+    response = httpx.post(
+        f"{settings.reranker_url}/v1/score",
+        json={
+            "model": settings.reranker_model,
+            "text_1": query,
+            "text_2": documents,
+        },
+        timeout=20.0,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return [(item["index"], item["score"]) for item in data["data"]]
