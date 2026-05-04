@@ -2,257 +2,306 @@
 
 ## Prerequisites
 
-| Dependency | Minimum Version | Check Command |
-|------------|----------------|---------------|
+| Dependency | Min Version | Check |
+|---|---|---|
 | Python | 3.12.x (not 3.14) | `python3.12 --version` |
 | Docker | 20+ | `docker --version` |
 | Ollama | 0.3+ | `ollama --version` |
+| llama.cpp / `llama-server` | recent | `llama-server --version` |
 | uv (recommended) | any | `uv --version` |
 
-> **Why Python 3.12?** LlamaIndex and Pydantic have compatibility issues with Python 3.14. If you have 3.14 installed as default, use `python3.12` explicitly or install it via `uv python install 3.12`.
+> **Why Python 3.12?** LlamaIndex/Pydantic break on Python 3.14. Use `python3.12` explicitly or `uv python install 3.12`.
 
-### Installing prerequisites (macOS)
+### macOS install
 
 ```bash
-# Homebrew
-brew install ollama docker
-
-# Python 3.12 via uv
-brew install uv
+brew install ollama docker uv llama.cpp
 uv python install 3.12
-
-# Start Ollama service (runs in background)
-ollama serve
+ollama serve   # background
 ```
 
 ---
 
-## Step 1 — Clone and Configure
+## Step 1 — Configure
 
 ```bash
 cd compliance-bot
-
-# Create .env from template (edit values as needed)
 cp .env.example .env
 ```
 
-### Key `.env` settings to review
+`.env` is the single source of truth. `config.py` only has fallback defaults.
 
-`.env` is the **single source of truth** for all runtime configuration. `config.py` only has fallback defaults — `.env` always wins.
+### Key toggles
 
-| Variable | Default | When to change |
-|----------|---------|----------------|
-| `LLM_MODEL` | `qwen3:14b` | Use a smaller model for dev/testing on limited hardware |
-| `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5` | Any HuggingFace model (see Embedding Models below) |
-| `POLICY_DOCS_FOLDER` | `./policies` | Change if your DOCX files are elsewhere |
-| `POLICY_BASE_URL` | `http://intranet.company.com/policies` | Set to wherever documents are hosted internally |
-| `RETRIEVAL_TOP_K` | `10` | Number of chunks returned per search |
-| `BM25_ENABLED` | `true` | Set `false` for vector-only search |
-| `MIN_CONFIDENCE_SCORE` | `0.45` | Only used in vector-only mode (not hybrid) |
+| Variable | Purpose |
+|---|---|
+| `LLM_BACKEND` | `ollama` (default) or `openai-compatible` (llama-server / vLLM via `/v1/chat/completions`) |
+| `USE_REMOTE_OLLAMA` | `true` → use `OLLAMA_REMOTE_URL` (Spark) |
+| `USE_REMOTE_QDRANT` | `true` → use `QDRANT_REMOTE_URL` (Spark) |
+| `EMBEDDING_SOURCE` | `huggingface` or `ollama` |
+| `EMBEDDING_MODEL` | model name; dim must match `QDRANT_VECTOR_DIM` |
+| `RERANKER_ENABLED` | `true` to enable `/v1/rerank` reranking |
+| `RERANKER_BACKEND` | `llama-server` (local) or `vllm` (remote) |
+| `PIPELINE_MODE` | `agentic` (default) or `vanilla` |
 
 ---
 
-## Step 2 — Create Virtual Environment and Install Dependencies
+## Step 2 — Install Dependencies
 
 ```bash
-# Using uv (recommended — fast)
 uv venv --python 3.12 .venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
 
-# Or using plain Python
+# OR plain Python
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Verify installation
-
+Verify:
 ```bash
-python -c "from config import settings; print('Config OK:', settings.llm_model, settings.embedding_model)"
-```
-
-Expected output:
-```
-Config OK: qwen3:14b nomic-ai/nomic-embed-text-v1.5
+python -c "from config import settings; print(settings.llm_model, settings.embedding_model)"
 ```
 
 ---
 
-## Step 3 — Start Docker Services (Qdrant + Phoenix)
+## Step 3 — Start Local Infrastructure
 
 ```bash
-docker compose up -d
+docker compose up -d   # Qdrant (6333) + Phoenix (6006)
 ```
 
-This starts two services:
-- **Qdrant** (port 6333) — vector database for policy chunks
-- **Phoenix** (port 6006) — observability UI for tracing agent queries + evaluation experiments
-
-### Verify services are healthy
-
+Verify:
 ```bash
-# Qdrant
-curl http://localhost:6333/healthz
-
-# Phoenix — open in browser
-open http://localhost:6006
+curl http://localhost:6333/healthz   # Qdrant
+open http://localhost:6006           # Phoenix UI
 ```
-
-> Both services persist data in Docker volumes. To reset: `docker compose down -v && docker compose up -d`
 
 ---
 
-## Step 4 — Pull Ollama LLM Model
-
-Ollama is only used for the LLM (reasoning). Embeddings use HuggingFace (downloaded automatically on first use).
+## Step 4 — Pull Ollama Models
 
 ```bash
-# LLM — pick ONE based on your hardware:
+# LLM
+ollama pull qwen2.5:32b-instruct-q8_0   # ~33 GB, 50-90s on M4 Pro
+# OR smaller for dev
+ollama pull qwen2.5:14b                 # ~9 GB
 
-# Option A: Recommended (9 GB, good tool-calling + structured JSON output)
-ollama pull qwen3:14b
-
-# Option B: Smaller alternative
-ollama pull qwen2.5:14b
-
-# Option C: Best quality (40 GB, requires 48+ GB RAM)
-ollama pull llama3.3:70b
+# Embedding (only if EMBEDDING_SOURCE=ollama)
+ollama pull embeddinggemma              # 768 dim
+ollama pull qwen3-embedding             # 4096 dim
 ```
 
-### Verify model is available
-
-```bash
-ollama list
-```
-
-> **Important:** Make sure `LLM_MODEL` in `.env` matches the model you pulled.
-
-### Hardware requirements by model
-
-| Model | RAM Required | Disk | Response Time (M4 Pro) |
-|-------|-------------|------|----------------------|
-| `qwen3:14b` | 16 GB | 9 GB | ~10–25s |
-| `qwen2.5:14b` | 16 GB | 9 GB | ~10–25s |
-| `llama3.3:70b` | 48 GB | 40 GB | ~30–60s |
+`EMBEDDING_SOURCE=huggingface` (default) downloads automatically on first use to `~/.cache/huggingface/`. We use `nvidia/llama-nemotron-embed-1b-v2` (2048 dim) by default.
 
 ---
 
-## Step 5 — Add Policy Documents
+## Step 5 — Start Reranker (llama-server)
 
-Place your DOCX policy files into the `policies/` folder:
+The reranker runs as a separate llama-server process. Default config in `.env`:
+
+```
+RERANKER_ENABLED=true
+RERANKER_BACKEND=llama-server
+RERANKER_URL=http://localhost:8081
+RERANKER_MODEL=qwen3-reranker-4b-q8
+```
+
+Start the reranker:
+```bash
+llama-server -hf Voodisss/Qwen3-Reranker-4B-GGUF-llama_cpp:Q8_0 \
+  --reranking --pooling rank --embedding --port 8081
+```
+
+> **Important**: only the `Voodisss/...-llama_cpp` GGUF includes the classifier head needed for proper rerank scores. Other community GGUFs produce garbage scores.
+
+Verify:
+```bash
+curl -s http://localhost:8081/v1/rerank \
+  -H "Content-Type: application/json" \
+  -d '{"query":"<Instruct>: x\n<Query>: software install policy",
+       "documents":["Team Members are forbidden to install software.","Annual leave..."],
+       "top_n":2}' | python3 -m json.tool
+```
+Expected: first doc ~0.97, second ~0.0002.
+
+To disable reranker entirely: `RERANKER_ENABLED=false`.
+
+---
+
+## Step 6 — Add Policy Documents
 
 ```bash
-# Create the folder if it doesn't exist
 mkdir -p policies
-
-# Copy your documents
 cp /path/to/your/policies/*.docx policies/
 ```
 
-### Supported document format
-
-- **File type:** `.docx` only (not `.doc`, `.pdf`, or `.txt`)
-- **Headings:** Use Word's built-in Heading 1, Heading 2, Heading 3 styles for section hierarchy
-- **Numbered clauses:** Clauses like `4.2.1 Data Retention` are auto-detected via `NumberingResolver`
-- **Tables:** Automatically converted to text
+`.docx` only. Use Word's Heading 1/2/3 styles for hierarchy. Auto-numbered clauses are detected via `NumberingResolver` (handles cross-`numId` continuation that Word renders as a single sequence).
 
 ---
 
-## Step 6 — Ingest Documents
-
-This parses all DOCX files, generates embeddings, and stores them in Qdrant (+ BM25 index if enabled).
+## Step 7 — Ingest
 
 ```bash
-python scripts/ingest_all.py
+PYTHONPATH=. python scripts/ingest_all.py --folder ./policies
 ```
 
-### Expected output
+Expected: `Done. Ingested 52 documents, ~1602 total chunks.`
 
-```
-Ingesting documents from: policies
-
-Ingested Acceptable Use Policy [Internal].docx: 51 chunks
-Ingested Access Management Policy [Internal].docx: 36 chunks
-...
-
-Done. Ingested 52 documents, 1514 total chunks.
-```
-
-### Verify chunks are in Qdrant
-
+Verify:
 ```bash
 curl -s http://localhost:6333/collections/compliance_policies | python3 -m json.tool | grep points_count
 ```
 
-### Re-ingesting documents
+Re-ingestion is safe — old chunks for each doc are deleted before insert. After changing the **embedding model or dimension**, delete the collection first:
 
-Running `ingest_all.py` again is safe — it deletes old chunks for each document before inserting new ones (both Qdrant and BM25). Use this after updating policy files or changing the embedding model.
+```bash
+PYTHONPATH=. python -c "from qdrant_client import QdrantClient; QdrantClient('http://localhost:6333').delete_collection('compliance_policies')"
+PYTHONPATH=. python scripts/ingest_all.py --folder ./policies
+```
 
 ---
 
-## Step 7 — Test the Agent
+## Step 8 — Test the Pipeline
 
-### Single query
-
-```bash
-python scripts/test_query.py -q "What is forbidden to install for team members?"
-```
-
-### Interactive mode
+### Agentic agent (default)
 
 ```bash
-python scripts/test_query.py -i
+PYTHONPATH=. python scripts/test_query.py -q "What is the policy on software installation?"
 ```
 
-### What to expect
+Returns `ComplianceAnswer` JSON with `answer`, `citations[]` (with `source_number`, `doc_title`, `section`, `clause`, `clause_number`, `quote`), and `escalation`.
 
-The agent returns **structured JSON** with `answer`, `citations`, and `escalation`:
+### Vanilla pipeline (no LlamaIndex, single LLM call)
 
-```json
-{
-  "answer": "According to the Acceptable Use Policy...",
-  "citations": [
-    {
-      "doc_title": "Acceptable Use Policy [Internal]",
-      "section": "Corporate Workstation and Software Use",
-      "clause": "Software Installation",
-      "clause_number": "4.7",
-      "quote": "Team Members are forbidden from installing..."
-    }
-  ],
-  "escalation": {"needed": false, "reason": ""}
-}
+```bash
+PYTHONPATH=. python scripts/test_pipeline.py -q "What is the policy on software installation?"
 ```
 
-| Query Type | Expected Behavior |
-|-----------|-------------------|
-| Clear policy question | Answer with structured JSON citations |
-| No matching policy | `NO_RELEVANT_POLICY_FOUND` → agent escalates |
-| Multi-area question | Agent calls `search_policies` multiple times |
+Faster (~30-40s vs ~50-90s for agentic), but no multi-search reasoning.
 
 ---
 
-## Step 8 — View Traces in Phoenix
-
-Every query is automatically traced via OpenTelemetry. Open the Phoenix UI:
+## Step 9 — View Traces
 
 ```
 http://localhost:6006
 ```
 
-### What you'll see
-
-- **Agent workflow** — the parent span covering the entire request
-- **ReAct steps** — each Thought/Action/Observation iteration
-- **LLM calls** — model name, full prompt, response text, token counts, latency
-- **Tool calls** — which tools were invoked, inputs, and outputs
+- **Agentic**: full ReAct trace — every Thought/Action/Observation, tool calls, LLM prompts, latency
+- **Vanilla**: manual spans (`vanilla_rag_pipeline` → `search_policies` → `llm_call`)
 
 ---
 
-## Step 9 — Run Evaluation
+## Step 10 — Run Teams Bot
 
-### Upload test datasets to Phoenix
+The bot polls Microsoft Graph and runs the RAG pipeline directly via Python imports — no HTTP layer between bot and pipeline.
+
+### Required `.env` vars
+
+```
+TEAMS_TENANT_ID=...
+TEAMS_CLIENT_ID=...
+TEAMS_CLIENT_SECRET=...
+TEAMS_REFRESH_TOKEN=...
+```
+
+The refresh token is obtained one-time via the device-code flow (use `scripts/get_refresh_token.py` from the original `legal-compliance-qa-agent` repo). The bot rotates and persists the token to `channels/teams/data/refresh_token.json`.
+
+### Start
+
+```bash
+PYTHONPATH=. python scripts/start_teams_bot.py
+```
+
+Send a message in Teams to the bot user. The bot replies with the answer + a rating prompt (`-1`, `0`, `1`, `2`).
+
+### Rating values
+
+- **-1** — bot answered, but should have been escalated
+- **0** — wrong
+- **1** — partially correct
+- **2** — correct
+
+Detection rule: `message.strip()` must equal exactly `"-1"`, `"0"`, `"1"`, or `"2"`. Anything else (sentences, typos, Cyrillic) is treated as a new question.
+
+### Feedback storage
+
+Each rating saves to BOTH:
+- `channels/teams/data/feedback.jsonl` (append-only, easy to load with pandas)
+- `channels/teams/data/feedback.db` (SQLite with indexes on `rating`, `timestamp`)
+
+Both gitignored.
+
+### Inspecting feedback
+
+#### Local (running bot via `python scripts/start_teams_bot.py`)
+
+Files are directly in `channels/teams/data/`:
+
+```bash
+# Tail the JSONL
+tail -f channels/teams/data/feedback.jsonl
+
+# Pretty-print
+cat channels/teams/data/feedback.jsonl | jq .
+
+# Query SQLite — count by rating
+sqlite3 channels/teams/data/feedback.db "SELECT rating, COUNT(*) FROM feedback GROUP BY rating;"
+
+# Recent entries
+sqlite3 -header -column channels/teams/data/feedback.db \
+  "SELECT id, rating, user, substr(question, 1, 50) AS q, timestamp FROM feedback ORDER BY timestamp DESC LIMIT 10;"
+
+# Bad ratings only (for review)
+sqlite3 channels/teams/data/feedback.db \
+  "SELECT timestamp, rating, question, answer FROM feedback WHERE rating <= 0;"
+```
+
+Or via Python:
+
+```bash
+python -c "
+from channels.teams.feedback import load_feedback_db
+import json
+for r in load_feedback_db()[:10]:
+    print(json.dumps({'rating': r['rating'], 'user': r['user'], 'q': r['question'][:60]}))
+"
+```
+
+#### Docker (with bind mount)
+
+`docker-compose-remote.yml` mounts `./channels/teams/data` as a **bind mount** — feedback files appear directly on the host in the project folder. Same commands above work, plus:
+
+```bash
+# Tail logs while file updates live in the IDE
+tail -f channels/teams/data/feedback.jsonl
+
+# Or exec into the container if needed
+docker compose -f docker-compose-remote.yml exec bot \
+  sqlite3 channels/teams/data/feedback.db \
+  "SELECT rating, COUNT(*) FROM feedback GROUP BY rating;"
+```
+
+#### Migrating from named volume to bind mount
+
+If you previously ran with a named volume (older compose), copy the data out before switching:
+
+```bash
+mkdir -p channels/teams/data
+docker compose -f docker-compose-remote.yml cp bot:/app/channels/teams/data/. ./channels/teams/data/
+docker compose -f docker-compose-remote.yml up -d --force-recreate bot
+
+# Optional: remove the now-unused named volume
+docker volume rm compliance-bot_teams_data
+```
+
+---
+
+## Step 11 — Run Evaluation
+
+### Upload datasets to Phoenix
 
 ```bash
 python scripts/make_dataset.py eval/datasets/retrieval_test.json
@@ -266,61 +315,81 @@ python scripts/make_dataset.py eval/datasets/chatbot_test_cases.json
 # Tier 1 — retrieval only (fast, no LLM)
 python eval/run_experiment.py --tier tier1 --name baseline-retrieval
 
-# Tier 2 — full agent e2e (slow, calls LLM per question)
-python eval/run_experiment.py --tier tier2 --name baseline-e2e
+# Tier 2 — full agent e2e
+python eval/run_experiment.py --tier tier2 --mode agentic --name agentic-baseline
 
-# Chatbot — realistic user questions
-python eval/run_experiment.py --tier chatbot --name baseline-chatbot
+# Chatbot — realistic user questions; vanilla mode
+python eval/run_experiment.py --tier chatbot --mode vanilla --name vanilla-baseline
 ```
 
-Settings come from `.env` (`RETRIEVAL_TOP_K`, `BM25_ENABLED`). Override with `--top-k` flag if needed.
+`--mode` defaults to `agentic`. Auto-generated experiment names include backend + reranker config. Metadata captures infra (`local`/`remote`) and URLs.
 
-### View results
+---
 
-Open http://localhost:6006/datasets — experiments appear with per-evaluator metrics.
+## Remote Stack (Spark @ 192.168.100.2)
 
-### After making changes
+For the production deployment, models run on Spark:
+- Ollama (LLM + embedding) on port 11434
+- Qdrant on port 6333
+- vLLM (reranker) on port 8082
+
+Switch via `.env`:
+
+```
+USE_REMOTE_OLLAMA=true
+USE_REMOTE_QDRANT=true
+EMBEDDING_SOURCE=ollama
+OLLAMA_EMBEDDING_URL=http://192.168.100.2:11434
+RERANKER_BACKEND=vllm
+RERANKER_URL=http://192.168.100.2:8082
+RERANKER_MODEL=Qwen/Qwen3-Reranker-4B
+```
+
+Re-ingest if embedding dimensions change. Verify connectivity to Spark before starting bot:
 
 ```bash
-# Re-run with new experiment name for comparison
-python eval/run_experiment.py --tier tier1 --name after-reranker-v1
+curl http://192.168.100.2:6333/collections
+curl http://192.168.100.2:11434/api/tags
+curl http://192.168.100.2:8082/v1/models
 ```
 
 ---
 
-## Embedding Models
+## Docker Deployment (Remote Bot Host)
 
-Embeddings use **HuggingFace** (via `sentence-transformers`). Models are downloaded automatically on first use.
-
-Change by editing `EMBEDDING_MODEL` in `.env`:
+For hosting the Teams bot on a separate machine that connects to Spark:
 
 ```bash
-# Default (768d)
-EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+# On the bot host (Linux):
+git clone <repo> compliance-bot && cd compliance-bot
 
-# Alternatives (768d — no Qdrant changes needed)
-EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
+# Copy a .env configured for remote stack (TEAMS_* + USE_REMOTE_*=true)
+scp local:/path/to/.env .env
 
-# Larger models (1024d — update QDRANT_VECTOR_DIM=1024)
-EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
-EMBEDDING_MODEL=intfloat/e5-large-v2
+# Build & run
+docker compose -f docker-compose-remote.yml up -d --build
 ```
 
-**After changing embedding model:** delete the Qdrant collection and re-ingest:
+The compose file runs:
+- **bot** container (Python 3.12-slim) — code only, polls Graph API outbound
+- **phoenix** container — observability, healthchecked
 
-```bash
-python -c "from qdrant_client import QdrantClient; QdrantClient('http://localhost:6333').delete_collection('compliance_policies')"
-python scripts/ingest_all.py
-```
+Volumes:
+- **`./channels/teams/data` → `/app/channels/teams/data`** (bind mount — feedback DB, refresh token, bot state appear directly in the project folder so you can read them in your IDE)
+- `phoenix_data` (named) → `/data` (traces)
 
-If the new model has different dimensions, also update `QDRANT_VECTOR_DIM` in `.env`.
+`.env` is mounted via `env_file:`. Phoenix endpoint is overridden to `http://phoenix:6006/v1/traces` inside the compose network.
+
+Logs: `docker compose -f docker-compose-remote.yml logs -f bot`
+
+> **Ingestion is a one-time admin task** done before deploying. The bot image does not include `policies/` or `ingest/`.
 
 ---
 
 ## Quick-Start (All Steps Combined)
 
 ```bash
-# 1. Environment
+# 1. Setup
 cp .env.example .env
 uv venv --python 3.12 .venv
 source .venv/bin/activate
@@ -328,90 +397,79 @@ uv pip install -r requirements.txt
 
 # 2. Infrastructure
 docker compose up -d
-ollama pull qwen3:14b
+ollama pull qwen2.5:32b-instruct-q8_0
 
-# 3. Update .env to match your model
-# Edit LLM_MODEL= to match what you pulled
+# 3. Reranker (separate terminal, optional)
+llama-server -hf Voodisss/Qwen3-Reranker-4B-GGUF-llama_cpp:Q8_0 \
+  --reranking --pooling rank --embedding --port 8081
 
-# 4. Add documents and ingest
+# 4. Documents + ingest
 cp /path/to/policies/*.docx policies/
-python scripts/ingest_all.py
+PYTHONPATH=. python scripts/ingest_all.py --folder ./policies
 
 # 5. Test
-python scripts/test_query.py -q "What is the policy on annual leave?"
+PYTHONPATH=. python scripts/test_query.py -q "What is the policy on annual leave?"
 
 # 6. View traces
 open http://localhost:6006
 
-# 7. Run evaluation
-python scripts/make_dataset.py eval/datasets/retrieval_test.json
-python eval/run_experiment.py --tier tier1 --name baseline
+# 7. Run Teams bot (after filling in TEAMS_* in .env)
+PYTHONPATH=. python scripts/start_teams_bot.py
 ```
 
 ---
 
 ## Troubleshooting
 
-### Qdrant won't start
+### Reranker scores compressed (0.5-0.9 range)
+
+Likely vLLM with default `/v1/rerank` not applying the Qwen3 chat template. Set `RERANKER_BACKEND=vllm` — our reranker module wraps query/documents with `<|im_start|>` + `<Document>:` + think suffix. Score discrimination should jump to 0.99 vs 0.0003.
+
+### `OpenAILike` agent emits ReAct JSON instead of calling tools
+
+In `rag/agent.py:get_llm()`, ensure `is_function_calling_model=True` for `OpenAILike`. Do NOT use `response_format={"type":"json_object"}` — it conflicts with tool calling.
+
+### Teams bot can't load refresh token
+
+Bot prefers `channels/teams/data/refresh_token.json` (rotated copy) over `.env` (initial seed). On first run with no file, it falls back to `TEAMS_REFRESH_TOKEN` from `.env`. After the first refresh, the file takes over.
+
+### Docker bot can't reach Phoenix
+
+Ensure compose overrides `PHOENIX_ENDPOINT=http://phoenix:6006/v1/traces` (already in `docker-compose-remote.yml`). Inside the bot container, `localhost:6006` is the bot itself.
+
+### Embedding dim mismatch on re-ingestion
+
+Different models produce different vector sizes (nemotron 2048, gemma 768, qwen3-embedding 4096). Delete the collection first:
 
 ```bash
-# Check if port 6333 is already in use
-lsof -i :6333
-
-# Check Docker logs
-docker compose logs qdrant
-
-# Reset Qdrant data
-docker compose down -v && docker compose up -d
+python -c "from qdrant_client import QdrantClient; QdrantClient('http://localhost:6333').delete_collection('compliance_policies')"
 ```
 
-### Ollama connection refused
+Update `QDRANT_VECTOR_DIM` in `.env` and re-ingest.
+
+### `\n` in env vars sent literally
+
+`.env` stores `\n` as two chars. The reranker (`_build_query`) and Ollama embedding (`_ollama_embed`) convert `\\n` → `\n` at runtime. If you write a new place that reads `EMBEDDING_QUERY_PREFIX` or `RERANKER_QUERY_TEMPLATE` with `\n`, do the same conversion.
+
+### Eval logs show stale results / `'results'` KeyError
+
+`eval/agent_wrapper.py:_logged_search_policies` uses `import rag.tools.search_policies as sp` then reads `sp._last_search_results`. Don't switch to `from ... import _last_search_results` — that captures a stale reference.
+
+### Phoenix UI not loading / no traces
 
 ```bash
-# Make sure Ollama is running
-ollama serve
-
-# Check it's responding
-curl http://localhost:11434/api/tags
-
-# If using a remote Ollama, update .env:
-# OLLAMA_BASE_URL=http://your-server:11434
+docker compose ps phoenix
+docker compose logs phoenix
+grep PHOENIX .env
 ```
 
-### "Model not found" error
+### Qdrant collection missing
 
 ```bash
-# List available models
-ollama list
-
-# Pull the missing model
-ollama pull qwen3:14b
-
-# Make sure .env matches
-grep LLM_MODEL .env
-```
-
-### Agent doesn't call tools (hallucinated answers)
-
-This happens with smaller models — they skip tool calls and generate answers from general knowledge. Fix:
-- Use `qwen3:14b` or larger
-- Check `json_parse_success` evaluator in Phoenix experiments
-
-### "Collection not found" error
-
-Run ingestion first — it creates the Qdrant collection automatically:
-
-```bash
-python scripts/ingest_all.py
+PYTHONPATH=. python scripts/ingest_all.py --folder ./policies
 ```
 
 ### Python 3.14 / Pydantic errors
-
-```
-TypeError: ForwardRef._evaluate() ...
-```
-
-You're running Python 3.14. Switch to 3.12:
 
 ```bash
 uv venv --python 3.12 .venv
@@ -419,95 +477,51 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-### Phoenix UI not loading / traces not appearing
-
-```bash
-# Check Phoenix container is running
-docker compose ps phoenix
-
-# Check Phoenix logs
-docker compose logs phoenix
-
-# If Phoenix is running but traces don't appear, check .env:
-grep PHOENIX .env
-# PHOENIX_ENABLED=true
-# PHOENIX_ENDPOINT=http://localhost:6006/v1/traces
-```
-
-### Search returns no results but documents are ingested
-
-With hybrid search (`BM25_ENABLED=true`), there's no confidence threshold — results are always returned if any match exists.
-
-With vector-only search (`BM25_ENABLED=false`), check the confidence threshold:
-
-```bash
-# In .env, try lowering:
-MIN_CONFIDENCE_SCORE=0.3
-```
-
-### Embedding model download slow / fails
-
-HuggingFace models are cached in `~/.cache/huggingface/`. First download may take a few minutes. If behind a firewall, set `HF_HUB_OFFLINE=1` after initial download.
-
 ---
 
 ## Configuration Reference
 
-All settings are in `.env` and loaded via `config.py`. No code changes needed.
+All settings live in `.env`. See `config.py` for full schema. Notable groups:
 
-### Retrieval
+### LLM & Backend
+`LLM_BACKEND`, `LLM_MODEL`, `OPENAI_MODEL`, `OPENAI_API_BASE`, `OPENAI_API_KEY`, `LLM_TEMPERATURE`, `USE_REMOTE_OLLAMA`, `OLLAMA_BASE_URL`, `OLLAMA_REMOTE_URL`, `LLM_REQUEST_TIMEOUT`, `LLM_REMOTE_REQUEST_TIMEOUT`
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RETRIEVAL_TOP_K` | `10` | Number of chunks returned per search |
-| `BM25_ENABLED` | `true` | Toggle hybrid (vector+BM25) vs vector-only search |
-| `HYBRID_VECTOR_CANDIDATES` | `20` | Vector candidates before RRF fusion |
-| `HYBRID_BM25_CANDIDATES` | `20` | BM25 candidates before RRF fusion |
-| `MIN_CONFIDENCE_SCORE` | `0.45` | Cosine threshold — only used in vector-only mode |
+### Embeddings
+`EMBEDDING_SOURCE`, `EMBEDDING_MODEL`, `EMBEDDING_QUERY_PREFIX`, `EMBEDDING_PASSAGE_PREFIX`, `OLLAMA_EMBEDDING_URL`, `HF_TOKEN`
 
-### Chunking
+### Vector Store
+`USE_REMOTE_QDRANT`, `QDRANT_URL`, `QDRANT_REMOTE_URL`, `QDRANT_COLLECTION`, `QDRANT_VECTOR_DIM`
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CHUNK_MIN_TOKENS` | `50` | Chunks smaller than this are merged with neighbors |
-| `CHUNK_MAX_TOKENS` | `400` | Chunks larger than this are split at sentence boundaries |
+### Search & Reranker
+`RETRIEVAL_TOP_K`, `MIN_CONFIDENCE_SCORE`, `BM25_ENABLED`, `RERANKER_ENABLED`, `RERANKER_BACKEND`, `RERANKER_URL`, `RERANKER_MODEL`, `RERANKER_TOP_N`, `RERANKER_CANDIDATES`, `RERANKER_INSTRUCTION`, `RERANKER_QUERY_TEMPLATE`
 
-### Agent
+### Pipeline
+`PIPELINE_MODE`, `AGENT_MAX_ITERATIONS`, `AGENT_TIMEOUT`
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_MAX_ITERATIONS` | `8` | Max ReAct loops before forced stop |
-| `AGENT_TIMEOUT` | `120` | Seconds before agent times out |
-| `LLM_TEMPERATURE` | `0.0` | **Must be 0.0** for deterministic compliance answers |
+### Teams Bot
+`TEAMS_TENANT_ID`, `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`, `TEAMS_REFRESH_TOKEN`, `TEAMS_POLL_INTERVAL`
 
-### Observability (Phoenix)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PHOENIX_ENABLED` | `true` | Set `false` to disable tracing entirely |
-| `PHOENIX_ENDPOINT` | `http://localhost:6006/v1/traces` | OTLP collector endpoint |
-| `PHOENIX_PROJECT_NAME` | `compliance-bot` | Project name in Phoenix UI |
+### Observability
+`PHOENIX_ENABLED`, `PHOENIX_ENDPOINT`, `PHOENIX_PROJECT_NAME`
 
 ---
 
 ## Project Status
 
-The core RAG pipeline + evaluation system are complete. The system can:
+### Completed
+- DOCX ingestion with structure-aware chunking + cross-numId numbering fix
+- Hybrid search + reranker (`/v1/rerank`, supports llama-server and vLLM with model-specific templates)
+- Dual LLM backend (Ollama + OpenAI-compatible)
+- Agentic RAG (LlamaIndex AgentWorkflow + structured `ComplianceAnswer` JSON with `source_number`)
+- Vanilla RAG (no LlamaIndex, manually traced)
+- Microsoft Teams bot with feedback loop (-1, 0, 1, 2 ratings → JSONL + SQLite)
+- Phoenix observability with infra metadata in experiments
+- Eval system with `match_mode='any'` for multi-citation
+- Remote stack support (Spark)
+- Docker images & remote-host compose
 
-- Parse DOCX files with structure-aware chunking (headings + ilvl numbering)
-- Generate embeddings via HuggingFace models and store in Qdrant
-- Search policies via hybrid (vector + BM25 with RRF) or vector-only
-- Return structured JSON answers with citations (ComplianceAnswer schema)
-- Escalate unanswerable questions
-- Run a ReAct agent with 3 tools (search, get_section, escalate)
-- Trace every query end-to-end via Phoenix
-- Evaluate with Phoenix Datasets + Experiments (Tier 1, 2, Chatbot)
-
-**Not yet implemented:**
-
-- SQLite database for escalations and chat history
-- FastAPI REST API endpoints
-- Email notifications for escalations
-- React frontend chat UI
-- Automated tests
+### Not Yet Implemented
+- Email escalation notifications
+- React frontend
 - Tier 3 escalation evaluators
+- pytest test suite

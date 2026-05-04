@@ -117,7 +117,9 @@ class TeamsBot:
         if PID_FILE.exists():
             try:
                 existing_pid = int(PID_FILE.read_text().strip())
-                if self._pid_is_running(existing_pid):
+                # In Docker, both old and new containers run as PID 1 — the file
+                # is stale across restarts. Same-PID always means stale.
+                if existing_pid != my_pid and self._pid_is_running(existing_pid):
                     print(f"Another bot instance is already running (PID {existing_pid}). Exiting.")
                     sys.exit(1)
             except ValueError:

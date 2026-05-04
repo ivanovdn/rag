@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -10,7 +12,9 @@ from qdrant_client.models import (
 )
 
 from config import settings
-from ingest.chunk_models import PolicyChunk
+
+if TYPE_CHECKING:
+    from ingest.chunk_models import PolicyChunk
 
 _client: QdrantClient | None = None
 
@@ -65,7 +69,7 @@ def init_collection() -> None:
         )
 
 
-def upsert_chunks(chunks: list[PolicyChunk], embeddings: list[list[float]]) -> None:
+def upsert_chunks(chunks: "list[PolicyChunk]", embeddings: list[list[float]]) -> None:
     """Upsert chunks with their embeddings into Qdrant."""
     client = get_qdrant_client()
     points = [

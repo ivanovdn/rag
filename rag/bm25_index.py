@@ -16,9 +16,12 @@ import math
 import re
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from config import settings
-from ingest.chunk_models import PolicyChunk
+
+if TYPE_CHECKING:
+    from ingest.chunk_models import PolicyChunk
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +65,7 @@ class BM25Index:
         total = sum(len(d["tokens"]) for d in self.documents.values())
         self.avg_dl = total / len(self.documents)
 
-    def add_chunks(self, chunks: list[PolicyChunk]) -> None:
+    def add_chunks(self, chunks: "list[PolicyChunk]") -> None:
         """Add chunks to the index."""
         for chunk in chunks:
             tokens = _tokenize(chunk.text)
@@ -197,7 +200,7 @@ def get_bm25_index() -> BM25Index:
     return _index
 
 
-def add_chunks_to_bm25(chunks: list[PolicyChunk]) -> None:
+def add_chunks_to_bm25(chunks: "list[PolicyChunk]") -> None:
     """Add chunks to the BM25 index and persist."""
     idx = get_bm25_index()
     idx.add_chunks(chunks)
