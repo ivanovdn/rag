@@ -59,10 +59,16 @@ def render_answer(result: dict) -> str:
             location_lines.append(f"<b>📄 {doc}</b>")
         if section:
             location_lines.append(f"<b>Section:</b> {section}")
-        if clause and clause_num:
+        # If LLM mistakenly copied the number into the clause name, just show the number
+        clause_is_just_number = clause and clause_num and clause.strip() == clause_num.strip()
+        if clause_is_just_number:
+            location_lines.append(f"<b>Clause {clause_num}</b>")
+        elif clause and clause_num:
             location_lines.append(f"<b>Clause {clause_num}:</b> {clause}")
         elif clause:
             location_lines.append(f"<b>Clause:</b> {clause}")
+        elif clause_num:
+            location_lines.append(f"<b>Clause {clause_num}</b>")
 
         parts.append(f"<p>{'<br>'.join(location_lines)}</p>")
 

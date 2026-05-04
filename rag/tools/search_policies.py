@@ -110,10 +110,10 @@ def format_sources(search_results: list[dict]) -> str:
         lines.append("")  # blank line between sources
         lines.append(f"[Source {i + 1}] {r['doc_title']}")
         lines.append(f"Section: {r['section']}")
-        if r.get("clause") and r.get("clause_number"):
-            lines.append(f"Clause {r['clause_number']}: {r['clause']}")
-        elif r.get("clause"):
-            lines.append(f"Clause: {r['clause']}")
+        if r.get("clause_number"):
+            lines.append(f"Clause Number: {r['clause_number']}")
+        if r.get("clause"):
+            lines.append(f"Clause Name: {r['clause']}")
         lines.append("---")
         lines.append(r["text"])
 
