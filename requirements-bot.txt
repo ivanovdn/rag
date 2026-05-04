@@ -1,0 +1,28 @@
+# Slim runtime deps for the Teams bot Docker image.
+# Excludes HuggingFace embeddings (sentence-transformers, transformers, torch)
+# because the bot uses EMBEDDING_SOURCE=ollama in production.
+# For local dev with HuggingFace embeddings, use requirements.txt instead.
+
+# Core config
+pydantic>=2.12
+pydantic-settings>=2.13
+python-dotenv>=1.0
+
+# Vector DB
+qdrant-client>=1.17
+
+# LLM / Agent framework (no HF embeddings backend)
+llama-index-core>=0.14
+llama-index-llms-ollama>=0.9
+llama-index-llms-openai-like>=0.7
+
+# HTTP clients
+httpx>=0.28
+requests>=2.32
+
+# Observability
+arize-phoenix>=13.0
+openinference-instrumentation-llama-index>=4.0
+
+# Eval glue (parse_agent_response import path)
+nest-asyncio>=1.6

@@ -8,9 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps first (better layer caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python deps first (better layer caching).
+# Slim runtime deps — no HuggingFace embeddings (production uses Ollama embeddings).
+COPY requirements-bot.txt .
+RUN pip install --no-cache-dir -r requirements-bot.txt
 
 # Copy only runtime code
 COPY config.py .
