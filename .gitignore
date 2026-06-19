@@ -47,3 +47,6 @@ channels/teams/data/
 
 # Top-level feedback/data dump
 /data/
+
+# Claude Code per-developer local settings
+.claude/settings.local.json
