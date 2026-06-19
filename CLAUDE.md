@@ -99,4 +99,4 @@ TEAMS_TENANT_ID / CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN
 | Eval task fails under Phoenix | Experiment task fns must be sync `def`, not `async` — Phoenix `run_experiment` is synchronous. |
 | Bot can't reach Phoenix in Docker | Override `PHOENIX_ENDPOINT=http://phoenix:6006/v1/traces` in compose. |
 
-**Not yet implemented:** email escalation, pytest suite.
+**Not yet implemented:** email escalation. (Tier-A pytest suite exists under `tests/`; Tier-B/C and CI still pending.)

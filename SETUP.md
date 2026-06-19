@@ -496,6 +496,28 @@ All settings live in `.env`. See `config.py` for full schema. Notable groups:
 
 ---
 
+## Testing
+
+Tier-A unit tests (pure logic, no services) plus an auto-skipping corpus layer.
+
+```bash
+pip install -r requirements-dev.txt
+
+# Unit tests only — fast, no policy docs needed (CI-safe)
+PYTHONPATH=. pytest -m "not corpus" -q
+
+# Everything, including corpus parsing/numbering (needs local policies/*.docx)
+PYTHONPATH=. pytest -q
+
+# Parsing-coverage report over the local corpus
+PYTHONPATH=. python scripts/parse_coverage.py
+```
+
+The `corpus` tests require the gitignored `policies/*.docx` and **auto-skip**
+when they're absent (e.g. on CI or a fresh checkout).
+
+---
+
 ## Project Status
 
 ### Completed
