@@ -37,20 +37,17 @@ _pending_ratings: dict[str, dict] = {}
 def _run_rag(question: str) -> dict:
     """Run the RAG pipeline directly (no HTTP). Returns ComplianceAnswer dict."""
     try:
-        if settings.pipeline_mode == "vanilla":
-            from rag.pipeline import run_query
-            return run_query(question)
-        else:
-            import asyncio
-            from rag.agent import build_agent
-            from rag.response import parse_agent_response
+        # Deferred imports: init_observability() (start_teams_bot.py) must run before LlamaIndex loads.
+        import asyncio
+        from rag.agent import build_agent
+        from rag.response import parse_agent_response
 
-            async def _run():
-                agent = build_agent()
-                return await agent.run(user_msg=question)
+        async def _run():
+            agent = build_agent()
+            return await agent.run(user_msg=question)
 
-            response = asyncio.run(_run())
-            return parse_agent_response(str(response))
+        response = asyncio.run(_run())
+        return parse_agent_response(str(response))
     except Exception as e:
         print(f"RAG pipeline error: {e}")
         return {
@@ -362,7 +359,6 @@ class TeamsBot:
         try:
             print("Starting Compliance Teams Bot...")
             print("=" * 50)
-            print(f"Pipeline: {settings.pipeline_mode}")
             print(f"LLM: {settings.llm_model} ({settings.active_ollama_url})")
             print(f"Polling every {settings.teams_poll_interval}s")
             print("=" * 50)

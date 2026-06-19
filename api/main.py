@@ -29,6 +29,5 @@ app.include_router(router)
 async def health():
     return {
         "status": "ok",
-        "mode": settings.pipeline_mode,
         "llm": settings.llm_model,
     }

@@ -1,6 +1,5 @@
 from fastapi import APIRouter, HTTPException
 
-from config import settings
 from api.models import QueryRequest, QueryResponse
 
 router = APIRouter()
@@ -12,22 +11,10 @@ async def query(request: QueryRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
-    if settings.pipeline_mode == "vanilla":
-        from rag.pipeline import run_query
-        result = run_query(request.question)
-    else:
-        # Agentic mode — run LlamaIndex ReAct agent
-        result = await _run_agentic(request.question)
-
-    return result
-
-
-async def _run_agentic(question: str) -> dict:
-    """Run the LlamaIndex agent and parse its response."""
+    # Deferred imports: init_observability() (api/main.py) must run before LlamaIndex loads.
     from rag.agent import build_agent
     from rag.response import parse_agent_response
 
     agent = build_agent()
-    response = await agent.run(user_msg=question)
-    parsed = parse_agent_response(str(response))
-    return parsed
+    response = await agent.run(user_msg=request.question)
+    return parse_agent_response(str(response))
