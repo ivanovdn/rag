@@ -44,3 +44,6 @@ notebooks/
 
 # Teams bot data (tokens, state)
 channels/teams/data/
+
+# Top-level feedback/data dump
+/data/
