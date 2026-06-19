@@ -71,9 +71,6 @@ class Settings(BaseSettings):
     hybrid_vector_candidates: int = 20
     hybrid_bm25_candidates: int = 20
 
-    # Pipeline
-    pipeline_mode: str = "agentic"  # "agentic" or "vanilla"
-
     # Agent
     agent_max_iterations: int = 8
     agent_timeout: int = 120
