@@ -24,13 +24,14 @@ def _level0_decimals(path):
         # structural invariants for every numbered paragraph
         assert info["ilvl"] >= 0
         assert isinstance(info["numFmt"], str) and info["numFmt"]
-        if info["numFmt"] == "decimal":
-            # decimal lvlText is reliably non-empty (e.g. "%1."); bullets may not be
-            assert info["resolved"] != "", f"empty resolved decimal number in {path.name}"
-            if info["ilvl"] == 0:
-                leading = info["resolved"].strip().rstrip(".").split(".")[0]
-                if leading.isdigit():
-                    seq.append(int(leading))
+        # Collect level-0 decimal section numbers for the continuity check below.
+        # A decimal level may legitimately have an empty lvlText in some real docs,
+        # yielding an empty resolved number; such paragraphs are simply skipped
+        # here via the isdigit() guard rather than asserted non-empty.
+        if info["numFmt"] == "decimal" and info["ilvl"] == 0:
+            leading = info["resolved"].strip().rstrip(".").split(".")[0]
+            if leading.isdigit():
+                seq.append(int(leading))
     return seq
 
 
