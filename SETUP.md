@@ -42,7 +42,6 @@ cp .env.example .env
 | `EMBEDDING_MODEL` | model name; dim must match `QDRANT_VECTOR_DIM` |
 | `RERANKER_ENABLED` | `true` to enable `/v1/rerank` reranking |
 | `RERANKER_BACKEND` | `llama-server` (local) or `vllm` (remote) |
-| `PIPELINE_MODE` | `agentic` (default) or `vanilla` |
 
 ---
 
@@ -165,21 +164,13 @@ PYTHONPATH=. python scripts/ingest_all.py --folder ./policies
 
 ## Step 8 — Test the Pipeline
 
-### Agentic agent (default)
+### Test a query
 
 ```bash
 PYTHONPATH=. python scripts/test_query.py -q "What is the policy on software installation?"
 ```
 
 Returns `ComplianceAnswer` JSON with `answer`, `citations[]` (with `source_number`, `doc_title`, `section`, `clause`, `clause_number`, `quote`), and `escalation`.
-
-### Vanilla pipeline (no LlamaIndex, single LLM call)
-
-```bash
-PYTHONPATH=. python scripts/test_pipeline.py -q "What is the policy on software installation?"
-```
-
-Faster (~30-40s vs ~50-90s for agentic), but no multi-search reasoning.
 
 ---
 
@@ -190,7 +181,6 @@ http://localhost:6006
 ```
 
 - **Agentic**: full ReAct trace — every Thought/Action/Observation, tool calls, LLM prompts, latency
-- **Vanilla**: manual spans (`vanilla_rag_pipeline` → `search_policies` → `llm_call`)
 
 ---
 
@@ -316,13 +306,13 @@ python scripts/make_dataset.py eval/datasets/chatbot_test_cases.json
 python eval/run_experiment.py --tier tier1 --name baseline-retrieval
 
 # Tier 2 — full agent e2e
-python eval/run_experiment.py --tier tier2 --mode agentic --name agentic-baseline
+python eval/run_experiment.py --tier tier2 --name agentic-baseline
 
-# Chatbot — realistic user questions; vanilla mode
-python eval/run_experiment.py --tier chatbot --mode vanilla --name vanilla-baseline
+# Chatbot — realistic user questions
+python eval/run_experiment.py --tier chatbot --name chatbot-baseline
 ```
 
-`--mode` defaults to `agentic`. Auto-generated experiment names include backend + reranker config. Metadata captures infra (`local`/`remote`) and URLs.
+Auto-generated experiment names include backend + reranker config. Metadata captures infra (`local`/`remote`) and URLs.
 
 ---
 
@@ -495,8 +485,8 @@ All settings live in `.env`. See `config.py` for full schema. Notable groups:
 ### Search & Reranker
 `RETRIEVAL_TOP_K`, `MIN_CONFIDENCE_SCORE`, `BM25_ENABLED`, `RERANKER_ENABLED`, `RERANKER_BACKEND`, `RERANKER_URL`, `RERANKER_MODEL`, `RERANKER_TOP_N`, `RERANKER_CANDIDATES`, `RERANKER_INSTRUCTION`, `RERANKER_QUERY_TEMPLATE`
 
-### Pipeline
-`PIPELINE_MODE`, `AGENT_MAX_ITERATIONS`, `AGENT_TIMEOUT`
+### Agent
+`AGENT_MAX_ITERATIONS`, `AGENT_TIMEOUT`
 
 ### Teams Bot
 `TEAMS_TENANT_ID`, `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`, `TEAMS_REFRESH_TOKEN`, `TEAMS_POLL_INTERVAL`
@@ -513,7 +503,6 @@ All settings live in `.env`. See `config.py` for full schema. Notable groups:
 - Hybrid search + reranker (`/v1/rerank`, supports llama-server and vLLM with model-specific templates)
 - Dual LLM backend (Ollama + OpenAI-compatible)
 - Agentic RAG (LlamaIndex AgentWorkflow + structured `ComplianceAnswer` JSON with `source_number`)
-- Vanilla RAG (no LlamaIndex, manually traced)
 - Microsoft Teams bot with feedback loop (-1, 0, 1, 2 ratings → JSONL + SQLite)
 - Phoenix observability with infra metadata in experiments
 - Eval system with `match_mode='any'` for multi-citation
