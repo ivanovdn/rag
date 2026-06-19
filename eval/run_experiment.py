@@ -261,7 +261,7 @@ def main():
 
     print(f"  Evaluators:  {[e.__name__ for e in evaluators]}")
 
-    experiment = client.experiments.run_experiment(
+    client.experiments.run_experiment(
         dataset=dataset, task=task, evaluators=evaluators,
         experiment_name=args.name, experiment_description=description,
         experiment_metadata=metadata,
