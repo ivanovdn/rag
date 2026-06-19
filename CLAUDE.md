@@ -44,7 +44,8 @@ api/                 # main.py (CORS + /health, inits Phoenix), routes/query.py,
 channels/teams/      # bot.py (poll+RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
 eval/                # evaluators.py, agent_wrapper.py, run_experiment.py
 scripts/             # ingest_all, test_query, run_eval, make_dataset, start_*.sh
-# stubs / not implemented: notification/ db/ tests/ frontend/ (empty React scaffold), notebooks/ (gitignored)
+tests/               # unit/ (pure-logic) + docs/ (corpus parsing, auto-skip); see SETUP.md Testing
+# stubs / not implemented: notification/ db/ frontend/ (empty React scaffold), notebooks/ (gitignored)
 ```
 
 **Search flow:** `embed_query → vector_search (RERANKER_CANDIDATES) → [BM25 RRF] → [rerank → top RERANKER_TOP_N] → format_sources()` with `[Source N]` headers. The 3 agent tools: `search_policies` (search+rerank+format, always first), `get_section` (full section by doc_id+section_name), `escalate_to_compliance`.
