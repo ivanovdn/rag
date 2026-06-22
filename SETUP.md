@@ -516,6 +516,24 @@ PYTHONPATH=. python scripts/parse_coverage.py
 The `corpus` tests require the gitignored `policies/*.docx` and **auto-skip**
 when they're absent (e.g. on CI or a fresh checkout).
 
+### Manual: transient-infra resilience
+
+Confirm a down backend yields a clean "unavailable" notice (not an escalation,
+no raw error). Requires the local env; points embeddings at a dead port:
+
+```bash
+PYTHONPATH=. python -c "
+from config import settings
+settings.phoenix_enabled=False; settings.bm25_enabled=False
+settings.ollama_embedding_url='http://127.0.0.1:1'
+import channels.teams.bot as bot
+print(bot._run_rag('remote access policy'))   # -> {'status': 'unavailable'}
+"
+```
+
+With Phoenix running, the event appears as an `infra_unavailable` span
+(attributes: `failed_component`, `error_type`, `retries_attempted`).
+
 ---
 
 ## Project Status
