@@ -20,6 +20,7 @@ from channels.teams.renderer import (
     render_answer,
     render_escalation,
     render_error,
+    render_unavailable,
 )
 from channels.teams.feedback import save_feedback
 
@@ -35,26 +36,45 @@ _pending_ratings: dict[str, dict] = {}
 
 
 def _run_rag(question: str) -> dict:
-    """Run the RAG pipeline directly (no HTTP). Returns ComplianceAnswer dict."""
+    """Run the RAG pipeline directly (no HTTP). Returns a result dict.
+
+    Outcomes:
+      - {"status": "unavailable"}            transient backend failure (retried)
+      - {"answer", "citations", "escalation"} normal ComplianceAnswer
+    """
+    # Deferred imports: init_observability() (start_teams_bot.py) must run before LlamaIndex loads.
+    import asyncio
+    import rag.tools.search_policies as sp
+    from rag.agent import build_agent
+    from rag.response import parse_agent_response
+    from rag.resilience import retry_transient, is_transient, RETRY_BACKOFFS
+    from rag.observability import record_infra_unavailable
+
+    sp._retrieval_unavailable = False
+
+    async def _run():
+        agent = build_agent()
+        return await agent.run(user_msg=question)
+
     try:
-        # Deferred imports: init_observability() (start_teams_bot.py) must run before LlamaIndex loads.
-        import asyncio
-        from rag.agent import build_agent
-        from rag.response import parse_agent_response
-
-        async def _run():
-            agent = build_agent()
-            return await agent.run(user_msg=question)
-
-        response = asyncio.run(_run())
-        return parse_agent_response(str(response))
+        response = retry_transient(lambda: asyncio.run(_run()))
     except Exception as e:
+        if is_transient(e):
+            record_infra_unavailable("llm", type(e).__name__, len(RETRY_BACKOFFS))
+            return {"status": "unavailable"}
         print(f"RAG pipeline error: {e}")
         return {
             "answer": "",
             "citations": [],
             "escalation": {"needed": True, "reason": str(e)},
         }
+
+    # Retrieval failed inside the tool (LlamaIndex swallows tool exceptions) →
+    # the flag was set in search_policies; surface the unavailable outcome.
+    if sp._retrieval_unavailable:
+        return {"status": "unavailable"}
+
+    return parse_agent_response(str(response))
 
 
 class TeamsBot:
@@ -214,6 +234,13 @@ class TeamsBot:
 
         # Run RAG directly
         result = _run_rag(text)
+
+        # Transient backend failure — not an answer, not an escalation; no rating prompt.
+        if result.get("status") == "unavailable":
+            sent = self._send_message(chat_id, render_unavailable())
+            if sent:
+                print("Unavailable notice sent")
+            return bool(sent)
 
         # Render response
         escalation = result.get("escalation", {})

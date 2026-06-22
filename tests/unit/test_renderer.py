@@ -48,3 +48,11 @@ def test_render_error_includes_error_text():
     html = render_error("Q?", "boom")
     assert "Compliance lookup failed" in html
     assert "boom" in html
+
+
+def test_render_unavailable_is_safe_html():
+    from channels.teams.renderer import render_unavailable
+    html = render_unavailable()
+    assert "temporarily unavailable" in html.lower()
+    assert "<div" not in html  # Teams-safe tags only
+    assert "Errno" not in html and "Exception" not in html  # no raw error leakage

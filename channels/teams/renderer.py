@@ -26,6 +26,19 @@ LOADING_HTML = (
     "<i>Finding the relevant policy, section, and clause. This may take up to a minute.</i></p>"
 )
 
+# Shown when a backend (policy DB / models) is transiently unreachable.
+# Editable: reword freely; it must stay valid Teams-limited HTML.
+UNAVAILABLE_HTML = (
+    "<p><b>⚠️ Policy service temporarily unavailable</b></p>"
+    "<p>I can't reach the policy database right now. "
+    "Please try again in a moment.</p>"
+)
+
+
+def render_unavailable() -> str:
+    """Render the transient-infra-unavailable message."""
+    return UNAVAILABLE_HTML
+
 
 def render_answer(result: dict) -> str:
     """Render a successful ComplianceAnswer as Teams HTML.
