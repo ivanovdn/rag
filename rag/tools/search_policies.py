@@ -3,6 +3,7 @@ from llama_index.core.tools import FunctionTool
 from config import settings
 
 _last_search_results: list[dict] = []
+_retrieval_unavailable: bool = False
 
 
 def search_policies(query: str, top_k: int = 6) -> str:
@@ -19,7 +20,8 @@ def search_policies(query: str, top_k: int = 6) -> str:
         Formatted policy excerpts with document name, section, clause, clause number,
         and full text. Returns "NO_RELEVANT_POLICY_FOUND" if no policies match.
     """
-    global _last_search_results
+    global _last_search_results, _retrieval_unavailable
+    _retrieval_unavailable = False
 
     # How many candidates to retrieve (more when reranker will rescore)
     retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
@@ -49,9 +51,28 @@ def search_policies(query: str, top_k: int = 6) -> str:
     else:
         from rag.embeddings import embed_query
         from rag.vector_store import search_vectors
+        from rag.resilience import retry_transient, is_transient, RETRY_BACKOFFS
+        from rag.observability import record_infra_unavailable
 
-        query_vector = embed_query(query)
-        raw = search_vectors(query_vector, top_k=retrieve_k)
+        try:
+            query_vector = retry_transient(lambda: embed_query(query))
+        except Exception as exc:
+            if is_transient(exc):
+                _last_search_results = []
+                _retrieval_unavailable = True
+                record_infra_unavailable("embeddings", type(exc).__name__, len(RETRY_BACKOFFS))
+                return "POLICY_SEARCH_UNAVAILABLE"
+            raise
+
+        try:
+            raw = retry_transient(lambda: search_vectors(query_vector, top_k=retrieve_k))
+        except Exception as exc:
+            if is_transient(exc):
+                _last_search_results = []
+                _retrieval_unavailable = True
+                record_infra_unavailable("qdrant", type(exc).__name__, len(RETRY_BACKOFFS))
+                return "POLICY_SEARCH_UNAVAILABLE"
+            raise
 
         if not raw:
             _last_search_results = []
