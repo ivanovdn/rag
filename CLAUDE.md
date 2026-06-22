@@ -2,7 +2,7 @@
 
 Internal Compliance Q&A bot using **Agentic RAG** (LlamaIndex `AgentWorkflow`, multi-tool). Answers employee questions **strictly from approved internal policy DOCX files**; if an answer can't be grounded in policy, it escalates to Compliance with full context.
 
-**Channels:** Microsoft Teams (polls Graph `/me/chats` every 5s, imports RAG directly — no HTTP) + FastAPI `/api/query`.
+**Channels:** Microsoft Teams only (polls Graph `/me/chats` every 5s, imports RAG directly — no HTTP). The bot is the sole entry point; there is no HTTP API.
 **Deployment:** runs in Docker on a remote **Linux** host (`docker-compose-remote.yml`). All models + Qdrant live on an **NVIDIA Spark** box (`192.168.100.2`); the bot connects out to them. Local dev (everything on localhost) is still supported via env toggles.
 
 ## Commands
@@ -16,7 +16,6 @@ PYTHONPATH=. python scripts/test_query.py
 python scripts/make_dataset.py eval/datasets/<file>.json
 python eval/run_experiment.py --tier chatbot --name baseline-v1
 # Serve
-./scripts/start_api.sh                            # FastAPI :8000  (GET /health, POST /api/query)
 PYTHONPATH=. python scripts/start_teams_bot.py    # Teams bot
 docker compose up -d                              # local dev: Qdrant :6333 + Phoenix :6006
 docker compose -f docker-compose-remote.yml up -d --build   # PRODUCTION: bot + Phoenix on Linux host
@@ -40,7 +39,6 @@ rag/
   observability.py   # Phoenix init + tracer
   tools/             # search_policies (call FIRST), get_section, escalate_to_compliance
                      #   (clarify.py exists but is NOT imported/used)
-api/                 # main.py (CORS + /health, inits Phoenix), routes/query.py, models.py
 channels/teams/      # bot.py (poll+RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
 eval/                # evaluators.py, agent_wrapper.py, run_experiment.py
 scripts/             # ingest_all, test_query, run_eval, make_dataset, start_*.sh
