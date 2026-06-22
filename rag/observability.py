@@ -33,7 +33,6 @@ def init_observability() -> None:
     Call this at the top of:
     - scripts/test_query.py
     - scripts/run_eval.py
-    - Your FastAPI app startup (when you build it)
     """
     global _initialized
     if _initialized:
