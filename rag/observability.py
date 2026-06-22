@@ -88,3 +88,17 @@ def get_tracer():
         return trace.get_tracer("noop")
 
     return trace.get_tracer("compliance-bot")
+
+
+def record_infra_unavailable(failed_component: str, error_type: str, retries_attempted: int) -> None:
+    """Emit a Phoenix span marking a transient backend-unavailable event.
+
+    failed_component: "embeddings" | "qdrant" | "llm"
+    Makes infra-down events filterable in Phoenix, distinct from content escalations.
+    """
+    tracer = get_tracer()
+    with tracer.start_as_current_span("infra_unavailable") as span:
+        span.set_attribute("infra_unavailable", True)
+        span.set_attribute("failed_component", failed_component)
+        span.set_attribute("error_type", error_type)
+        span.set_attribute("retries_attempted", retries_attempted)
