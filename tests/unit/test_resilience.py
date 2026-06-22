@@ -84,3 +84,30 @@ def test_non_transient_reraises_immediately_without_retry(monkeypatch):
         retry_transient(fn)
     assert calls["n"] == 1
     assert slept == []
+
+
+def test_builtin_connection_and_timeout_are_transient():
+    # ollama re-wraps httpx connect/timeout into these builtins
+    assert is_transient(ConnectionError("refused"))
+    assert is_transient(TimeoutError("slow"))
+
+
+def test_plain_oserror_is_not_transient():
+    # OSError is the parent of ConnectionError but is not itself a connection failure
+    assert not is_transient(OSError("disk full"))
+
+
+def test_ollama_response_error_5xx_transient_else_not():
+    import ollama
+    assert is_transient(ollama.ResponseError("upstream", status_code=503))
+    assert not is_transient(ollama.ResponseError("not found", status_code=404))
+    assert not is_transient(ollama.ResponseError("unknown"))  # default status_code=-1
+
+
+def test_openai_connection_and_status_errors():
+    import openai
+    req = httpx.Request("POST", "http://x")
+    assert is_transient(openai.APIConnectionError(request=req))
+    assert is_transient(openai.APITimeoutError(request=req))
+    assert is_transient(openai.APIStatusError("m", response=httpx.Response(503, request=req), body=None))
+    assert not is_transient(openai.APIStatusError("m", response=httpx.Response(400, request=req), body=None))

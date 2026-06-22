@@ -531,6 +531,18 @@ print(bot._run_rag('remote access policy'))   # -> {'status': 'unavailable'}
 "
 ```
 
+And the LLM-backend-down path (leave embeddings/Qdrant up, kill only the LLM):
+
+```bash
+PYTHONPATH=. python -c "
+from config import settings
+settings.phoenix_enabled=False; settings.use_remote_ollama=False
+settings.ollama_base_url='http://127.0.0.1:1'
+import channels.teams.bot as bot
+print(bot._run_rag('remote access policy'))   # -> {'status': 'unavailable'}
+"
+```
+
 With Phoenix running, the event appears as an `infra_unavailable` span
 (attributes: `failed_component`, `error_type`, `retries_attempted`).
 
