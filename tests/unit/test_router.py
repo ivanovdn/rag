@@ -28,6 +28,8 @@ def test_resolve_at_or_above_floor_passes_category_through():
     assert resolve(d, 0.6) == Category.GREETING
     d2 = RouterDecision(category=Category.OUT_OF_SCOPE, confidence=0.9)
     assert resolve(d2, 0.6) == Category.OUT_OF_SCOPE
+    d3 = RouterDecision(category=Category.IN_SCOPE, confidence=0.9)
+    assert resolve(d3, 0.6) == Category.IN_SCOPE
 
 
 # --- _parse_decision ---
@@ -90,7 +92,7 @@ def test_classify_unparseable_falls_back_to_in_scope(monkeypatch):
         "rag.router.get_llm", lambda model=None: _FakeLLM(content="not json at all")
     )
     d = classify_message("hi there")
-    assert d.category == Category.IN_SCOPE and d.fallback is True
+    assert d.category == Category.IN_SCOPE and d.fallback is True and d.confidence == 0.0
 
 
 def test_classify_llm_failure_falls_back_to_in_scope(monkeypatch):
@@ -100,4 +102,4 @@ def test_classify_llm_failure_falls_back_to_in_scope(monkeypatch):
         lambda model=None: _FakeLLM(exc=httpx.ConnectError("llm down")),
     )
     d = classify_message("Can I install software?")
-    assert d.category == Category.IN_SCOPE and d.fallback is True
+    assert d.category == Category.IN_SCOPE and d.fallback is True and d.confidence == 0.0

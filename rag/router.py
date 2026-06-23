@@ -9,7 +9,7 @@ import json
 from enum import Enum
 
 from llama_index.core.llms import ChatMessage, MessageRole
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from config import settings
 from rag.agent import get_llm
@@ -25,6 +25,8 @@ class Category(str, Enum):
 
 
 class RouterDecision(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     category: Category
     confidence: float
     fallback: bool = False  # True when set by the failure path, not the model
