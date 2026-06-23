@@ -36,7 +36,8 @@ rag/
   hybrid_search.py   # RRF fusion (k=60)   reranker.py     # /v1/rerank (llama-server OR vllm)
   agent.py           # AgentWorkflow + system prompt + ComplianceAnswer schema + get_llm()
   response.py        # parse_agent_response() — JSON parser for agent output
-  observability.py   # Phoenix init + tracer
+  resilience.py      # is_transient() + retry_transient() — classify/retry transient backend failures
+  observability.py   # Phoenix init + tracer + record_infra_unavailable()
   tools/             # search_policies (call FIRST), get_section, escalate_to_compliance
                      #   (clarify.py exists but is NOT imported/used)
 channels/teams/      # bot.py (poll+RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
@@ -47,6 +48,8 @@ tests/               # unit/ (pure-logic) + docs/ (corpus parsing, auto-skip); s
 ```
 
 **Search flow:** `embed_query → vector_search (RERANKER_CANDIDATES) → [BM25 RRF] → [rerank → top RERANKER_TOP_N] → format_sources()` with `[Source N]` headers. The 3 agent tools: `search_policies` (search+rerank+format, always first), `get_section` (full section by doc_id+section_name), `escalate_to_compliance`.
+
+**Infra resilience:** transient backend failures (conn errors, timeouts, 5xx from embeddings/Qdrant/LLM) are retried (`retry_transient`, backoffs `(0.5,1,2)s` → up to 4 attempts) and, if still failing, become a clean **"service temporarily unavailable"** reply — never a content escalation, never a leaked raw error. Two interception points: retrieval (inside `search_policies` → sets `sp._retrieval_unavailable`, returns sentinel `POLICY_SEARCH_UNAVAILABLE`) and the LLM/agent boundary (in `_run_rag`, returns `{"status":"unavailable"}`). Each records a distinct `infra_unavailable` Phoenix span (`failed_component`, `error_type`, `retries_attempted`). The unavailable reply gets no rating prompt and creates no feedback row. Non-transient errors still propagate to escalation as before.
 
 **Eval tiers:** tier1 `retrieval-test-v1` (retrieval hit), tier2 `e2e-test-v1` (Q&A), chatbot `chatbot-test-v1` (realistic). Metadata captures infra (local/remote, urls, reranker backend).
 
@@ -97,5 +100,9 @@ TEAMS_TENANT_ID / CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN
 | Multi-citation eval flags valid answers | Add alt `expected_citations` + `"match_mode":"any"` at the TOP level of the test-case JSON. |
 | Eval task fails under Phoenix | Experiment task fns must be sync `def`, not `async` — Phoenix `run_experiment` is synchronous. |
 | Bot can't reach Phoenix in Docker | Override `PHOENIX_ENDPOINT=http://phoenix:6006/v1/traces` in compose. |
+| Tool raises an exception (e.g. Qdrant down) but `_run_rag`'s try/except never sees it | `AgentWorkflow` **swallows tool exceptions** and feeds them to the LLM as an observation. Detect infra failure *inside* the tool (`sp._retrieval_unavailable` flag), not by catching at `agent.run()`. |
+| LLM-down not classified as transient | A dead Ollama LLM raises **builtins `ConnectionError`/`TimeoutError`** (the `ollama` client re-wraps httpx), NOT an httpx type. `is_transient` must catch these + `ollama.ResponseError`/`openai` 5xx — see `_TRANSIENT_TYPES`. Verify infra changes against the LLM path, not just retrieval. |
+| Bot log empty / "not starting" when output redirected to a file | Python block-buffers stdout when not a TTY. Start with `python -u` (unbuffered) — the bot was alive and polling, just not flushing. |
+| Stale `bot_state.json` floods the channel with backlog | Bot trusts `last_check` with no upper bound; a weeks-old file re-answers the whole backlog. When moving hosts, reset local state to now (back up + delete `bot_state.json`). Startup clamp is a pending fix. |
 
 **Not yet implemented:** email escalation. (Tier-A pytest suite exists under `tests/`; Tier-B/C and CI still pending.)
