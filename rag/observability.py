@@ -102,3 +102,18 @@ def record_infra_unavailable(failed_component: str, error_type: str, retries_att
         span.set_attribute("failed_component", failed_component)
         span.set_attribute("error_type", error_type)
         span.set_attribute("retries_attempted", retries_attempted)
+
+
+def record_classification(category: str, confidence: float, fallback: bool) -> None:
+    """Emit a Phoenix span for a pre-retrieval classification decision.
+
+    category: the resolved Category value acted on
+              ("in_scope" | "greeting" | "out_of_scope" | "unintelligible").
+    fallback: True when the safe default (IN_SCOPE) overrode the model or the classifier failed.
+    Makes the classification distribution and safe-default fallback rate queryable in Phoenix.
+    """
+    tracer = get_tracer()
+    with tracer.start_as_current_span("classification") as span:
+        span.set_attribute("router_category", category)
+        span.set_attribute("router_confidence", confidence)
+        span.set_attribute("router_fallback", fallback)
