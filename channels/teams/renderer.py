@@ -40,6 +40,31 @@ def render_unavailable() -> str:
     return UNAVAILABLE_HTML
 
 
+# Shown when the router classifies a message as off-topic (ROUTER-3). Editable: reword
+# freely; must stay valid Teams-limited HTML.
+OUT_OF_SCOPE_HTML = (
+    "<p><b>I can only answer questions about company policies.</b></p>"
+    "<p>Ask me about a policy and I'll find the relevant section and clause.</p>"
+)
+
+# Shown when the router can't read the message (gibberish / wrong keyboard layout). Editable.
+UNINTELLIGIBLE_HTML = (
+    "<p><b>I couldn't read that.</b></p>"
+    "<p>It may have been typed with a different keyboard layout. "
+    "Please retype your question.</p>"
+)
+
+
+def render_out_of_scope() -> str:
+    """Render the out-of-scope redirect message."""
+    return OUT_OF_SCOPE_HTML
+
+
+def render_unintelligible() -> str:
+    """Render the unintelligible-input retype prompt."""
+    return UNINTELLIGIBLE_HTML
+
+
 def render_answer(result: dict) -> str:
     """Render a successful ComplianceAnswer as Teams HTML.
     Each citation is rendered as a separate block: bold location + verbatim quote.

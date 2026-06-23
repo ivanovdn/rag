@@ -56,3 +56,17 @@ def test_render_unavailable_is_safe_html():
     assert "temporarily unavailable" in html.lower()
     assert "<div" not in html  # Teams-safe tags only
     assert "Errno" not in html and "Exception" not in html  # no raw error leakage
+
+
+def test_render_out_of_scope_is_safe_html():
+    from channels.teams.renderer import render_out_of_scope
+    html = render_out_of_scope()
+    assert "compan" in html.lower()  # mentions company policies
+    assert "<div" not in html  # Teams-safe tags only
+
+
+def test_render_unintelligible_is_safe_html():
+    from channels.teams.renderer import render_unintelligible
+    html = render_unintelligible()
+    assert "retype" in html.lower() or "keyboard" in html.lower()
+    assert "<div" not in html  # Teams-safe tags only
