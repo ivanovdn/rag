@@ -1,3 +1,5 @@
+import logging
+
 import httpx
 import pytest
 
@@ -103,3 +105,14 @@ def test_classify_llm_failure_falls_back_to_in_scope(monkeypatch):
     )
     d = classify_message("Can I install software?")
     assert d.category == Category.IN_SCOPE and d.fallback is True and d.confidence == 0.0
+
+
+def test_classify_llm_failure_logs_warning(monkeypatch, caplog):
+    monkeypatch.setattr("rag.resilience.time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        "rag.router.get_llm",
+        lambda model=None: _FakeLLM(exc=httpx.ConnectError("llm down")),
+    )
+    with caplog.at_level(logging.WARNING, logger="rag.router"):
+        classify_message("Can I install software?")
+    assert any(r.levelname == "WARNING" for r in caplog.records)

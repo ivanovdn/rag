@@ -85,3 +85,37 @@ def test_router_disabled_bypasses_classifier(monkeypatch, teams_bot):
                         lambda q: {"answer": "x", "citations": [], "escalation": {"needed": False}})
     teams_bot._send_reply("chat1", "hello")  # would be a greeting, but router off -> search
     assert "chat1" in bot._pending_ratings
+
+
+def test_fallback_decision_sets_fallback_flag_and_searches(monkeypatch, teams_bot):
+    """decision.fallback=True makes record_classification(fallback=True) even when category matches resolved."""
+    monkeypatch.setattr(bot.settings, "router_enabled", True)
+    # Force classifier to return a failure-fallback decision: category==IN_SCOPE, fallback=True.
+    # resolve() will return IN_SCOPE (because decision.fallback is True), so category == decision.category;
+    # the OR-term `decision.fallback` is what drives fallback=True in record_classification.
+    monkeypatch.setattr(
+        router,
+        "classify_message",
+        lambda text: RouterDecision(category=Category.IN_SCOPE, confidence=0.0, fallback=True),
+    )
+
+    rag_called = {"called": False}
+    monkeypatch.setattr(
+        bot,
+        "_run_rag",
+        lambda q: rag_called.__setitem__("called", True) or {"answer": "x", "citations": [], "escalation": {"needed": False}},
+    )
+
+    recorded = {}
+
+    def _record(category, confidence, fallback):
+        recorded["category"] = category
+        recorded["confidence"] = confidence
+        recorded["fallback"] = fallback
+
+    monkeypatch.setattr("rag.observability.record_classification", _record)
+
+    teams_bot._send_reply("chat1", "Can I install software?")
+
+    assert rag_called["called"] is True, "in_scope path must run RAG"
+    assert recorded.get("fallback") is True, "record_classification must be called with fallback=True"

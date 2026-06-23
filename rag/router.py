@@ -6,6 +6,7 @@ refuse a real question — uncertainty or failure resolves to IN_SCOPE (see reso
 """
 
 import json
+import logging
 from enum import Enum
 
 from llama_index.core.llms import ChatMessage, MessageRole
@@ -15,6 +16,8 @@ from config import settings
 from rag.agent import get_llm
 from rag.resilience import retry_transient
 from rag.response import _extract_json  # reuse the tolerant JSON extractor (DRY)
+
+logger = logging.getLogger(__name__)
 
 
 class Category(str, Enum):
@@ -79,9 +82,13 @@ def classify_message(text: str) -> RouterDecision:
         llm = get_llm(settings.router_llm_model or None)
         response = retry_transient(lambda: llm.chat(messages))
         decision = _parse_decision(str(response.message.content))
-        return decision if decision is not None else _FALLBACK
-    except Exception:
+        if decision is None:
+            logger.warning("classifier output unparseable, defaulting to in_scope")
+            return _FALLBACK
+        return decision
+    except Exception as exc:
         # Fail safe to search: a classifier problem must never block a real question.
+        logger.warning("classification failed, defaulting to in_scope: %s", exc)
         return _FALLBACK
 
 
