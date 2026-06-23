@@ -36,18 +36,21 @@ rag/
   hybrid_search.py   # RRF fusion (k=60)   reranker.py     # /v1/rerank (llama-server OR vllm)
   agent.py           # AgentWorkflow + system prompt + ComplianceAnswer schema + get_llm()
   response.py        # parse_agent_response() — JSON parser for agent output
+  router.py          # pre-retrieval classify_message() + resolve() (greeting/in_scope/out_of_scope/unintelligible)
   resilience.py      # is_transient() + retry_transient() — classify/retry transient backend failures
-  observability.py   # Phoenix init + tracer + record_infra_unavailable()
+  observability.py   # Phoenix init + tracer + record_infra_unavailable() + record_classification()
   tools/             # search_policies (call FIRST), get_section, escalate_to_compliance
                      #   (clarify.py exists but is NOT imported/used)
 channels/teams/      # bot.py (poll+RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
 eval/                # evaluators.py, agent_wrapper.py, run_experiment.py
 scripts/             # ingest_all, test_query, run_eval, make_dataset, start_*.sh
-tests/               # unit/ (pure-logic) + docs/ (corpus parsing, auto-skip); see SETUP.md Testing
+tests/               # unit/ (pure-logic) + docs/ (corpus parsing) + live/ (live-LLM accuracy); docs+live auto-skip; see SETUP.md Testing
 # stubs / not implemented: notification/ db/ frontend/ (empty React scaffold), notebooks/ (gitignored)
 ```
 
 **Search flow:** `embed_query → vector_search (RERANKER_CANDIDATES) → [BM25 RRF] → [rerank → top RERANKER_TOP_N] → format_sources()` with `[Source N]` headers. The 3 agent tools: `search_policies` (search+rerank+format, always first), `get_section` (full section by doc_id+section_name), `escalate_to_compliance`.
+
+**Input classification (router):** before retrieval, `_send_reply` (when `ROUTER_ENABLED`) runs one temperature-0 LLM call (`rag/router.py` `classify_message`) tagging the message `greeting | in_scope | out_of_scope | unintelligible`. Only `in_scope` reaches the RAG pipeline; greeting→`WELCOME_HTML`, out_of_scope→`render_out_of_scope()`, unintelligible→`render_unintelligible()` (no search, no rating). **Safe-default invariant:** confidence `< ROUTER_CONFIDENCE_FLOOR`, or ANY classifier failure/unparseable output → `in_scope` (it can never refuse a real question). Logged to Phoenix via `record_classification` (`router_category/confidence/fallback`). Editable tuning surface: `ROUTER_SYSTEM_PROMPT` (prompt+categories) in `rag/router.py`, the two messages in `renderer.py`.
 
 **Infra resilience:** transient backend failures (conn errors, timeouts, 5xx from embeddings/Qdrant/LLM) are retried (`retry_transient`, backoffs `(0.5,1,2)s` → up to 4 attempts) and, if still failing, become a clean **"service temporarily unavailable"** reply — never a content escalation, never a leaked raw error. Two interception points: retrieval (inside `search_policies` → sets `sp._retrieval_unavailable`, returns sentinel `POLICY_SEARCH_UNAVAILABLE`) and the LLM/agent boundary (in `_run_rag`, returns `{"status":"unavailable"}`). Each records a distinct `infra_unavailable` Phoenix span (`failed_component`, `error_type`, `retries_attempted`). The unavailable reply gets no rating prompt and creates no feedback row. Non-transient errors still propagate to escalation as before.
 
@@ -69,6 +72,7 @@ EMBEDDING_SOURCE=huggingface|ollama       EMBEDDING_MODEL / QDRANT_VECTOR_DIM mu
 EMBEDDING_QUERY_PREFIX / EMBEDDING_PASSAGE_PREFIX   RERANKER_BACKEND=llama-server|vllm
 BM25_ENABLED (off)                        PHOENIX_ENDPOINT (Docker: http://phoenix:6006/v1/traces)
 TEAMS_TENANT_ID / CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN
+ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFIDENCE_FLOOR (0.6)
 ```
 
 ## Critical Constraints — never violate
