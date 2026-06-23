@@ -20,7 +20,9 @@ from channels.teams.renderer import (
     render_answer,
     render_escalation,
     render_error,
+    render_out_of_scope,
     render_unavailable,
+    render_unintelligible,
 )
 from channels.teams.feedback import save_feedback
 
@@ -228,6 +230,30 @@ class TeamsBot:
 
         # Not a rating — clear any pending state and process as question
         _pending_ratings.pop(chat_id, None)
+
+        # Pre-retrieval classification: only in-scope questions reach policy search.
+        if settings.router_enabled:
+            from rag.router import classify_message, resolve, Category  # deferred: observability-first
+            from rag.observability import record_classification
+
+            decision = classify_message(text)
+            category = resolve(decision, settings.router_confidence_floor)
+            record_classification(
+                category.value,
+                decision.confidence,
+                fallback=(category != decision.category or decision.fallback),
+            )
+
+            if category == Category.GREETING:
+                self._send_message(chat_id, WELCOME_HTML)
+                return True
+            if category == Category.OUT_OF_SCOPE:
+                self._send_message(chat_id, render_out_of_scope())
+                return True
+            if category == Category.UNINTELLIGIBLE:
+                self._send_message(chat_id, render_unintelligible())
+                return True
+            # Category.IN_SCOPE falls through to the RAG pipeline below.
 
         # Show loading indicator
         self._send_message(chat_id, LOADING_HTML)
