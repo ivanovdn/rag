@@ -25,6 +25,10 @@ CASES = [
 def test_classifier_accuracy_on_labeled_set():
     """Tuning signal (not a hard gate): a live model is non-deterministic, so we assert
     aggregate accuracy and report misses rather than failing per case."""
+    # Imported lazily (not at module top, despite CLAUDE.md): a module-top import of
+    # rag.router pulls the llama-index chain at pytest collection time on EVERY offline
+    # run, since collection imports this module before the live_llm marker deselects it.
+    # This test auto-skips without an LLM, so we defer the heavy import to execution.
     from rag.router import classify_message
 
     misses = []
