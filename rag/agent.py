@@ -152,12 +152,12 @@ ALL_TOOLS = [
 ]
 
 
-def get_llm():
+def get_llm(model: str | None = None):
     if settings.llm_backend == "openai-compatible":
         from llama_index.llms.openai_like import OpenAILike
 
         return OpenAILike(
-            model=settings.openai_model,
+            model=model or settings.openai_model,
             api_base=settings.openai_api_base,
             api_key=settings.openai_api_key,
             temperature=settings.llm_temperature,
@@ -169,7 +169,7 @@ def get_llm():
         from llama_index.llms.ollama import Ollama
 
         return Ollama(
-            model=settings.llm_model,
+            model=model or settings.llm_model,
             base_url=settings.active_ollama_url,
             request_timeout=float(settings.active_request_timeout),
             temperature=settings.llm_temperature,
