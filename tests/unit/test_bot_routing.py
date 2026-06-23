@@ -29,6 +29,7 @@ def test_greeting_replies_welcome_no_search(monkeypatch, teams_bot):
     teams_bot._send_reply("chat1", "hello")
     assert called["rag"] is False
     assert any("Compliance Policy Assistant" in h for h in teams_bot._sent)  # WELCOME_HTML
+    assert not any("Searching compliance policies" in h for h in teams_bot._sent)
     assert "chat1" not in bot._pending_ratings
 
 
@@ -38,6 +39,7 @@ def test_out_of_scope_replies_redirect_no_search(monkeypatch, teams_bot):
     monkeypatch.setattr(bot, "_run_rag", lambda q: pytest.fail("must not search"))
     teams_bot._send_reply("chat1", "order me a pizza")
     assert any("only answer questions about company policies" in h for h in teams_bot._sent)
+    assert not any("Searching compliance policies" in h for h in teams_bot._sent)
     assert "chat1" not in bot._pending_ratings
 
 
@@ -45,8 +47,9 @@ def test_unintelligible_replies_retype_no_search(monkeypatch, teams_bot):
     monkeypatch.setattr(bot.settings, "router_enabled", True)
     _force(monkeypatch, Category.UNINTELLIGIBLE)
     monkeypatch.setattr(bot, "_run_rag", lambda q: pytest.fail("must not search"))
-    teams_bot._send_reply("chat1", "црфе ші")
+    teams_bot._send_reply("chat1", "църфе ші")
     assert any("retype" in h.lower() for h in teams_bot._sent)
+    assert not any("Searching compliance policies" in h for h in teams_bot._sent)
     assert "chat1" not in bot._pending_ratings
 
 
@@ -71,6 +74,8 @@ def test_low_confidence_safe_default_searches(monkeypatch, teams_bot):
     teams_bot._send_reply("chat1", "ambiguous thing")
     assert called["rag"] is True
     assert not any("only answer questions about company policies" in h for h in teams_bot._sent)
+    assert not any("Compliance Policy Assistant" in h for h in teams_bot._sent)
+    assert not any("retype" in h.lower() for h in teams_bot._sent)
 
 
 def test_router_disabled_bypasses_classifier(monkeypatch, teams_bot):
