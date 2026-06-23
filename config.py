@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     agent_max_iterations: int = 8
     agent_timeout: int = 120
 
+    # Router (pre-retrieval classification)
+    router_enabled: bool = True
+    router_llm_model: str = ""            # classifier model override; empty -> main LLM
+    router_confidence_floor: float = 0.6  # below this -> safe default IN_SCOPE
+
     # Chunking
     chunk_min_tokens: int = 50
     chunk_max_tokens: int = 400
