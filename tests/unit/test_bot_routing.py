@@ -108,10 +108,11 @@ def test_fallback_decision_sets_fallback_flag_and_searches(monkeypatch, teams_bo
 
     recorded = {}
 
-    def _record(category, confidence, fallback):
+    def _record(category, confidence, fallback, message):
         recorded["category"] = category
         recorded["confidence"] = confidence
         recorded["fallback"] = fallback
+        recorded["message"] = message
 
     monkeypatch.setattr("rag.observability.record_classification", _record)
 
@@ -119,3 +120,4 @@ def test_fallback_decision_sets_fallback_flag_and_searches(monkeypatch, teams_bo
 
     assert rag_called["called"] is True, "in_scope path must run RAG"
     assert recorded.get("fallback") is True, "record_classification must be called with fallback=True"
+    assert recorded.get("message") == "Can I install software?", "message must be recorded for audit"

@@ -242,6 +242,7 @@ class TeamsBot:
                 category.value,
                 decision.confidence,
                 fallback=(category != decision.category or decision.fallback),
+                message=text,
             )
 
             if category == Category.GREETING:
