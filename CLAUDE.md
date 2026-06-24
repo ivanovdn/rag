@@ -108,5 +108,6 @@ ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFID
 | LLM-down not classified as transient | A dead Ollama LLM raises **builtins `ConnectionError`/`TimeoutError`** (the `ollama` client re-wraps httpx), NOT an httpx type. `is_transient` must catch these + `ollama.ResponseError`/`openai` 5xx — see `_TRANSIENT_TYPES`. Verify infra changes against the LLM path, not just retrieval. |
 | Bot log empty / "not starting" when output redirected to a file | Python block-buffers stdout when not a TTY. Start with `python -u` (unbuffered) — the bot was alive and polling, just not flushing. |
 | Stale `bot_state.json` floods the channel with backlog | Bot trusts `last_check` with no upper bound; a weeks-old file re-answers the whole backlog. When moving hosts, reset local state to now (back up + delete `bot_state.json`). Startup clamp is a pending fix. |
+| Router live test imports `rag.router` inside the test fn (not at top) | Deliberate exception to imports-at-top: a module-top import pulls llama-index at pytest **collection** on every offline run, but `tests/live/` auto-skips without an LLM. Keep it function-local. |
 
 **Not yet implemented:** email escalation. (Tier-A pytest suite exists under `tests/`; Tier-B/C and CI still pending.)
