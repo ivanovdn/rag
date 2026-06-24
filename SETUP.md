@@ -374,6 +374,33 @@ Logs: `docker compose -f docker-compose-remote.yml logs -f bot`
 
 > **Ingestion is a one-time admin task** done before deploying. The bot image does not include `policies/` or `ingest/`.
 
+### Single-poller handoff (local ↔ remote)
+
+**Only one bot instance may run per Teams account.** Both poll the same Graph mailbox and share one **single-use refresh-token chain** — running two at once causes duplicate replies and corrupts the token chain.
+
+When moving the bot between hosts (local testing → remote, or back), do this in order:
+
+```bash
+# 1. Stop the currently-running bot (frees the single-poller slot + lets it flush
+#    the latest rotated token to disk).
+#    Local:  Ctrl-C  (or  kill -INT <pid>)
+#    Docker: docker compose -f docker-compose-remote.yml stop bot
+
+# 2. Copy BOTH state files from the OLD host to the NEW host's channels/teams/data/:
+#    - refresh_token.json : the *current* rotated token. The old host advanced the
+#      chain while running, so the new host's stored token is stale and will fail auth.
+#    - bot_state.json     : last_check + processed_messages, so the new host resumes
+#      exactly where the old one stopped and re-answers NOTHING.
+scp <old-host>:<repo>/channels/teams/data/refresh_token.json ./channels/teams/data/
+scp <old-host>:<repo>/channels/teams/data/bot_state.json     ./channels/teams/data/
+
+# 3. Start the bot on the new host.
+```
+
+**Why copy `bot_state.json`?** Each host keeps its own state. Start the new host with a stale or missing `bot_state.json` and it treats recent channel messages as new and re-answers them. The old host's file has `last_check ≈ now` and a `processed_messages` set listing what was already answered, so the handoff is silent.
+
+**Backstop if you don't copy state:** `_load_state` clamps a stale `last_check` on startup — if it is older than `TEAMS_MAX_STATE_AGE_MINUTES` (default 60) it resets to `now − TEAMS_INITIAL_LOOKBACK_MINUTES` (default 5 min). That caps the worst case at re-answering the **last 5 minutes** of messages instead of the whole backlog. To re-answer *nothing* without copying state: either wait >5 min (no new messages) before starting, or set `TEAMS_INITIAL_LOOKBACK_MINUTES=0` for the handoff (answers only messages that arrive after startup).
+
 ---
 
 ## Quick-Start (All Steps Combined)
