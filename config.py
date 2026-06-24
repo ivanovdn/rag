@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     teams_poll_interval: int = 5
     teams_api_timeout: int = 10
     teams_initial_lookback_minutes: int = 5
+    teams_max_state_age_minutes: int = 60   # clamp last_check older than this on startup (anti-backlog-flood)
     teams_max_consecutive_errors: int = 5
     teams_max_processed_messages: int = 1000
 

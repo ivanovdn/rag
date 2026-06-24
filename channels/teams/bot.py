@@ -92,8 +92,10 @@ class TeamsBot:
     # ------------------------------------------------------------------
 
     def _load_state(self):
+        now = datetime.now(timezone.utc)
+        fresh_check = now - timedelta(minutes=settings.teams_initial_lookback_minutes)
         default = {
-            "last_check": datetime.now(timezone.utc) - timedelta(minutes=settings.teams_initial_lookback_minutes),
+            "last_check": fresh_check,
             "processed_messages": set(),
         }
         try:
@@ -101,6 +103,16 @@ class TeamsBot:
                 data = json.load(f)
             last_check = datetime.fromisoformat(data["last_check"])
             processed = set(data.get("processed_messages", []))
+            # Clamp a stale last_check so a long-stopped bot can't treat the whole
+            # backlog as new and answer it all into the channel. Normal restarts
+            # (downtime < teams_max_state_age_minutes) still resume from last_check.
+            if now - last_check > timedelta(minutes=settings.teams_max_state_age_minutes):
+                print(
+                    f"WARNING: bot_state last_check {last_check.isoformat()} is older than "
+                    f"{settings.teams_max_state_age_minutes} min; clamping to {fresh_check.isoformat()} "
+                    "to avoid answering the backlog."
+                )
+                last_check = fresh_check
             return {"last_check": last_check, "processed_messages": processed}
         except (FileNotFoundError, KeyError, ValueError):
             return default
