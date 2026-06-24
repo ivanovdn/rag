@@ -5,21 +5,21 @@ Teams-compatible HTML.
 """
 
 
-WELCOME_HTML = """<p><b>Compliance Policy Assistant</b></p>
+WELCOME_HTML = """<p><b>Trinetix Compliance Q&amp;A bot</b></p>
 
-<p>Ask any compliance question — the assistant will find the relevant
-<b>policy</b>, <b>section</b>, and <b>clause</b>, and quote the exact
-policy text.</p>
+<p>Hi! I quote policy rather than interpret it, so I won't give you a
+personal ruling — I point you to the exact <b>policy</b>, <b>section</b>,
+and <b>clause</b>.</p>
 
 <hr>
 
 <p><b>How to use</b></p>
 <ul>
-<li>Type your question in plain language.</li>
-<li>Type <code>start</code> any time to see this message again.</li>
-</ul>
-
-<p><i>Lookups typically take 30-60 seconds.</i></p>"""
+<li>Ask your question in plain English.</li>
+<li>I don't remember earlier messages yet — put your whole question in one message.</li>
+<li>Lookups take ~30–60 seconds.</li>
+<li>Type <code>start</code> anytime to see this again.</li>
+</ul>"""
 
 LOADING_HTML = (
     "<p><b>Searching compliance policies...</b><br>"

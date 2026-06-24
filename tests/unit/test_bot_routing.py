@@ -28,7 +28,7 @@ def test_greeting_replies_welcome_no_search(monkeypatch, teams_bot):
     monkeypatch.setattr(bot, "_run_rag", lambda q: called.__setitem__("rag", True) or {})
     teams_bot._send_reply("chat1", "hello")
     assert called["rag"] is False
-    assert any("Compliance Policy Assistant" in h for h in teams_bot._sent)  # WELCOME_HTML
+    assert any("Trinetix Compliance" in h for h in teams_bot._sent)  # WELCOME_HTML
     assert not any("Searching compliance policies" in h for h in teams_bot._sent)
     assert "chat1" not in bot._pending_ratings
 
@@ -74,7 +74,7 @@ def test_low_confidence_safe_default_searches(monkeypatch, teams_bot):
     teams_bot._send_reply("chat1", "ambiguous thing")
     assert called["rag"] is True
     assert not any("only answer questions about company policies" in h for h in teams_bot._sent)
-    assert not any("Compliance Policy Assistant" in h for h in teams_bot._sent)
+    assert not any("Trinetix Compliance" in h for h in teams_bot._sent)
     assert not any("retype" in h.lower() for h in teams_bot._sent)
 
 

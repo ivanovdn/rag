@@ -58,6 +58,14 @@ def test_render_unavailable_is_safe_html():
     assert "Errno" not in html and "Exception" not in html  # no raw error leakage
 
 
+def test_welcome_html_sets_expectations_and_is_safe():
+    from channels.teams.renderer import WELCOME_HTML
+    assert "Trinetix Compliance" in WELCOME_HTML  # bot identity
+    assert "quote policy rather than interpret" in WELCOME_HTML  # pointer-not-advisor expectation
+    assert "one message" in WELCOME_HTML  # statelessness hint
+    assert "<div" not in WELCOME_HTML  # Teams-safe tags only
+
+
 def test_render_out_of_scope_is_safe_html():
     from channels.teams.renderer import render_out_of_scope
     html = render_out_of_scope()
