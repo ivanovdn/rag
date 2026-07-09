@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
-    ollama_remote_url: str = "http://192.168.100.2:11434"
+    ollama_remote_url: str = "http://172.20.0.22:11434"
     use_remote_ollama: bool = False
     llm_model: str = "qwen3:14b"
     embedding_model: str = "nomic-embed-text"

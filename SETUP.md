@@ -316,12 +316,12 @@ Auto-generated experiment names include backend + reranker config. Metadata capt
 
 ---
 
-## Remote Stack (Spark @ 192.168.100.2)
+## Remote Stack (Spark @ 172.20.0.22)
 
 For the production deployment, models run on Spark:
 - Ollama (LLM + embedding) on port 11434
 - Qdrant on port 6333
-- vLLM (reranker) on port 8082
+- vLLM (reranker) on port 8267
 
 Switch via `.env`:
 
@@ -329,18 +329,18 @@ Switch via `.env`:
 USE_REMOTE_OLLAMA=true
 USE_REMOTE_QDRANT=true
 EMBEDDING_SOURCE=ollama
-OLLAMA_EMBEDDING_URL=http://192.168.100.2:11434
-RERANKER_BACKEND=vllm
-RERANKER_URL=http://192.168.100.2:8082
+OLLAMA_EMBEDDING_URL=http://172.20.0.22:11434
+RERANKER_BACKEND=vllm-score
+RERANKER_URL=http://172.20.0.22:8267
 RERANKER_MODEL=Qwen/Qwen3-Reranker-4B
 ```
 
 Re-ingest if embedding dimensions change. Verify connectivity to Spark before starting bot:
 
 ```bash
-curl http://192.168.100.2:6333/collections
-curl http://192.168.100.2:11434/api/tags
-curl http://192.168.100.2:8082/v1/models
+curl http://172.20.0.22:6333/collections
+curl http://172.20.0.22:11434/api/tags
+curl http://172.20.0.22:8267/v1/models
 ```
 
 ---
