@@ -1,0 +1,1949 @@
+[
+  {
+    "name": "1Password",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "ACF PRO - Freelancer",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Adobe Acrobat Reader",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Adobe After Effects",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Adobe Audition",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Adobe Creative Cloud",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Adobe Illusrator",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Adobe Photoshop",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Android File Transfer",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Android Studio",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "App Center",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Araxis Merge",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Artlist.io",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "AWS",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "AWS Client, AWS POD",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "AWS VM",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "AWS Workspace",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Azure Cosmos Emulator",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Azure Data Studio",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Azure DevOps",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Azure Portal",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Balsamiq",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Banana Cake Pop",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "BBEdit",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Big-IP Edge Client",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Bitwarden",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "bpmn.io",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Camtasia",
+    "status": "allowed",
+    "category": "",
+    "note": "With existing license",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Camunda",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "CaptiOCR",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Captura",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Charles Proxy",
+    "status": "allowed",
+    "category": "",
+    "note": "With request to IT",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "ChatGPT Enterprise",
+    "status": "allowed",
+    "category": "",
+    "note": "With request to IT",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Chrome browser",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Cisco AnyConnect (VPN)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "ClickUp",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "ColorSlurp",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Commander One",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Confluence",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Crunchbase",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "CSS Grid Overlay",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "DB Browser for SQLite",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "DBeaver",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "DeepL Translate",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Dependencies",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "D-ID Studio",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Discord",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Docker",
+    "status": "allowed",
+    "category": "",
+    "note": "A license is required for commercial usage",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "draw.io (app.diagrams.net)",
+    "status": "allowed",
+    "category": "",
+    "note": "Without saving to OneDrive due to excessive permissions",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "DuckDB",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "EasyRetro",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Eclipse IDE",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "ElevenLabs",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Envato",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Everhour",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Evernote",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "EYE DROPPER | COLOR PICKER (chrome extension)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Fiddler",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "FigJam",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Figma",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Figma (dev mode)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Foxit PDF reader",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Free Ruler",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Gemini",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "GIMP",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Giphy Capture",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Git",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Git Bash",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Git GUI (app)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Git Lens",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "GitExtensions",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Github CoPilot",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Github Desktop",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Gitkraken",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Gmail",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "google gantt chart",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Google Meet",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Google Workspace",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Grammarly",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Hubspot",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Icecream recorder",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "iFunBox",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "IIS(app)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Immersed",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "insomnia",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "IrfanView",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Iterm2",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Jira",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Kap",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Keeper Security",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Keka",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "LibreOffice",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "LinqPad",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "LucidChart",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Masscode",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Measuremate plugin",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Microsoft Copilot",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Microsoft PowerToys",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MidJourney",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Miro",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Mobbin",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Monday.com",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MongoDb Compass",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Mozilla Firefox",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Mozilla Thunderbird",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Azure Storage Emulator",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Azure Storage Explorer",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Edge",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Office (Excel, Word, Outlook, One Note, One Drive)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Office 365",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS OneDrive",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS OneNote",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS PowerBI",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS PowerBI Desktop",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS SQL Client",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS SQL Management Studio",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS SQL Server",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS SQL Server/ pgAdmin",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Studio Code",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Teams",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Teams (Online)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Visio",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Visual Studio",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Visual Studio Code",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "MS Visual Studio Community",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Nimbus",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Node JS",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Notepad ++",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Notion",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "NSwag Studio",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "OBS",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Octane",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Office Timeline",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "OpenSearch",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "OpenVPN Connect",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Opera browsers",
+    "status": "allowed",
+    "category": "",
+    "note": "Without using Opera VPN",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Pageflows",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Paint .Net",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "PGPTool",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "PhotoScape X",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Pixel Perfect Pro (chrome extension)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Podman",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "PostgreSQL",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Postman",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Prisma Access Browser",
+    "status": "allowed",
+    "category": "",
+    "note": "If provided by client",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Proxyman",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "PyDev plugin for Eclipse IDE",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Quicktime",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "quokka.js",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Rancher Desktop",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Rapid API",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "React Developer Tools",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Realm Studio",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Redgate SQL Compare",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Redgate SQL Prompt",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Redis Desktop Manager",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Redis Insights",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Rosetta",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Safari",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Sales Navigator (Linkedin)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "ScreenPresso",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "ShareX",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Skype",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Slack",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Snagit",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Sniptool",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "SoulMachines",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "SourceTree",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Spark",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "SQL Assistant",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "SQL Server Management Studio",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "SQL Workbench",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "SQLiteManagerTool",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Sqlpackage",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "SQLPro for SQLite (Lite)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Stable Diffusion",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Stackblitz",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Sublime Text",
+    "status": "allowed",
+    "category": "",
+    "note": "A license is required for commercial usage",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Swagger",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Tabby",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "TestFlight",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "TortoiseGit",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Uberlayer",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Unreal commander",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "UTM",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "View Latest Test Result (ADO extension)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "VirtualBox",
+    "status": "allowed",
+    "category": "",
+    "note": "VirtualBox Extension Pack requires a license for commercial usage",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "VisBug (chrome extension)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Vysor",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Webflow",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "WinMerge",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Work item checklist (ADO extension)",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Xcode",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "xmind",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Xnip",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "X-Particles/Cinema 4D",
+    "status": "allowed",
+    "category": "",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Zoom",
+    "status": "allowed",
+    "category": "",
+    "note": "With request to IT Director",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Allowed Software"
+  },
+  {
+    "name": "Lightshot",
+    "status": "forbidden",
+    "category": "High-risk russian software",
+    "note": "",
+    "alternative": "Flameshot, Greenshot",
+    "aliases": [],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Monosnap",
+    "status": "forbidden",
+    "category": "High-risk russian software",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Shottr",
+    "status": "forbidden",
+    "category": "High-risk russian software",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "7-Zip",
+    "status": "forbidden",
+    "category": "High-risk russian software",
+    "note": "",
+    "alternative": "Windows 11 natively supports .tar, .tgz, .7z, .rar, etc.",
+    "aliases": [],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "WinRar",
+    "status": "forbidden",
+    "category": "High-risk russian software",
+    "note": "",
+    "alternative": "",
+    "aliases": [],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Parallels® Desktop",
+    "status": "forbidden",
+    "category": "High-risk russian software",
+    "note": "",
+    "alternative": "Oracle VirtualBox",
+    "aliases": [],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "JetBrains Software",
+    "status": "forbidden",
+    "category": "High-risk russian software",
+    "note": "Allowed to use until the expiration of existing licenses",
+    "alternative": "MS Visual Studio, VS Code",
+    "aliases": [
+      "DataGrip",
+      "dotCover",
+      "IntelliJ IDEA",
+      "PHPStorm",
+      "PyCharm",
+      "ReSharper",
+      "Rider",
+      "WebStorm",
+      "JetBrains/Taxamo"
+    ],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Warp terminal",
+    "status": "forbidden",
+    "category": "Risky software",
+    "note": "Closed-source, mandatory login, collects high amount of telemetry and other data that likely used for AI training",
+    "alternative": "iTerm2, Tabby",
+    "aliases": [],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Any personal/non-corporate VPN software including browser extensions (for example: Clear VPN, ExpressVPN, Hide.me, Mullvad VPN, NordVPN, Proton VPN, Surfshark, TunnelBear, Windscribe, etc.)",
+    "status": "forbidden",
+    "category": "Prohibited software - personal VPN",
+    "note": "Personal VPN software must not be used for business purposes Exceptions may apply upon request to IT and SOC",
+    "alternative": "Corporate Cisco AnyConnect VPN",
+    "aliases": [
+      "Clear VPN",
+      "ExpressVPN",
+      "Hide.me",
+      "Mullvad VPN",
+      "NordVPN",
+      "Proton VPN",
+      "Surfshark",
+      "TunnelBear",
+      "Windscribe"
+    ],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Any unlicensed (cracked) software",
+    "status": "forbidden",
+    "category": "Prohibited software - cracked software",
+    "note": "Usage or storage of unlicensed (cracked) software is a violation of intellectual property rights",
+    "alternative": "For business needs request a license from support@trinetix.com",
+    "aliases": [],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Any torrent client (for example: uTorrent, BitTorrent, qBittorrent, MediaGet, Deluge, Vuze, etc.)",
+    "status": "forbidden",
+    "category": "Prohibited software - torrent client",
+    "note": "Torrent clients are prohibited due to often violation of intellectual property rights",
+    "alternative": "For business needs request a license from support@trinetix.com",
+    "aliases": [
+      "uTorrent",
+      "BitTorrent",
+      "qBittorrent",
+      "MediaGet",
+      "Deluge",
+      "Vuze"
+    ],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Any non-approved remote desktop control software (for example: TeamViewer, AnyDesk, etc.)",
+    "status": "forbidden",
+    "category": "Prohibited software - remote desktop control",
+    "note": "Remote desktop software pose significant risk of unauthorized access and data leakage",
+    "alternative": "Microsoft Teams remote desktop sharing and control",
+    "aliases": [
+      "AnyDesk"
+    ],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "TeamViewer",
+    "status": "forbidden",
+    "category": "Prohibited software - remote desktop control",
+    "note": "Example of non-approved remote desktop control software. Remote desktop software pose significant risk of unauthorized access and data leakage",
+    "alternative": "Microsoft Teams remote desktop sharing and control",
+    "aliases": [],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Any non-corporate security software (for example: McAfee, Avast, ESET, Kaspersky antiviruses, etc.)",
+    "status": "forbidden",
+    "category": "Prohibited software - non-corporate security software",
+    "note": "Non-corporate security software can interrupt work of corporate security tools and affect system's performance",
+    "alternative": "Corporate security software (that must be already installed)",
+    "aliases": [
+      "McAfee",
+      "Avast",
+      "ESET",
+      "Kaspersky"
+    ],
+    "source_list": "Forbidden Software"
+  },
+  {
+    "name": "Any pentesting software used without proper permission and approval (for example: Metasploit, Hydra, Burp Suite, Nmap, etc.)",
+    "status": "forbidden",
+    "category": "Prohibited software - pentesting software",
+    "note": "Pentesting software must be used only with proper permission and approval Can be used only with proper permission and approval",
+    "alternative": "N/A",
+    "aliases": [
+      "Metasploit",
+      "Hydra",
+      "Burp Suite",
+      "Nmap"
+    ],
+    "source_list": "Forbidden Software"
+  }
+]
