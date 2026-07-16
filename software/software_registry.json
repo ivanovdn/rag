@@ -1936,7 +1936,7 @@
     "name": "Any pentesting software used without proper permission and approval (for example: Metasploit, Hydra, Burp Suite, Nmap, etc.)",
     "status": "forbidden",
     "category": "Prohibited software - pentesting software",
-    "note": "Pentesting software must be used only with proper permission and approval Can be used only with proper permission and approval",
+    "note": "Pentesting software must be used only with proper permission and approval",
     "alternative": "N/A",
     "aliases": [
       "Metasploit",

@@ -32,8 +32,12 @@ def test_known_rows_are_correct():
     assert tv and tv.status == "forbidden"
 
     jb = _find(rows, "JetBrains Software")
-    assert jb and "vs code" in jb.alternative.lower()
+    assert jb and jb.status == "forbidden"
+    assert "vs code" in jb.alternative.lower()
     assert any("pycharm" in a.lower() for a in jb.aliases)
 
     vpn = next((r for r in rows if r.status == "forbidden" and "vpn" in r.name.lower()), None)
     assert vpn and "cisco anyconnect" in vpn.alternative.lower()
+
+    cisco = _find(rows, "Cisco AnyConnect (VPN)")
+    assert cisco and cisco.status == "allowed"
