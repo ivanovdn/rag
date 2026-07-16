@@ -66,3 +66,13 @@ def test_embed_text_forbidden_includes_category_and_alternative(rows):
 def test_embed_text_allowed_is_name_and_note(rows):
     txt = software_embed_text(rows[0])
     assert txt.startswith("Docker") and "license" in txt
+
+
+def test_garbage_compound_query_does_not_falsely_match_at_default_threshold(rows):
+    # Regression guard: WRatio scored "dockerr composer xyz" -> "docker" at 90 (a
+    # confident/authoritative false verdict) at the production default threshold.
+    # fuzz.ratio must reject it (row=None) while still offering a suggestion.
+    idx = build_name_index(rows)
+    r = lookup_name("dockerr composer xyz", idx, threshold=85.0)
+    assert r.row is None
+    assert r.suggestion is not None

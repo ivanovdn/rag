@@ -63,7 +63,13 @@ def lookup_name(query: str, index: dict[str, SoftwareRow], threshold: float) -> 
     if q in index:
         return LookupResult(row=index[q], score=100.0, exact=True)
 
-    match = process.extractOne(q, list(index.keys()), scorer=fuzz.WRatio)
+    # fuzz.ratio (length-sensitive whole-string) NOT WRatio: WRatio's partial/token
+    # scorers give a long garbage/compound query a confident score against a short
+    # registry name (e.g. "dockerr composer xyz" -> "docker" = 90), a wrong
+    # authoritative verdict. ratio rejects those (46) while keeping real typos
+    # (winrarr -> winrar = 92). Bare partial names miss here and fall through to the
+    # semantic fallback + aliases — a safe miss, not a false verdict.
+    match = process.extractOne(q, list(index.keys()), scorer=fuzz.ratio)
     if match is None:
         return LookupResult(row=None, score=0.0)
     matched_key, score = match[0], match[1]
