@@ -1667,6 +1667,27 @@ git commit -m "feat(software): live accuracy test + docs"
 
 ---
 
+## Amendment A: EmbeddingGemma scoped prompt prefixes (post-Task-6)
+
+**Why:** Live testing of Task 6 showed the semantic fallback was miscalibrated with `embeddinggemma`: without task prefixes the embedding space is nearly non-discriminative for short software rows (curated forbidden rows ranked 100+/212; gibberish scored like real queries). EmbeddingGemma was *trained* with task prompts (confirmed: model card + Google blog — query `"task: search result | query: "`, document `"title: none | text: "`), but this project calls Ollama `/api/embed` directly, which does not auto-apply them, and the global prefixes are empty. Verified fix (6-query test): with the prompts, forbidden VPN/antivirus/remote-desktop rows rise to rank 1–3 and junk drops to ~0.2–0.31.
+
+**Decision:** Scope the prompts to the **software path only** (do NOT touch the global prefixes / policy collection — a separate follow-up covers policies). Config-driven so they stay tunable.
+
+**Changes:**
+- `config.py` + `.env.example`: add
+  - `software_embedding_query_prefix: str = "task: search result | query: "`
+  - `software_embedding_passage_prefix: str = "title: none | text: "`
+  - change `software_min_semantic_score` default `0.5 → 0.40` (empirically separates real category hits ~0.42–0.60 from junk ~0.25–0.31).
+- `rag/software_registry.py`: add two thin wrappers (keep `software_embed_text` pure so Task 2 tests stand):
+  - `software_passage_text(row) -> str` → `settings.software_embedding_passage_prefix + software_embed_text(row)`
+  - `software_query_text(query) -> str` → `settings.software_embedding_query_prefix + query`
+- `scripts/ingest_software.py`: embed `software_passage_text(r)` (not bare `software_embed_text`).
+- `rag/tools/check_software.py`: embed `embed_query(software_query_text(name))` in the semantic fallback.
+- Re-ingest the 212 rows (deterministic uuid5 ids overwrite in place).
+- Tests: add unit tests that the two wrappers prepend the configured prefixes; existing Task 2/6 tests unaffected (mocks ignore the query arg; `software_embed_text` unchanged).
+
+**Follow-up (separate, out of scope):** the policy collection was ingested through the same prefix-less Ollama path and likely under-performs; fixing it means global prefixes + full policy re-ingest + eval revalidation.
+
 ## Self-Review (completed during authoring)
 
 **Spec coverage:** Data model & source of truth → Task 3 (+ Task 2 `SoftwareRow`). Storage & ingest → Tasks 4, 5. `check_software` hybrid + resilience → Task 6. Agent integration (tool, prompt, schema) → Task 7. Rendering + not-found + unavailable outcomes → Tasks 8, 9. Config/deps/data location → Tasks 1, 3. Testing (unit/docs/live) → every task + Task 10. Known limitation + future-source note → documented in CLAUDE.md (Task 10) and carried in the spec. Router unchanged → respected (no router task). All spec sections map to a task.
