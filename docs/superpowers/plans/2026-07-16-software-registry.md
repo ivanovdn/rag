@@ -218,7 +218,9 @@ def test_alias_resolves_to_parent_row(rows):
 
 def test_fuzzy_typo_matches_above_threshold(rows):
     idx = build_name_index(rows)
-    r = lookup_name("WinRAR", idx, threshold=85.0)  # case/spacing variant of "WinRar"
+    # genuine typo (extra 'r'), NOT just a case variant — a case variant would
+    # normalize to an exact key hit; this must exercise the fuzzy path (exact=False).
+    r = lookup_name("WinRarr", idx, threshold=85.0)
     assert r.row is not None and r.row.name == "WinRar" and r.exact is False
 
 
