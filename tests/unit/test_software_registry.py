@@ -6,6 +6,8 @@ from rag.software_registry import (
     build_name_index,
     lookup_name,
     software_embed_text,
+    software_query_text,
+    software_passage_text,
 )
 
 
@@ -76,3 +78,16 @@ def test_garbage_compound_query_does_not_falsely_match_at_default_threshold(rows
     r = lookup_name("dockerr composer xyz", idx, threshold=85.0)
     assert r.row is None
     assert r.suggestion is not None
+
+
+def test_software_query_text_prepends_query_prefix():
+    from config import settings
+    out = software_query_text("Docker")
+    assert out == f"{settings.software_embedding_query_prefix}Docker"
+    assert out.startswith("task: search result | query: ")
+
+
+def test_software_passage_text_prepends_doc_prefix(rows):
+    txt = software_passage_text(rows[0])
+    assert txt.startswith("title: none | text: ")
+    assert "Docker" in txt

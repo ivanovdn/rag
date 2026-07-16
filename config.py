@@ -50,7 +50,11 @@ class Settings(BaseSettings):
     software_docs_folder: str = "./software"
     software_registry_path: str = "./software/software_registry.json"
     software_fuzzy_threshold: float = 85.0     # rapidfuzz score 0-100; >= this is a confident name match
-    software_min_semantic_score: float = 0.5   # cosine floor for the category (semantic) fallback
+    software_min_semantic_score: float = 0.40  # cosine floor for the category (semantic) fallback; separates real hits (~0.42-0.60) from junk (~0.25-0.31) once prompts are applied
+    # embeddinggemma is trained with task prompts; Ollama /api/embed doesn't auto-apply them.
+    # Scoped to the software path only (global embedding_query_prefix/embedding_passage_prefix stay empty).
+    software_embedding_query_prefix: str = "task: search result | query: "
+    software_embedding_passage_prefix: str = "title: none | text: "
 
     # Embeddings
     embedding_source: str = "huggingface"  # "huggingface" or "ollama"

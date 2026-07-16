@@ -11,7 +11,7 @@ init_observability()  # must precede any LlamaIndex/embedding import
 
 from config import settings  # noqa: E402
 from rag.embeddings import embed_texts  # noqa: E402
-from rag.software_registry import load_registry, software_embed_text  # noqa: E402
+from rag.software_registry import load_registry, software_passage_text  # noqa: E402
 from rag.vector_store import init_software_collection, upsert_software_rows  # noqa: E402
 
 
@@ -21,7 +21,7 @@ def main():
         print("No software rows found.")
         return
     init_software_collection()
-    embed_inputs = [software_embed_text(r) for r in rows]
+    embed_inputs = [software_passage_text(r) for r in rows]
     embeddings = embed_texts(embed_inputs)
     upsert_software_rows([r.model_dump() for r in rows], embeddings)
     print(f"Ingested {len(rows)} software rows into '{settings.software_collection}'.")

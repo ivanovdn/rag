@@ -91,3 +91,14 @@ def software_embed_text(row: SoftwareRow) -> str:
             parts.append(f"Alternative: {row.alternative}")
         return " | ".join(parts)
     return f"{row.name} | {row.note}" if row.note else row.name
+
+
+def software_passage_text(row: SoftwareRow) -> str:
+    """Embedding text for a stored row, with embeddinggemma's document prompt
+    prefix (the model is trained with task prompts; Ollama doesn't auto-apply them)."""
+    return f"{settings.software_embedding_passage_prefix}{software_embed_text(row)}"
+
+
+def software_query_text(query: str) -> str:
+    """A lookup query with embeddinggemma's retrieval-query prompt prefix."""
+    return f"{settings.software_embedding_query_prefix}{query}"

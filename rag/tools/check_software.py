@@ -16,6 +16,7 @@ from rag.software_registry import (
     SoftwareRow,
     build_name_index,
     lookup_name,
+    software_query_text,
 )
 from rag.vector_store import scroll_all, search_vectors
 
@@ -93,7 +94,7 @@ def check_software(name: str) -> str:
 
     # Step 2: score-gated semantic fallback (category questions)
     try:
-        query_vector = retry_transient(lambda: embed_query(name))
+        query_vector = retry_transient(lambda: embed_query(software_query_text(name)))
     except Exception as exc:
         if is_transient(exc):
             _software_unavailable = True

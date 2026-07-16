@@ -8,4 +8,6 @@ def test_software_defaults():
     assert s.software_docs_folder == "./software"
     assert s.software_registry_path == "./software/software_registry.json"
     assert s.software_fuzzy_threshold == 85.0
-    assert s.software_min_semantic_score == 0.5
+    assert s.software_min_semantic_score == 0.40
+    assert s.software_embedding_query_prefix == "task: search result | query: "
+    assert s.software_embedding_passage_prefix == "title: none | text: "
