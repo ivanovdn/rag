@@ -1,3 +1,4 @@
+import uuid
 from typing import TYPE_CHECKING
 
 from qdrant_client import QdrantClient
@@ -101,12 +102,12 @@ def delete_document(doc_id: str) -> None:
 
 
 def search_vectors(
-    query_vector: list[float], top_k: int | None = None
+    query_vector: list[float], top_k: int | None = None, collection_name: str | None = None
 ) -> list:
     """Search for similar vectors, returns list of ScoredPoint."""
     client = get_qdrant_client()
     response = client.query_points(
-        collection_name=settings.qdrant_collection,
+        collection_name=collection_name or settings.qdrant_collection,
         query=query_vector,
         limit=top_k or settings.retrieval_top_k,
         with_payload=True,
@@ -114,13 +115,59 @@ def search_vectors(
     return response.points
 
 
-def scroll_by_filter(filter_conditions: Filter, limit: int = 10) -> list:
+def scroll_by_filter(
+    filter_conditions: Filter, limit: int = 10, collection_name: str | None = None
+) -> list:
     """Scroll through points matching a filter."""
     client = get_qdrant_client()
     results, _ = client.scroll(
-        collection_name=settings.qdrant_collection,
+        collection_name=collection_name or settings.qdrant_collection,
         scroll_filter=filter_conditions,
         limit=limit,
         with_payload=True,
     )
     return results
+
+
+def init_software_collection() -> None:
+    """Create the software_registry collection with its payload indexes if absent."""
+    client = get_qdrant_client()
+    name = settings.software_collection
+    if not client.collection_exists(name):
+        client.create_collection(
+            collection_name=name,
+            vectors_config=VectorParams(
+                size=settings.qdrant_vector_dim,
+                distance=Distance.COSINE,
+            ),
+        )
+        for field in ("name", "status", "category"):
+            client.create_payload_index(
+                collection_name=name,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+
+
+def upsert_software_rows(rows: list[dict], embeddings: list[list[float]]) -> None:
+    """Upsert software rows (plain dict payloads) with deterministic UUID ids
+    derived from the name, so re-ingest overwrites rather than duplicates."""
+    client = get_qdrant_client()
+    points = [
+        PointStruct(
+            id=str(uuid.uuid5(uuid.NAMESPACE_URL, row["name"])),
+            vector=embedding,
+            payload=row,
+        )
+        for row, embedding in zip(rows, embeddings)
+    ]
+    batch_size = 100
+    for i in range(0, len(points), batch_size):
+        client.upsert(collection_name=settings.software_collection, points=points[i : i + batch_size])
+
+
+def scroll_all(collection_name: str, limit: int = 2000) -> list[dict]:
+    """Return all payloads in a collection (small collections only)."""
+    client = get_qdrant_client()
+    results, _ = client.scroll(collection_name=collection_name, limit=limit, with_payload=True)
+    return [p.payload for p in results]
