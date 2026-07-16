@@ -2,6 +2,7 @@ from llama_index.core.agent.workflow import AgentWorkflow
 from pydantic import BaseModel, Field
 
 from config import settings
+from rag.tools.check_software import check_software_tool
 from rag.tools.escalate import escalate_to_compliance_tool
 from rag.tools.get_section import get_section_tool
 from rag.tools.search_policies import search_policies_tool
@@ -27,6 +28,14 @@ class Citation(BaseModel):
     )
     quote: str = Field(
         description="Exact quote from the policy text that answers the question. Copy verbatim, do not paraphrase."
+    )
+    status: str = Field(
+        default="",
+        description="For software answers only: 'allowed' or 'forbidden'. Empty string for policy citations.",
+    )
+    alternative: str = Field(
+        default="",
+        description="For forbidden-software answers only: the approved alternative tool. Empty string otherwise.",
     )
 
 
@@ -69,7 +78,13 @@ You are a POINTER, not an ADVISOR. You find the policy, quote it, and cite its l
    The search system is optimized for natural language questions, not keywords.
    WRONG: search_policies("internal tools approvals")
    CORRECT: search_policies("If it's just for internal tools, can I skip approvals?")
-1. Call search_policies FIRST for every question. Never answer without searching.
+1. Call a search tool FIRST for every question. Never answer without searching.
+   - For questions about whether a specific software/tool is allowed or forbidden, or
+     "what tool/software can I use for X", call check_software (pass the software NAME or
+     a short category phrase like "personal VPN" or "IDE" — not the whole sentence).
+   - For questions about a policy, rule, or procedure, call search_policies (pass the
+     original question verbatim, per step 0).
+   - A question may need both tools; call both when it does.
 2. Read ALL returned sources before responding.
 3. Identify ALL sources that address the question — not just the first match. Multiple policies often cover the same topic. Cite every relevant source.
 4. Quote the relevant policy text VERBATIM from EACH cited source — copy the exact words.
@@ -77,6 +92,25 @@ You are a POINTER, not an ADVISOR. You find the policy, quote it, and cite its l
 6. Copy the document title, section, clause, and clause number into the citations exactly as shown in the source header.
 7. If the answer spans multiple sources, cite each one separately.
 8. If no source answers the question, call escalate_to_compliance. Do not guess.
+
+== SOFTWARE QUESTIONS (check_software) ==
+
+- State the Status (allowed or forbidden) EXACTLY as returned. Never infer a status.
+  "Not forbidden" does NOT mean allowed.
+- NAME-CORRESPONDENCE GUARD: when the user asked about a SPECIFIC named tool, only
+  give a verdict if a returned [Software N] Name is clearly that same tool. If the
+  results are a different or unrelated tool (a weak semantic near-miss), do NOT report
+  their status — treat it as not on the list: say it isn't on the approved/forbidden
+  list and to request approval from IT (escalation.needed=false). For CATEGORY questions
+  ("what VPN/antivirus can I use?"), the returned rows ARE the answer — report them.
+- Cite the source List ("Allowed Software" / "Forbidden Software") as the document.
+- For a forbidden tool, include the Alternative from the result.
+- If check_software returns SOFTWARE_NOT_LISTED, do not guess. Return a short answer
+  saying it is not on the approved or forbidden list and to request approval from IT;
+  set escalation.needed=false.
+- In the citations array for a software answer, set: doc_title = the List, section = the
+  Category (empty for allowed), status = "allowed"/"forbidden", alternative = the
+  Alternative (empty if none), quote = the Note. Leave clause and clause_number empty.
 
 == ANSWER FORMAT ==
 
@@ -122,7 +156,9 @@ Your final response MUST be valid JSON matching this exact schema. No text befor
       "section": "exact section name from source header",
       "clause": "exact clause name from source header",
       "clause_number": "e.g. 4.7",
-      "quote": "verbatim text copied from the source"
+      "quote": "verbatim text copied from the source",
+      "status": "",
+      "alternative": ""
     },
     {
       "source_number": 2,
@@ -130,7 +166,9 @@ Your final response MUST be valid JSON matching this exact schema. No text befor
       "section": "exact section name from source header",
       "clause": "exact clause name from source header",
       "clause_number": "e.g. 8.7",
-      "quote": "verbatim text copied from the second source"
+      "quote": "verbatim text copied from the second source",
+      "status": "",
+      "alternative": ""
     }
   ],
   "escalation": {"needed": false, "reason": ""}
@@ -150,6 +188,9 @@ ALL_TOOLS = [
     get_section_tool,
     escalate_to_compliance_tool,
 ]
+if settings.software_lookup_enabled:
+    # inserted before escalate so the agent sees both search tools first
+    ALL_TOOLS.insert(1, check_software_tool)
 
 
 def get_llm(model: str | None = None):
