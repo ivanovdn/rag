@@ -6,6 +6,10 @@ python-dotenv>=1.0
 # Document parsing & ingestion
 python-docx>=1.2
 python-slugify>=8.0
+pdfplumber>=0.11
+
+# Fuzzy matching (software name lookup)
+rapidfuzz>=3.9
 
 # Vector DB
 qdrant-client>=1.17

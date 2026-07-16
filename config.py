@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     def active_qdrant_url(self) -> str:
         return self.qdrant_remote_url if self.use_remote_qdrant else self.qdrant_url
 
+    # Software registry (allowed/forbidden software lookup)
+    software_lookup_enabled: bool = True
+    software_collection: str = "software_registry"
+    software_docs_folder: str = "./software"
+    software_registry_path: str = "./software/software_registry.json"
+    software_fuzzy_threshold: float = 85.0     # rapidfuzz score 0-100; >= this is a confident name match
+    software_min_semantic_score: float = 0.5   # cosine floor for the category (semantic) fallback
+
     # Embeddings
     embedding_source: str = "huggingface"  # "huggingface" or "ollama"
     ollama_embedding_url: str = "http://localhost:11434"
