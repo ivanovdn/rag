@@ -96,9 +96,17 @@ def software_embed_text(row: SoftwareRow) -> str:
 def software_passage_text(row: SoftwareRow) -> str:
     """Embedding text for a stored row, with embeddinggemma's document prompt
     prefix (the model is trained with task prompts; Ollama doesn't auto-apply them)."""
+    # NOTE: this prepends the SOFTWARE prefix; embed_texts then also prepends
+    # the GLOBAL embedding prefix. That double-prefixes iff the global prefixes are non-empty.
+    # Amendment A assumes global prefixes are EMPTY (guarded by a test). Before setting global
+    # prefixes (the policy-collection follow-up), switch this path to a non-auto-prefixing embed.
     return f"{settings.software_embedding_passage_prefix}{software_embed_text(row)}"
 
 
 def software_query_text(query: str) -> str:
     """A lookup query with embeddinggemma's retrieval-query prompt prefix."""
+    # NOTE: this prepends the SOFTWARE prefix; embed_query then also prepends
+    # the GLOBAL embedding prefix. That double-prefixes iff the global prefixes are non-empty.
+    # Amendment A assumes global prefixes are EMPTY (guarded by a test). Before setting global
+    # prefixes (the policy-collection follow-up), switch this path to a non-auto-prefixing embed.
     return f"{settings.software_embedding_query_prefix}{query}"

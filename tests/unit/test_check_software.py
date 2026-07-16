@@ -78,3 +78,16 @@ def test_transient_embed_failure_sets_unavailable(monkeypatch):
     out = cs.check_software("SomethingNotAName")  # forces semantic path
     assert out == "SOFTWARE_LOOKUP_UNAVAILABLE"
     assert cs._software_unavailable is True
+
+
+def test_semantic_path_applies_query_prefix(monkeypatch):
+    from config import settings
+    captured = {}
+    def fake_embed(q):
+        captured["q"] = q
+        return [0.0]
+    monkeypatch.setattr(cs, "embed_query", fake_embed)
+    monkeypatch.setattr(cs, "search_vectors",
+                        lambda qv, top_k, collection_name: [_hit(ROWS[2], 0.9)])
+    cs.check_software("VPN")  # name lookup misses -> semantic path runs
+    assert captured["q"] == f"{settings.software_embedding_query_prefix}VPN"

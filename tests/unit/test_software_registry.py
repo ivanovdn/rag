@@ -91,3 +91,12 @@ def test_software_passage_text_prepends_doc_prefix(rows):
     txt = software_passage_text(rows[0])
     assert txt.startswith("title: none | text: ")
     assert "Docker" in txt
+
+
+def test_software_prefix_path_assumes_empty_global_prefixes():
+    # The software embed path prepends its own embeddinggemma prefix, then embed_query/
+    # embed_texts also prepend the GLOBAL prefix -> double-prefix iff globals are non-empty.
+    # Amendment A relies on empty globals; if this fails, fix the software embed path first.
+    from config import settings
+    assert settings.embedding_query_prefix == ""
+    assert settings.embedding_passage_prefix == ""
