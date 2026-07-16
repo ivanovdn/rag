@@ -65,6 +65,42 @@ def render_unintelligible() -> str:
     return UNINTELLIGIBLE_HTML
 
 
+# Shown when software is on neither the allowed nor forbidden list. Editable; Teams-safe HTML only.
+def render_software_not_listed(name: str, suggestion: dict | None = None) -> str:
+    """Render the not-listed software reply with optional suggestion."""
+    parts = [f"<p><b>'{name}' isn't on the approved or forbidden software list.</b></p>"]
+    if suggestion:
+        parts.append(
+            f"<p>Did you mean <b>{suggestion['name']}</b> ({suggestion['status'].capitalize()})?</p>"
+        )
+    parts.append(
+        "<p>Request approval from IT before installing "
+        "(<b>support@trinetix.com</b>).</p>"
+    )
+    return "\n".join(parts)
+
+
+def _render_software_citation(c: dict) -> str:
+    """Render a software citation (allowed/forbidden with alternatives)."""
+    status = c.get("status", "").lower()
+    doc = c.get("doc_title", "")
+    category = c.get("section", "")
+    quote = c.get("quote", "")
+    alt = c.get("alternative", "")
+
+    if status == "allowed":
+        head = f"<b>✅ Allowed — {doc}</b>"
+    else:
+        head = f"<b>⛔ Forbidden{f' — {category}' if category else ''}</b>"
+
+    lines = [f"<p>{head}</p>"]
+    if quote:
+        lines.append(f'<p><i>"{quote}"</i></p>')
+    if alt:
+        lines.append(f"<p><b>Alternative:</b> {alt}</p>")
+    return "\n".join(lines)
+
+
 def render_answer(result: dict) -> str:
     """Render a successful ComplianceAnswer as Teams HTML.
     Each citation is rendered as a separate block: bold location + verbatim quote.
@@ -77,13 +113,21 @@ def render_answer(result: dict) -> str:
         # Fallback to prose answer when there are no structured citations
         return f"<p>{answer}</p>"
 
+    has_software = any(c.get("status") for c in citations)
+    policy_citations = [c for c in citations if not c.get("status")]
+
     parts = []
-    if len(citations) > 1:
-        parts.append(f"<p>This is addressed in {len(citations)} policies:</p>")
+    # Only show the multi-policy header for a pure-policy multi-citation answer
+    if len(policy_citations) > 1 and not has_software:
+        parts.append(f"<p>This is addressed in {len(policy_citations)} policies:</p>")
 
     for i, c in enumerate(citations):
         if i > 0:
             parts.append("<hr>")
+
+        if c.get("status"):
+            parts.append(_render_software_citation(c))
+            continue
 
         doc = c.get("doc_title", "")
         section = c.get("section", "")
