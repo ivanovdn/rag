@@ -1171,6 +1171,12 @@ Then insert a new section immediately before `== ANSWER FORMAT ==` (before line 
 
 - State the Status (allowed or forbidden) EXACTLY as returned. Never infer a status.
   "Not forbidden" does NOT mean allowed.
+- NAME-CORRESPONDENCE GUARD: when the user asked about a SPECIFIC named tool, only
+  give a verdict if a returned [Software N] Name is clearly that same tool. If the
+  results are a different or unrelated tool (a weak semantic near-miss), do NOT report
+  their status — treat it as not on the list: say it isn't on the approved/forbidden
+  list and to request approval from IT (escalation.needed=false). For CATEGORY questions
+  ("what VPN/antivirus can I use?"), the returned rows ARE the answer — report them.
 - Cite the source List ("Allowed Software" / "Forbidden Software") as the document.
 - For a forbidden tool, include the Alternative from the result.
 - If check_software returns SOFTWARE_NOT_LISTED, do not guess. Return a short answer
@@ -1685,6 +1691,8 @@ git commit -m "feat(software): live accuracy test + docs"
 - `rag/tools/check_software.py`: embed `embed_query(software_query_text(name))` in the semantic fallback.
 - Re-ingest the 212 rows (deterministic uuid5 ids overwrite in place).
 - Tests: add unit tests that the two wrappers prepend the configured prefixes; existing Task 2/6 tests unaffected (mocks ignore the query arg; `software_embed_text` unchanged).
+
+**Threshold-limit finding (measured after re-ingest):** a fixed cosine floor CANNOT fully separate real category queries from unknown-specific-name queries. Measured top-scores: real categories span 0.416 (archiver→7-Zip) to 0.597 (IDE); unknown/gibberish names span 0.31 to 0.446 (`FooBarTool`→Sniptool 0.446, `NonexistentToolXYZ123`→PGPTool 0.417) — because short note-less allowed rows share tokens ("...Tool") with junk queries. The overlap is inherent to short-text embeddings. **Resolution:** keep the floor at 0.40 as a coarse junk filter (rejects the clear 0.31–0.35 gibberish, keeps all real categories ≥0.416), and add a **name-correspondence guard at the agent layer (Task 7 system prompt):** for a specific-software question, the agent may only state a verdict when the returned Name corresponds to the software asked about; if the semantic results are a different/unrelated tool, treat as not-listed → ask-IT guidance (this also covers the realistic "is <niche unlisted tool> allowed?" → returns an unrelated tool). Category questions are unaffected (the returned rows ARE the answer). Validate end-to-end in Task 10.
 
 **Follow-up (separate, out of scope):** the policy collection was ingested through the same prefix-less Ollama path and likely under-performs; fixing it means global prefixes + full policy re-ingest + eval revalidation.
 
