@@ -21,6 +21,7 @@ from channels.teams.renderer import (
     render_escalation,
     render_error,
     render_out_of_scope,
+    render_software_not_listed,
     render_unavailable,
     render_unintelligible,
 )
@@ -47,12 +48,15 @@ def _run_rag(question: str) -> dict:
     # Deferred imports: init_observability() (start_teams_bot.py) must run before LlamaIndex loads.
     import asyncio
     import rag.tools.search_policies as sp
+    import rag.tools.check_software as cs
     from rag.agent import build_agent
     from rag.response import parse_agent_response
     from rag.resilience import retry_transient, is_transient, RETRY_BACKOFFS
     from rag.observability import record_infra_unavailable
 
     sp._retrieval_unavailable = False
+    cs._software_unavailable = False
+    cs._software_not_found = False
 
     async def _run():
         agent = build_agent()
@@ -71,12 +75,24 @@ def _run_rag(question: str) -> dict:
             "escalation": {"needed": True, "reason": str(e)},
         }
 
-    # Retrieval failed inside the tool (LlamaIndex swallows tool exceptions) →
-    # the flag was set in search_policies; surface the unavailable outcome.
-    if sp._retrieval_unavailable:
+    # Retrieval failed inside a tool (LlamaIndex swallows tool exceptions) →
+    # the flag was set in the tool; surface the unavailable outcome.
+    if sp._retrieval_unavailable or cs._software_unavailable:
         return {"status": "unavailable"}
 
-    return parse_agent_response(str(response))
+    parsed = parse_agent_response(str(response))
+
+    # Software not on either list, and the agent produced no policy citation either →
+    # deterministic "not listed" outcome (no rating prompt). A blended answer that DID
+    # cite a policy still renders normally below.
+    if cs._software_not_found and not parsed.get("citations"):
+        return {
+            "status": "software_not_found",
+            "name": cs._software_query,
+            "suggestion": cs._software_suggestion,
+        }
+
+    return parsed
 
 
 class TeamsBot:
@@ -279,6 +295,14 @@ class TeamsBot:
             sent = self._send_message(chat_id, render_unavailable())
             if sent:
                 print("Unavailable notice sent")
+            return bool(sent)
+
+        # Software not on either list — deterministic guidance, no rating prompt.
+        if result.get("status") == "software_not_found":
+            html = render_software_not_listed(result.get("name", ""), result.get("suggestion"))
+            sent = self._send_message(chat_id, html)
+            if sent:
+                print("Software not-listed notice sent")
             return bool(sent)
 
         # Render response
