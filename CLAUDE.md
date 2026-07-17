@@ -1,6 +1,6 @@
 # Compliance Q&A Bot — Claude Code Instructions
 
-Internal Compliance Q&A bot using **Agentic RAG** (LlamaIndex `AgentWorkflow`, multi-tool). Answers employee questions **strictly from approved internal policy DOCX files**; if an answer can't be grounded in policy, it escalates to Compliance with full context.
+Internal Compliance Q&A bot using **Agentic RAG** (LlamaIndex `AgentWorkflow`, multi-tool). Answers employee questions **strictly from approved internal policy DOCX files** and a curated **software allow/forbidden registry**; if an answer can't be grounded, it escalates to Compliance.
 
 **Channels:** Microsoft Teams only (polls Graph `/me/chats` every 5s, imports RAG directly — no HTTP). The bot is the sole entry point; there is no HTTP API.
 **Deployment:** runs in Docker on a remote **Linux** host (`docker-compose-remote.yml`). All models + Qdrant live on an **NVIDIA Spark** box (`172.20.0.22`); the bot connects out to them. Local dev (everything on localhost) is still supported via env toggles.
@@ -12,6 +12,9 @@ Internal Compliance Q&A bot using **Agentic RAG** (LlamaIndex `AgentWorkflow`, m
 PYTHONPATH=. python scripts/ingest_all.py --folder ./policies
 # Test a query
 PYTHONPATH=. python scripts/test_query.py
+# Ingest software registry (bootstrap JSON from PDFs first, then ingest)
+PYTHONPATH=. python scripts/build_software_registry.py   # PDFs -> software/software_registry.json (one-time, hand-review)
+PYTHONPATH=. python scripts/ingest_software.py           # JSON -> software_registry collection
 # Eval (upload dataset first, then run)
 python scripts/make_dataset.py eval/datasets/<file>.json
 python eval/run_experiment.py --tier chatbot --name baseline-v1
@@ -41,14 +44,19 @@ rag/
   observability.py   # Phoenix init + tracer + record_infra_unavailable() + record_classification()
   tools/             # search_policies (call FIRST), get_section, escalate_to_compliance
                      #   (clarify.py exists but is NOT imported/used)
+  software_registry.py # SoftwareRow + normalize + fuzzy name index + embed-text (pure logic)
+  tools/check_software # hybrid: fuzzy name lookup -> score-gated semantic fallback (call for software Qs)
 channels/teams/      # bot.py (poll+RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
 eval/                # evaluators.py, agent_wrapper.py, run_experiment.py
 scripts/             # ingest_all, test_query, run_eval, make_dataset, start_*.sh
+software/            # Allowed/Forbidden Software PDFs (gitignored) + software_registry.json (canonical, committed)
 tests/               # unit/ (pure-logic) + docs/ (corpus parsing) + live/ (live-LLM accuracy); docs+live auto-skip; see SETUP.md Testing
 # stubs / not implemented: notification/ db/ frontend/ (empty React scaffold), notebooks/ (gitignored)
 ```
 
 **Search flow:** `embed_query → vector_search (RERANKER_CANDIDATES) → [BM25 RRF] → [rerank → top RERANKER_TOP_N] → format_sources()` with `[Source N]` headers. The 3 agent tools: `search_policies` (search+rerank+format, always first), `get_section` (full section by doc_id+section_name), `escalate_to_compliance`.
+
+**Software lookup:** `check_software` (agent tool, not the router) answers "is X allowed/forbidden?" and "what can I use for X?" from `software_registry` (separate Qdrant collection). Fuzzy name lookup first (rapidfuzz, in-memory index scrolled from the collection); if no confident name hit, a semantic fallback gated by `SOFTWARE_MIN_SEMANTIC_SCORE`. Software answers reuse `ComplianceAnswer` with optional `status`/`alternative` citation fields. Not-on-either-list → deterministic `software_not_found` reply (canned "ask IT" + fuzzy "did you mean"), no rating prompt. Source of truth is the committed JSON; **future work: pluggable Excel/Confluence/SharePoint loader** for both policies and software.
 
 **Input classification (router):** before retrieval, `_send_reply` (when `ROUTER_ENABLED`) runs one temperature-0 LLM call (`rag/router.py` `classify_message`) tagging the message `greeting | in_scope | out_of_scope | unintelligible`. Only `in_scope` reaches the RAG pipeline; greeting→`WELCOME_HTML`, out_of_scope→`render_out_of_scope()`, unintelligible→`render_unintelligible()` (no search, no rating). **Safe-default invariant:** confidence `< ROUTER_CONFIDENCE_FLOOR`, or ANY classifier failure/unparseable output → `in_scope` (it can never refuse a real question). Logged to Phoenix via `record_classification` (`router_category/confidence/fallback/message` — full message recorded for audit). Editable tuning surface: `ROUTER_SYSTEM_PROMPT` (prompt+categories) in `rag/router.py`, the two messages in `renderer.py`.
 
@@ -73,6 +81,7 @@ EMBEDDING_QUERY_PREFIX / EMBEDDING_PASSAGE_PREFIX   RERANKER_BACKEND=llama-serve
 BM25_ENABLED (off)                        PHOENIX_ENDPOINT (Docker: http://phoenix:6006/v1/traces)
 TEAMS_TENANT_ID / CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN
 ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFIDENCE_FLOOR (0.6)
+SOFTWARE_LOOKUP_ENABLED (kill switch) / SOFTWARE_COLLECTION / SOFTWARE_FUZZY_THRESHOLD (0-100) / SOFTWARE_MIN_SEMANTIC_SCORE (cosine floor for category fallback)
 ```
 
 ## Critical Constraints — never violate
@@ -109,5 +118,9 @@ ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFID
 | Bot log empty / "not starting" when output redirected to a file | Python block-buffers stdout when not a TTY. Start with `python -u` (unbuffered) — the bot was alive and polling, just not flushing. |
 | Stale `bot_state.json` floods the channel with backlog | `_load_state` clamps `last_check` on startup: if older than `TEAMS_MAX_STATE_AGE_MINUTES` (default 60) it resets to `now − lookback` and warns. Normal restarts (downtime < that) still resume; long downtime can't flood. |
 | Router live test imports `rag.router` inside the test fn (not at top) | Deliberate exception to imports-at-top: a module-top import pulls llama-index at pytest **collection** on every offline run, but `tests/live/` auto-skips without an LLM. Keep it function-local. |
+| Software semantic fallback returns 5 unrelated rows for any query | Gate hits by `SOFTWARE_MIN_SEMANTIC_SCORE`; below floor → SOFTWARE_NOT_LISTED. |
+| `software_not_found` suppresses a valid blended policy answer | Short-circuit only fires when the parsed answer has NO citations. |
+| Forbidden PDF merged cells mis-parse (alternatives/aliases) | `build_software_registry.py` is best-effort; the committed JSON is hand-reviewed and guarded by `tests/docs/test_software_registry_data.py`. |
+| `check_software` name index stale after re-ingest | Index is cached module-level (`_name_index`); a bot restart rebuilds it by scrolling the collection. |
 
 **Not yet implemented:** email escalation. (Tier-A pytest suite exists under `tests/`; Tier-B/C and CI still pending.)
