@@ -28,6 +28,9 @@ def _reset(monkeypatch):
     cs._software_not_found = False
     cs._software_suggestion = None
     monkeypatch.setattr(cs, "scroll_all", lambda coll: [r.model_dump() for r in ROWS])
+    import types as _t
+    monkeypatch.setattr(cs, "get_qdrant_client",
+                        lambda: _t.SimpleNamespace(collection_exists=lambda _c: True))
 
 
 def _hit(row, score):
@@ -91,3 +94,23 @@ def test_semantic_path_applies_query_prefix(monkeypatch):
                         lambda qv, top_k, collection_name: [_hit(ROWS[2], 0.9)])
     cs.check_software("VPN")  # name lookup misses -> semantic path runs
     assert captured["q"] == f"{settings.software_embedding_query_prefix}VPN"
+
+
+def test_missing_collection_returns_unavailable(monkeypatch):
+    import types
+    monkeypatch.setattr(cs, "get_qdrant_client",
+                        lambda: types.SimpleNamespace(collection_exists=lambda _c: False))
+    out = cs.check_software("Docker")
+    assert out == "SOFTWARE_LOOKUP_UNAVAILABLE"
+    assert cs._software_unavailable is True
+
+
+def test_qdrant_down_on_existence_check_returns_unavailable(monkeypatch):
+    import types
+    def raising_exists(_c):
+        raise ConnectionError("qdrant down")
+    monkeypatch.setattr(cs, "get_qdrant_client",
+                        lambda: types.SimpleNamespace(collection_exists=raising_exists))
+    out = cs.check_software("Docker")
+    assert out == "SOFTWARE_LOOKUP_UNAVAILABLE"
+    assert cs._software_unavailable is True

@@ -43,6 +43,7 @@ def _run_rag(question: str) -> dict:
 
     Outcomes:
       - {"status": "unavailable"}            transient backend failure (retried)
+      - {"status": "software_not_found", "name", "suggestion"}  software on neither list
       - {"answer", "citations", "escalation"} normal ComplianceAnswer
     """
     # Deferred imports: init_observability() (start_teams_bot.py) must run before LlamaIndex loads.

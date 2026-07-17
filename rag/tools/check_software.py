@@ -18,7 +18,7 @@ from rag.software_registry import (
     lookup_name,
     software_query_text,
 )
-from rag.vector_store import scroll_all, search_vectors
+from rag.vector_store import get_qdrant_client, scroll_all, search_vectors
 
 _name_index: dict[str, SoftwareRow] | None = None
 
@@ -77,6 +77,24 @@ def check_software(name: str) -> str:
     _software_not_found = False
     _software_suggestion = None
     _software_query = name
+
+    # A missing collection (fresh deploy / not yet ingested / dropped) is an ops/ingest
+    # issue, not transient — surface it as "unavailable" rather than letting a raw 404
+    # escape into the agent. Qdrant being unreachable during this check IS transient.
+    try:
+        collection_ready = retry_transient(
+            lambda: get_qdrant_client().collection_exists(settings.software_collection)
+        )
+    except Exception as exc:
+        if is_transient(exc):
+            _software_unavailable = True
+            record_infra_unavailable("software_qdrant", type(exc).__name__, len(RETRY_BACKOFFS))
+            return UNAVAILABLE
+        raise
+    if not collection_ready:
+        _software_unavailable = True
+        record_infra_unavailable("software_qdrant", "CollectionMissing", 0)
+        return UNAVAILABLE
 
     # Step 1: fuzzy name lookup (build the index from Qdrant on first use)
     try:
