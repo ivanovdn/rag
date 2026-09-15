@@ -10,6 +10,7 @@ Internal Compliance Q&A bot using **Agentic RAG** (LlamaIndex `AgentWorkflow`, m
 ```bash
 # Ingest policies (parse → embed → upsert to Qdrant)
 PYTHONPATH=. python scripts/ingest_all.py --folder ./policies
+PYTHONPATH=. python scripts/ingest_all.py 'policies/Backup Policy [Internal].docx'  # selected files only
 # Test a query
 PYTHONPATH=. python scripts/test_query.py
 # Eval (upload dataset first, then run)

@@ -55,20 +55,50 @@ def ingest_document(filepath: Path, doc_link: str) -> int:
     return len(chunks)
 
 
-def ingest_folder(folder: Path, base_url: str) -> dict[str, int]:
-    """Batch ingest all .docx files in a folder. Returns {filename: chunk_count}."""
+def resolve_docx_paths(raw_paths: list[str]) -> tuple[list[Path], list[str]]:
+    """Validate explicit file arguments. Returns (valid paths, error messages).
+
+    Every path is checked before anything is ingested, so a single bad filename
+    aborts the run instead of leaving the collection half re-ingested.
+    """
+    paths: list[Path] = []
+    errors: list[str] = []
+    for raw in raw_paths:
+        path = Path(raw)
+        if path.name.startswith("~$"):
+            errors.append(f"{raw}: Word lock file, not a document")
+        elif path.suffix.lower() != ".docx":
+            errors.append(f"{raw}: not a .docx file")
+        elif not path.is_file():
+            errors.append(f"{raw}: does not exist")
+        else:
+            paths.append(path)
+    return paths, errors
+
+
+def ingest_files(paths: list[Path], base_url: str) -> dict[str, int]:
+    """Ingest an explicit list of .docx files. Returns {filename: chunk_count}.
+
+    doc_link is built from the basename only, so a file ingested from any folder
+    gets the same link — and the same doc_id — as a full-folder run would give it.
+    """
     init_collection()
     results = {}
+    for path in paths:
+        doc_link = f"{base_url}/{path.name}"
+        count = ingest_document(path, doc_link)
+        results[path.name] = count
+        print(f"Ingested {path.name}: {count} chunks")
+
+    return results
+
+
+def ingest_folder(folder: Path, base_url: str) -> dict[str, int]:
+    """Batch ingest all .docx files in a folder. Returns {filename: chunk_count}."""
     docx_files = sorted(f for f in folder.glob("*.docx") if not f.name.startswith("~$"))
 
     if not docx_files:
         print(f"No .docx files found in {folder}")
-        return results
+        return {}
 
-    for docx_file in docx_files:
-        doc_link = f"{base_url}/{docx_file.name}"
-        count = ingest_document(docx_file, doc_link)
-        results[docx_file.name] = count
-        print(f"Ingested {docx_file.name}: {count} chunks")
-
-    return results
+    return ingest_files(docx_files, base_url)
