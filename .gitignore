@@ -48,5 +48,8 @@ channels/teams/data/
 # Top-level feedback/data dump
 /data/
 
+# Software list raw artifacts (JSON is the committed canonical source)
+software/*.pdf
+
 # Claude Code per-developer local settings
 .claude/settings.local.json
