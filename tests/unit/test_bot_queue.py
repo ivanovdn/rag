@@ -187,3 +187,27 @@ def test_ensure_worker_restarts_a_dead_worker(qbot):
     qbot._ensure_worker()
     assert qbot._worker is not dead
     assert qbot._worker.is_alive()
+
+
+def test_messages_are_enqueued_oldest_first(qbot, monkeypatch):
+    """Graph returns newest-first; people must be answered in the order they asked."""
+    monkeypatch.setattr(qbot, "_get_my_user_id", lambda: "me")
+    future = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    def _msg(n):
+        stamp = (future + timedelta(seconds=n)).isoformat().replace("+00:00", "Z")
+        return {"id": f"m{n}", "messageType": "message",
+                "from": {"user": {"id": "someone", "displayName": "Ann"}},
+                "createdDateTime": stamp, "body": {"content": f"question {n}"}}
+
+    def _api(url, method="GET", json_data=None, retry=False):
+        if url.endswith("/me/chats"):
+            return {"value": [{"id": "chat1"}]}
+        return {"value": [_msg(3), _msg(1), _msg(2)]}  # newest-first, as Graph returns
+
+    monkeypatch.setattr(qbot, "_api_request", _api)
+
+    qbot.process_new_messages()
+
+    queued = [qbot._work_q.get_nowait()[1] for _ in range(qbot._work_q.qsize())]
+    assert queued == ["question 1", "question 2", "question 3"]

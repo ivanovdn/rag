@@ -46,6 +46,18 @@ _GRAPH_RETRY_BACKOFFS: tuple[float, ...] = (0.5, 1.0)
 _pending_ratings: dict[str, dict] = {}
 
 
+def _message_key(chat_id, message_id):
+    """Identify a message by chat AND id.
+
+    Graph documents chatMessage.id as unique within its containing chat, not
+    globally — in practice they are millisecond epochs, so two people posting in
+    different chats in the same millisecond collide and the second would be
+    silently skipped as already-processed. A plain string, not a tuple, because
+    processed_messages is persisted as a JSON list and tuples do not round-trip.
+    """
+    return f"{chat_id}:{message_id}"
+
+
 def _run_rag(question: str) -> dict:
     """Run the RAG pipeline directly (no HTTP). Returns a result dict.
 
@@ -104,7 +116,7 @@ class TeamsBot:
         # ever running more than one.
         self._work_q: "queue.Queue[tuple[str, str, str, str]]" = queue.Queue()
         self._worker: threading.Thread | None = None  # started by _ensure_worker() in run()
-        # message_id -> createdDateTime, for messages accepted but not yet answered.
+        # message key -> createdDateTime, for messages accepted but not yet answered.
         self._inflight: dict[str, datetime] = {}
         self._inflight_lock = threading.Lock()
 
@@ -294,7 +306,7 @@ class TeamsBot:
     # ------------------------------------------------------------------
 
     def _handle_inbound(self, chat_id, message_text, sender_name="Unknown",
-                        message_id=None, created_time=None):
+                        message_key=None, created_time=None):
         """Poll thread: answer cheap cases inline, acknowledge and enqueue the rest.
 
         Nothing here may make an LLM call — the poll loop must keep polling.
@@ -330,9 +342,9 @@ class TeamsBot:
         # Not a rating — clear any pending state and hand off as a question.
         _pending_ratings.pop(chat_id, None)
 
-        if message_id and created_time:
+        if message_key and created_time:
             with self._inflight_lock:
-                self._inflight[message_id] = created_time
+                self._inflight[message_key] = created_time
         else:
             # Untracked: the watermark advances past this message, so a crash before
             # it is answered drops it silently. Unreachable from process_new_messages
@@ -340,18 +352,20 @@ class TeamsBot:
             # timestamp) — log it rather than let a future caller lose work quietly.
             print(
                 f"WARNING: enqueuing untracked message in {chat_id} "
-                f"(message_id={message_id!r}, created_time={created_time!r}); "
+                f"(message_key={message_key!r}, created_time={created_time!r}); "
                 "a crash before it is answered will drop it"
             )
 
+        # Enqueue first: a slow ack POST must not delay the work it acknowledges.
+        # In-flight registration stays above both, so a crash anywhere here re-delivers.
+        self._work_q.put((chat_id, text, sender_name, message_key or ""))
         self._send_message(chat_id, ACK_HTML)
-        self._work_q.put((chat_id, text, sender_name, message_id or ""))
         return True
 
     def _worker_loop(self):
         """The single consumer. See the __init__ comment before adding a second."""
         while True:
-            chat_id, text, sender_name, message_id = self._work_q.get()
+            chat_id, text, sender_name, message_key = self._work_q.get()
             try:
                 if not self._answer(chat_id, text, sender_name=sender_name):
                     # The answer was produced but the reply POST failed even after
@@ -359,7 +373,7 @@ class TeamsBot:
                     # silence — so say so loudly instead of dropping it quietly.
                     print(
                         f"ERROR: answer not delivered to chat {chat_id} "
-                        f"(message_id={message_id or 'unknown'}, question={text[:80]!r})"
+                        f"(message={message_key or 'unknown'}, question={text[:80]!r})"
                     )
             except Exception as e:
                 # Log the detail; never send raw exception text to a user — the
@@ -370,9 +384,9 @@ class TeamsBot:
                     render_error(text, "Something went wrong while looking this up."),
                 )
             finally:
-                if message_id:
+                if message_key:
                     with self._inflight_lock:
-                        self._inflight.pop(message_id, None)
+                        self._inflight.pop(message_key, None)
                 self._work_q.task_done()
 
     def _ensure_worker(self):
@@ -468,47 +482,48 @@ class TeamsBot:
 
         return self._my_user_id
 
-    def _should_process_message(self, message, my_user_id):
+    def _should_process_message(self, message, my_user_id, chat_id):
         message_id = message.get("id")
         if not message_id:
             return False, "no_id"
 
-        if message_id in self.processed_messages:
+        key = _message_key(chat_id, message_id)
+        if key in self.processed_messages:
             return False, "already_processed"
 
         if message.get("messageType") != "message":
-            self._mark_processed(message_id)
+            self._mark_processed(key)
             return False, "system_message"
 
         sender_id = safe_get_nested(message, "from", "user", "id")
         if sender_id == my_user_id:
-            self._mark_processed(message_id)
+            self._mark_processed(key)
             return False, "self_message"
 
         created_datetime = message.get("createdDateTime")
         if not created_datetime:
-            self._mark_processed(message_id)
+            self._mark_processed(key)
             return False, "no_timestamp"
 
         try:
             created_time = datetime.fromisoformat(created_datetime.replace("Z", "+00:00"))
             if created_time <= self.last_check:
-                self._mark_processed(message_id)
+                self._mark_processed(key)
                 return False, "old_message"
         except ValueError:
-            self._mark_processed(message_id)
+            self._mark_processed(key)
             return False, "invalid_timestamp"
 
         return True, None
 
-    def _mark_processed(self, message_id):
-        """Record an id as seen.
+    def _mark_processed(self, message_key):
+        """Record a message key as seen.
 
         processed_messages is a dict (values unused) rather than a set purely for
         insertion order: a set iterates by hash, so evicting a slice of it drops
         near-random ids instead of the oldest ones.
         """
-        self.processed_messages[message_id] = None
+        self.processed_messages[message_key] = None
 
     def _cleanup_processed_messages(self):
         if len(self.processed_messages) > settings.teams_max_processed_messages:
@@ -536,16 +551,20 @@ class TeamsBot:
             messages_url = f"{GRAPH_API}/me/chats/{chat_id}/messages"
             messages_data = self._api_request(messages_url)
             messages = messages_data.get("value", []) if messages_data else []
+            # Graph returns newest-first. Answer people in the order they asked:
+            # createdDateTime is a fixed-width ISO-8601 UTC string, so it sorts
+            # chronologically as text. The watermark logic below is order-agnostic.
+            messages = sorted(messages, key=lambda m: (m or {}).get("createdDateTime") or "")
 
             for message in messages:
                 if not message:
                     continue
 
-                should_process, _ = self._should_process_message(message, my_user_id)
+                should_process, _ = self._should_process_message(message, my_user_id, chat_id)
                 if not should_process:
                     continue
 
-                message_id = message.get("id")
+                message_key = _message_key(chat_id, message.get("id"))
                 message_text = safe_get_nested(message, "body", "content", default="")
                 sender_name = safe_get_nested(message, "from", "user", "displayName", default="Unknown")
 
@@ -563,11 +582,11 @@ class TeamsBot:
                 display = clean_message if clean_message.strip() else "[media/emoji]"
                 print(f'\nNew message from {sender_name}: "{display}"')
 
-                self._mark_processed(message_id)
+                self._mark_processed(message_key)
                 self._handle_inbound(
                     chat_id, clean_message,
                     sender_name=sender_name,
-                    message_id=message_id,
+                    message_key=message_key,
                     created_time=created_time,
                 )
 
