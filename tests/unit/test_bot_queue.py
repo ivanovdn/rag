@@ -211,3 +211,19 @@ def test_messages_are_enqueued_oldest_first(qbot, monkeypatch):
 
     queued = [qbot._work_q.get_nowait()[1] for _ in range(qbot._work_q.qsize())]
     assert queued == ["question 1", "question 2", "question 3"]
+
+
+def test_pending_rating_is_not_armed_when_the_prompt_failed_to_send(monkeypatch, qbot):
+    """Otherwise the user's next message silently becomes a rating if it reads as a digit."""
+    monkeypatch.setattr(bot.settings, "router_enabled", False)
+    monkeypatch.setattr(bot, "_run_rag",
+                        lambda q: {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}})
+
+    def _send(chat_id, text, content_type="html", retry=False):
+        qbot._sent.append(text)
+        return None if "Was this helpful" in text else True  # the prompt fails
+
+    monkeypatch.setattr(qbot, "_send_message", _send)
+
+    assert qbot._answer("chat1", "Can I install software?") is True  # the answer landed
+    assert "chat1" not in bot._pending_ratings

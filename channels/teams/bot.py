@@ -119,6 +119,11 @@ class TeamsBot:
         # message key -> createdDateTime, for messages accepted but not yet answered.
         self._inflight: dict[str, datetime] = {}
         self._inflight_lock = threading.Lock()
+        # Guards _ensure_worker: self._worker is assigned before start(), so two
+        # concurrent callers would each see a not-alive worker and start their own.
+        # Only the poll thread calls it today — this keeps the one-worker invariant
+        # true in code rather than by convention.
+        self._worker_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # State persistence
@@ -372,13 +377,13 @@ class TeamsBot:
                     # retries. Nothing re-sends it — the user has an ack and then
                     # silence — so say so loudly instead of dropping it quietly.
                     print(
-                        f"ERROR: answer not delivered to chat {chat_id} "
+                        f"[worker] ERROR: answer not delivered to chat {chat_id} "
                         f"(message={message_key or 'unknown'}, question={text[:80]!r})"
                     )
             except Exception as e:
                 # Log the detail; never send raw exception text to a user — the
                 # renderer does not HTML-escape, and today these never reach the chat.
-                print(f"Worker error answering in {chat_id}: {e!r}")
+                print(f"[worker] Error answering in {chat_id}: {e!r}")
                 self._send_message(
                     chat_id,
                     render_error(text, "Something went wrong while looking this up."),
@@ -396,12 +401,13 @@ class TeamsBot:
         otherwise be silent: the poll thread keeps acknowledging and nobody is
         ever answered.
         """
-        if self._worker is not None and self._worker.is_alive():
-            return
-        if self._worker is not None:
-            print("ERROR: rag-worker thread died; restarting it")
-        self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="rag-worker")
-        self._worker.start()
+        with self._worker_lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            if self._worker is not None:
+                print("ERROR: rag-worker thread died; restarting it")
+            self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="rag-worker")
+            self._worker.start()
 
     def _answer(self, chat_id, text, sender_name="Unknown"):
         """Worker thread: route, run RAG, reply. Never called from the poll loop."""
@@ -436,7 +442,7 @@ class TeamsBot:
         if result.get("status") == "unavailable":
             sent = self._send_message(chat_id, render_unavailable(), retry=True)
             if sent:
-                print("Unavailable notice sent")
+                print("[worker] Unavailable notice sent")
             return bool(sent)
 
         # Render response
@@ -451,15 +457,16 @@ class TeamsBot:
         # Worth retrying: the pipeline already spent ~16s producing this.
         sent = self._send_message(chat_id, html, retry=True)
         if sent:
-            print("Reply sent")
-            # Send rating prompt and store pending context
-            self._send_message(chat_id, RATING_PROMPT_HTML)
-            _pending_ratings[chat_id] = {
-                "question": text,
-                "answer": result.get("answer", ""),
-                "citations": result.get("citations", []),
-                "user": sender_name,
-            }
+            print("[worker] Reply sent")
+            # Only arm rating capture if the prompt actually reached the user. Otherwise
+            # their next message silently becomes a rating whenever it reads as -1/0/1/2.
+            if self._send_message(chat_id, RATING_PROMPT_HTML):
+                _pending_ratings[chat_id] = {
+                    "question": text,
+                    "answer": result.get("answer", ""),
+                    "citations": result.get("citations", []),
+                    "user": sender_name,
+                }
         return bool(sent)
 
     def _get_my_user_id(self):
