@@ -29,7 +29,7 @@ def qbot(monkeypatch, tmp_path):
     b = bot.TeamsBot(token_refresher=object())
     sent = []
     monkeypatch.setattr(b, "_send_message",
-                        lambda chat_id, text, content_type="html": sent.append(text) or True)
+                        lambda chat_id, text, content_type="html", retry=False: sent.append(text) or True)
     bot._pending_ratings.clear()
     while not b._work_q.empty():
         b._work_q.get_nowait()
@@ -113,7 +113,7 @@ def test_undelivered_answer_is_logged_and_the_worker_moves_on(monkeypatch, qbot,
     ])
     monkeypatch.setattr(bot, "_run_rag", lambda q: next(answers))
 
-    def _send(chat_id, text, content_type="html"):
+    def _send(chat_id, text, content_type="html", retry=False):
         qbot._sent.append(text)
         return None if "UNDELIVERABLE" in text else True  # transport gave up
 

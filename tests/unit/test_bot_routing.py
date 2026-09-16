@@ -12,7 +12,7 @@ def teams_bot(monkeypatch, tmp_path):
     monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
     b = bot.TeamsBot(token_refresher=object())
     sent = []
-    monkeypatch.setattr(b, "_send_message", lambda chat_id, text, content_type="html": sent.append(text) or True)
+    monkeypatch.setattr(b, "_send_message", lambda chat_id, text, content_type="html", retry=False: sent.append(text) or True)
     bot._pending_ratings.clear()
     b._sent = sent
     return b
@@ -122,3 +122,15 @@ def test_fallback_decision_sets_fallback_flag_and_searches(monkeypatch, teams_bo
     assert rag_called["called"] is True, "in_scope path must run RAG"
     assert recorded.get("fallback") is True, "record_classification must be called with fallback=True"
     assert recorded.get("message") == "Can I install software?", "message must be recorded for audit"
+
+
+def test_router_branches_report_a_failed_send(monkeypatch, teams_bot):
+    """Every branch out of _answer returns its send result, so the worker's
+    undelivered-answer ERROR log covers greetings and redirects too."""
+    monkeypatch.setattr(bot.settings, "router_enabled", True)
+    monkeypatch.setattr(teams_bot, "_send_message",
+                        lambda chat_id, text, content_type="html", retry=False: None)
+
+    for category in (Category.GREETING, Category.OUT_OF_SCOPE, Category.UNINTELLIGIBLE):
+        _force(monkeypatch, category)
+        assert not teams_bot._answer("chat1", "hello"), f"{category} must report the failed send"

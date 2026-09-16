@@ -215,14 +215,24 @@ class TeamsBot:
             "Content-Type": "application/json",
         }
 
-    def _api_request(self, url, method="GET", json_data=None):
-        """Call Graph, retrying transient failures a bounded number of times.
+    def _api_request(self, url, method="GET", json_data=None, retry=False):
+        """Call Graph. With retry=True, transient failures get a bounded retry.
+
+        `retry` is OPT-IN, and deliberately off by default. Retrying costs up to
+        ~31s of wall clock, and the poll thread must never block that long — that is
+        the whole point of the worker queue. Its calls (chat list, per-chat messages,
+        the ack) are self-healing anyway: the loop comes back in teams_poll_interval
+        seconds and re-reads the same chats, so a transient miss there costs nothing.
+        Turn it on ONLY where a lost call cannot be recovered by the next poll — the
+        worker's reply in _answer, where ~16s of GPU work is already spent and a
+        failed send leaves the user with an acknowledgement and nothing else.
 
         Retries timeouts, connection errors and 5xx — a Graph blip that clears. Never
         retries 4xx: a deleted chat or a bad payload will not come back, and retrying
         it only burns a poll cycle. Returns None once the attempts are exhausted.
         """
-        for attempt in range(len(_GRAPH_RETRY_BACKOFFS) + 1):
+        backoffs = _GRAPH_RETRY_BACKOFFS if retry else ()
+        for attempt in range(len(backoffs) + 1):
             try:
                 if method == "GET":
                     response = requests.get(url, headers=self._get_headers(), timeout=settings.teams_api_timeout)
@@ -253,19 +263,22 @@ class TeamsBot:
                 print(f"Request failed for {url}: {e}")
                 return None
 
-            if attempt < len(_GRAPH_RETRY_BACKOFFS):
-                delay = _GRAPH_RETRY_BACKOFFS[attempt]
+            if attempt < len(backoffs):
+                delay = backoffs[attempt]
                 print(f"Transient Graph failure ({reason}); retrying in {delay}s")
                 time.sleep(delay)
-            else:
+            elif backoffs:
                 print(f"Transient Graph failure ({reason}); gave up after "
-                      f"{len(_GRAPH_RETRY_BACKOFFS) + 1} attempts")
+                      f"{len(backoffs) + 1} attempts")
+            else:
+                print(f"Transient Graph failure ({reason}); not retried")
         return None
 
-    def _send_message(self, chat_id, text, content_type="html"):
+    def _send_message(self, chat_id, text, content_type="html", retry=False):
+        """Send to a chat. See _api_request for when `retry` may be turned on."""
         url = f"{GRAPH_API}/me/chats/{chat_id}/messages"
         payload = {"body": {"contentType": content_type, "content": text}}
-        return self._api_request(url, method="POST", json_data=payload)
+        return self._api_request(url, method="POST", json_data=payload, retry=retry)
 
     # ------------------------------------------------------------------
     # Message processing
@@ -383,22 +396,22 @@ class TeamsBot:
                 message=text,
             )
 
+            # These three report their send like every other path out of _answer, so a
+            # failed delivery reaches the worker's ERROR log instead of being silent.
+            # No retry though: no GPU work is lost and the user can just say hello again.
             if category == Category.GREETING:
-                self._send_message(chat_id, WELCOME_HTML)
-                return True
+                return bool(self._send_message(chat_id, WELCOME_HTML))
             if category == Category.OUT_OF_SCOPE:
-                self._send_message(chat_id, render_out_of_scope())
-                return True
+                return bool(self._send_message(chat_id, render_out_of_scope()))
             if category == Category.UNINTELLIGIBLE:
-                self._send_message(chat_id, render_unintelligible())
-                return True
+                return bool(self._send_message(chat_id, render_unintelligible()))
             # Category.IN_SCOPE falls through to the RAG pipeline below.
 
         result = _run_rag(text)
 
         # Transient backend failure — not an answer, not an escalation; no rating prompt.
         if result.get("status") == "unavailable":
-            sent = self._send_message(chat_id, render_unavailable())
+            sent = self._send_message(chat_id, render_unavailable(), retry=True)
             if sent:
                 print("Unavailable notice sent")
             return bool(sent)
@@ -412,7 +425,8 @@ class TeamsBot:
         else:
             html = render_error(text, "No answer returned from the pipeline.")
 
-        sent = self._send_message(chat_id, html)
+        # Worth retrying: the pipeline already spent ~16s producing this.
+        sent = self._send_message(chat_id, html, retry=True)
         if sent:
             print("Reply sent")
             # Send rating prompt and store pending context

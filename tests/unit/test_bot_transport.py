@@ -40,7 +40,7 @@ def test_transient_failure_is_retried_and_then_succeeds(tbot, monkeypatch):
 
     monkeypatch.setattr(bot.requests, "post", _post)
 
-    assert tbot._api_request("https://graph/test", method="POST", json_data={}) == {"id": "delivered"}
+    assert tbot._api_request("https://graph/test", method="POST", json_data={}, retry=True) == {"id": "delivered"}
     assert calls["n"] == 2, "a transient failure must be retried"
 
 
@@ -53,7 +53,7 @@ def test_timeout_is_retried_until_the_attempts_run_out(tbot, monkeypatch):
 
     monkeypatch.setattr(bot.requests, "get", _get)
 
-    assert tbot._api_request("https://graph/test") is None
+    assert tbot._api_request("https://graph/test", retry=True) is None
     assert calls["n"] == len(bot._GRAPH_RETRY_BACKOFFS) + 1
 
 
@@ -66,7 +66,7 @@ def test_server_error_is_retried(tbot, monkeypatch):
 
     monkeypatch.setattr(bot.requests, "get", _get)
 
-    assert tbot._api_request("https://graph/test") is None
+    assert tbot._api_request("https://graph/test", retry=True) is None
     assert calls["n"] == len(bot._GRAPH_RETRY_BACKOFFS) + 1, "5xx is transient — retry it"
 
 
@@ -80,5 +80,39 @@ def test_client_error_is_not_retried(tbot, monkeypatch):
 
     monkeypatch.setattr(bot.requests, "post", _post)
 
-    assert tbot._api_request("https://graph/test", method="POST", json_data={}) is None
-    assert calls["n"] == 1, "a 4xx must not be retried"
+    assert tbot._api_request("https://graph/test", method="POST", json_data={}, retry=True) is None
+    assert calls["n"] == 1, "a 4xx must not be retried even with retry on"
+
+
+def test_poll_thread_calls_are_single_attempt(tbot, monkeypatch):
+    """The poll loop must never stall: retry is opt-in, and its calls don't opt in.
+
+    A transient miss here is self-healing — the next cycle re-reads the same chats.
+    """
+    calls = {"n": 0}
+
+    def _get(url, **kwargs):
+        calls["n"] += 1
+        raise requests.exceptions.Timeout("graph is slow")
+
+    monkeypatch.setattr(bot.requests, "get", _get)
+
+    assert tbot._api_request("https://graph/me/chats") is None
+    assert calls["n"] == 1, "the poll thread's calls must not be retried"
+
+
+def test_ack_is_single_attempt_but_the_answer_send_is_retried(tbot, monkeypatch):
+    calls = {"n": 0}
+
+    def _post(url, **kwargs):
+        calls["n"] += 1
+        raise requests.exceptions.ConnectionError("blip")
+
+    monkeypatch.setattr(bot.requests, "post", _post)
+
+    tbot._send_message("chat1", "<p>ack</p>")  # poll thread — default
+    assert calls["n"] == 1, "the ack must not stall the poll loop"
+
+    calls["n"] = 0
+    tbot._send_message("chat1", "<p>answer</p>", retry=True)  # worker thread
+    assert calls["n"] == len(bot._GRAPH_RETRY_BACKOFFS) + 1
