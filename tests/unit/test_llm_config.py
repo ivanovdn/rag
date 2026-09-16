@@ -41,9 +41,19 @@ def test_get_llm_builds_a_fresh_client_per_call(monkeypatch):
     # closed loop raises "RuntimeError: Event loop is closed" on the next one
     # (reproduced 2026-09-16). A fresh client per call is what keeps that safe.
     monkeypatch.setattr(settings, "llm_backend", "ollama")
-    assert get_llm() is not get_llm()
-    # `is not` alone would still pass for `return _CACHED.model_copy()`: a
-    # copy is a distinct object but carries the same live `_async_client`
-    # over by reference, reintroducing the exact bug. A genuinely fresh
-    # client hasn't made a call yet, so `_async_client` must still be None.
-    assert get_llm()._async_client is None
+    first = get_llm()
+    # `_async_client` is a PrivateAttr populated lazily on first use, not at
+    # construction -- two never-used clients both read `_async_client is
+    # None` regardless of caching, which would make the check below a
+    # no-op. Warming `first` here reproduces the real request sequence
+    # (request 1 uses its client, then request 2 asks for one), which is
+    # what makes that check meaningful. Do not delete this line as dead code.
+    _ = first.async_client
+    second = get_llm()
+    assert second is not first
+    # `is not` alone would still pass for `return _CACHED.model_copy()`: the
+    # copy is a distinct object but carries `first`'s now-warm
+    # `_async_client` over by reference, reintroducing the exact
+    # dead-client-from-a-closed-loop bug. A genuinely fresh client has never
+    # made a call, so this must be None.
+    assert second._async_client is None
