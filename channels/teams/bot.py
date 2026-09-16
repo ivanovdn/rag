@@ -3,7 +3,9 @@
 import base64
 import json
 import os
+import queue
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,7 +15,7 @@ import requests
 from config import settings
 from channels.teams.utils import safe_get_nested, strip_html
 from channels.teams.renderer import (
-    LOADING_HTML,
+    ACK_HTML,
     RATING_PROMPT_HTML,
     RATING_THANKS_HTML,
     WELCOME_HTML,
@@ -86,6 +88,18 @@ class TeamsBot:
         state = self._load_state()
         self.last_check = state["last_check"]
         self.processed_messages = state["processed_messages"]
+        # EXACTLY ONE worker consumes this queue. Do not raise the worker count.
+        # rag/tools/search_policies.py keeps _retrieval_unavailable and
+        # _last_search_results as module globals, reset before an agent run and
+        # read ~16s later. A second worker interleaves those resets and turns a
+        # transient infra failure into a false content escalation, silently.
+        # Fix those globals (ToolCallResult.tool_output is per-request) before
+        # ever running more than one.
+        self._work_q: "queue.Queue[tuple[str, str, str, str]]" = queue.Queue()
+        self._worker: threading.Thread | None = None  # started by _ensure_worker() in run()
+        # message_id -> createdDateTime, for messages accepted but not yet answered.
+        self._inflight: dict[str, datetime] = {}
+        self._inflight_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # State persistence
@@ -119,11 +133,24 @@ class TeamsBot:
 
     def _save_state(self):
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ids = list(self.processed_messages)[-settings.teams_max_processed_messages:]
+        with self._inflight_lock:
+            pending_times = list(self._inflight.values())
+            pending_ids = set(self._inflight)
+
+        # Persist a watermark BEHIND anything still queued, and keep queued ids
+        # out of the processed set, so a restart re-delivers unanswered work
+        # instead of skipping it. In-memory last_check still advances, so the
+        # running process never re-enqueues what it already holds.
+        watermark = min(pending_times) - timedelta(milliseconds=1) if pending_times else self.last_check
+
+        ids = [
+            mid for mid in list(self.processed_messages)[-settings.teams_max_processed_messages:]
+            if mid not in pending_ids
+        ]
         with open(STATE_FILE, "w") as f:
             json.dump(
                 {
-                    "last_check": self.last_check.isoformat(),
+                    "last_check": watermark.isoformat(),
                     "processed_messages": ids,
                 },
                 f,
@@ -211,7 +238,12 @@ class TeamsBot:
     # Message processing
     # ------------------------------------------------------------------
 
-    def _send_reply(self, chat_id, message_text, sender_name="Unknown"):
+    def _handle_inbound(self, chat_id, message_text, sender_name="Unknown",
+                        message_id=None, created_time=None):
+        """Poll thread: answer cheap cases inline, acknowledge and enqueue the rest.
+
+        Nothing here may make an LLM call — the poll loop must keep polling.
+        """
         if not message_text or not message_text.strip():
             return False
 
@@ -240,9 +272,53 @@ class TeamsBot:
             print(f"Feedback saved: rating={text} for '{ctx['question'][:50]}...'")
             return True
 
-        # Not a rating — clear any pending state and process as question
+        # Not a rating — clear any pending state and hand off as a question.
         _pending_ratings.pop(chat_id, None)
 
+        if message_id and created_time:
+            with self._inflight_lock:
+                self._inflight[message_id] = created_time
+
+        self._send_message(chat_id, ACK_HTML)
+        self._work_q.put((chat_id, text, sender_name, message_id or ""))
+        return True
+
+    def _worker_loop(self):
+        """The single consumer. See the __init__ comment before adding a second."""
+        while True:
+            chat_id, text, sender_name, message_id = self._work_q.get()
+            try:
+                self._answer(chat_id, text, sender_name=sender_name)
+            except Exception as e:
+                # Log the detail; never send raw exception text to a user — the
+                # renderer does not HTML-escape, and today these never reach the chat.
+                print(f"Worker error answering in {chat_id}: {e!r}")
+                self._send_message(
+                    chat_id,
+                    render_error(text, "Something went wrong while looking this up."),
+                )
+            finally:
+                if message_id:
+                    with self._inflight_lock:
+                        self._inflight.pop(message_id, None)
+                self._work_q.task_done()
+
+    def _ensure_worker(self):
+        """Start the single worker, or restart it if it has died.
+
+        Called once at startup and once per poll cycle. A dead worker would
+        otherwise be silent: the poll thread keeps acknowledging and nobody is
+        ever answered.
+        """
+        if self._worker is not None and self._worker.is_alive():
+            return
+        if self._worker is not None:
+            print("ERROR: rag-worker thread died; restarting it")
+        self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="rag-worker")
+        self._worker.start()
+
+    def _answer(self, chat_id, text, sender_name="Unknown"):
+        """Worker thread: route, run RAG, reply. Never called from the poll loop."""
         # Pre-retrieval classification: only in-scope questions reach policy search.
         if settings.router_enabled:
             from rag.router import classify_message, resolve, Category  # deferred: observability-first
@@ -268,10 +344,6 @@ class TeamsBot:
                 return True
             # Category.IN_SCOPE falls through to the RAG pipeline below.
 
-        # Show loading indicator
-        self._send_message(chat_id, LOADING_HTML)
-
-        # Run RAG directly
         result = _run_rag(text)
 
         # Transient backend failure — not an answer, not an escalation; no rating prompt.
@@ -409,7 +481,12 @@ class TeamsBot:
                 print(f'\nNew message from {sender_name}: "{display}"')
 
                 self.processed_messages.add(message_id)
-                self._send_reply(chat_id, clean_message, sender_name=sender_name)
+                self._handle_inbound(
+                    chat_id, clean_message,
+                    sender_name=sender_name,
+                    message_id=message_id,
+                    created_time=created_time if created_datetime else None,
+                )
 
         if newest_message_time > self.last_check:
             self.last_check = newest_message_time
@@ -422,11 +499,13 @@ class TeamsBot:
 
     def run(self):
         self._acquire_pid_lock()
+        self._ensure_worker()
         try:
             print("Starting Compliance Teams Bot...")
             print("=" * 50)
             print(f"LLM: {settings.llm_model} ({settings.active_ollama_url})")
             print(f"Polling every {settings.teams_poll_interval}s")
+            print("Workers: 1 (single-threaded by design — see _work_q comment)")
             print("=" * 50)
             print("\nWaiting for messages...\n")
 
@@ -434,6 +513,7 @@ class TeamsBot:
 
             while True:
                 try:
+                    self._ensure_worker()  # restarts the worker if it ever died
                     self.process_new_messages()
                     consecutive_errors = 0
                     time.sleep(settings.teams_poll_interval)

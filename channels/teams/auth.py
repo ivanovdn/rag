@@ -1,6 +1,7 @@
 """Microsoft Graph API token management."""
 
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -30,6 +31,8 @@ class TokenRefresher:
                 raise RuntimeError("No refresh token found. Set TEAMS_REFRESH_TOKEN in .env or run get_refresh_token.py")
         self.access_token = None
         self.token_expires_at = None
+        # Both the poll thread and the RAG worker call get_access_token().
+        self._lock = threading.Lock()
 
     def _save_refresh_token(self):
         try:
@@ -77,7 +80,13 @@ class TokenRefresher:
             return None
 
     def get_access_token(self):
-        """Get access token, refreshing only if expired."""
-        if self._is_token_expired():
-            self._refresh_access_token()
-        return self.access_token
+        """Get access token, refreshing only if expired.
+
+        Thread-safe: the poll thread (chat list, acks, ratings) and the RAG worker
+        (answers) both call this. Without the lock, two threads that see an expired
+        token refresh twice and can interleave the refresh_token.json rewrite.
+        """
+        with self._lock:
+            if self._is_token_expired():
+                self._refresh_access_token()
+            return self.access_token

@@ -21,9 +21,12 @@ and <b>clause</b>.</p>
 <li>Type <code>start</code> anytime to see this again.</li>
 </ul>"""
 
-LOADING_HTML = (
-    "<p><b>Searching compliance policies...</b><br>"
-    "<i>Finding the relevant policy, section, and clause. This may take up to a minute.</i></p>"
+# Sent by the poll thread the moment a message is seen — before routing, so it
+# must read correctly whether the reply turns out to be an answer, a greeting,
+# or an out-of-scope redirect.
+ACK_HTML = (
+    "<p><b>Got your message.</b><br>"
+    "<i>Looking into it — this can take up to a minute.</i></p>"
 )
 
 # Shown when a backend (policy DB / models) is transiently unreachable.
