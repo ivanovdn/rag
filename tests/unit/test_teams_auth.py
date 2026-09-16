@@ -1,9 +1,31 @@
 import json
 import threading
-import time
 from datetime import datetime, timedelta, timezone
 
 import channels.teams.auth as auth
+
+
+class _WatchedLock:
+    """A Lock that reports when a second caller actually blocks on it.
+
+    Lets the test prove the two threads overlapped instead of inferring it from a
+    sleep — a sleep-based version can only ever false-pass, so a lock regression
+    could slip through on a loaded CI box.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.contended = threading.Event()
+
+    def __enter__(self):
+        if not self._lock.acquire(blocking=False):
+            self.contended.set()  # someone holds it; we are about to block
+            self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc_info):
+        self._lock.release()
+        return False
 
 
 def test_concurrent_callers_refresh_the_token_once(tmp_path, monkeypatch):
@@ -14,24 +36,38 @@ def test_concurrent_callers_refresh_the_token_once(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "_TOKEN_FILE", token_file)
     refresher = auth.TokenRefresher()
 
+    watched = _WatchedLock()
+    monkeypatch.setattr(refresher, "_lock", watched)
+
     calls = []
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
 
     def slow_refresh():
         calls.append(1)
-        time.sleep(0.05)  # long enough for the second thread to arrive mid-refresh
+        refresh_started.set()
+        assert release_refresh.wait(timeout=5), "test never released the refresh"
         refresher.access_token = "tok"
         refresher.token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
         return refresher.access_token
 
     monkeypatch.setattr(refresher, "_refresh_access_token", slow_refresh)
 
-    threads = [threading.Thread(target=refresher.get_access_token) for _ in range(2)]
-    for t in threads:
-        t.start()
+    first = threading.Thread(target=refresher.get_access_token)
+    first.start()
+    assert refresh_started.wait(timeout=5), "the first refresh never started"
+
+    second = threading.Thread(target=refresher.get_access_token)
+    second.start()
+    # Deterministic: proceed only once the second caller is provably blocked on the
+    # lock. If get_access_token did not take the lock at all, this fails here.
+    assert watched.contended.wait(timeout=5), "second caller never contended for the lock"
+    release_refresh.set()
+
     # Bounded: this test exercises locking, so a lock bug must fail it, not hang the suite.
-    for t in threads:
+    for t in (first, second):
         t.join(timeout=5)
-    assert not any(t.is_alive() for t in threads), "get_access_token did not return — deadlock?"
+    assert not any(t.is_alive() for t in (first, second)), "get_access_token did not return — deadlock?"
 
     assert calls == [1], f"token refreshed {len(calls)} times"
 
