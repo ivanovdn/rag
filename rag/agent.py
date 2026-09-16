@@ -160,6 +160,17 @@ _NO_THINKING_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def get_llm(model: str | None = None):
+    """Build a fresh LLM client. Deliberately NOT cached.
+
+    _run_rag runs each request under its own asyncio.run() loop. llama-index's
+    Ollama creates its httpx.AsyncClient once and reuses it, and a pooled
+    connection from a closed loop fails on the next loop with
+    "RuntimeError: Event loop is closed" (reproduced 2026-09-16) — which is not
+    a transient error, so it would surface as a false content escalation.
+    Construction is cheap (see scripts/bench_llm_construction.py). If a shared
+    client is ever wanted, the worker thread must own one persistent event loop
+    first.
+    """
     if settings.llm_backend == "openai-compatible":
         from llama_index.llms.openai_like import OpenAILike
 
