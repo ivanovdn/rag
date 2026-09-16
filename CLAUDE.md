@@ -60,7 +60,7 @@ tests/               # unit/ (pure-logic) + docs/ (corpus parsing) + live/ (live
 ## Config — `.env` (full list in `.env.example`)
 
 **Current production profile (remote Spark):**
-- **LLM:** `qwen3.6:35b` via **Ollama** (`LLM_BACKEND=ollama`, `USE_REMOTE_OLLAMA=true`)
+- **LLM:** `qwen3.6:35b` via **Ollama** (`LLM_BACKEND=ollama`, `USE_REMOTE_OLLAMA=true`, keep_alive 30m)
 - **Embedding:** `embeddinggemma` 768-dim via **Ollama** (`EMBEDDING_SOURCE=ollama`, `QDRANT_VECTOR_DIM=768`)
 - **Reranker:** Qwen3-Reranker-4B via **vLLM**, enabled (`RERANKER_BACKEND=vllm`, `RERANKER_ENABLED=true`)
 - **Qdrant:** remote (`USE_REMOTE_QDRANT=true`)  •  **BM25:** off
@@ -82,6 +82,7 @@ ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFID
 - Agent must never answer without citing a retrieved chunk; citations come ONLY from retrieved chunk metadata (no hallucination).
 - If `search_policies` returns `NO_RELEVANT_POLICY_FOUND` → escalate.
 - `init_observability()` must run FIRST in every entry point (before any LlamaIndex/Ollama import).
+- Never cache the LLM client across requests (no `lru_cache` on `get_llm`, no module-level client) — `_run_rag` uses a fresh `asyncio.run()` loop per request. See the gotchas table.
 
 ## Code Style
 

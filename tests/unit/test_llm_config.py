@@ -1,19 +1,21 @@
-import pytest
-
 from config import settings
 from rag.agent import get_llm
 
 
 def test_ollama_llm_gets_keep_alive_from_settings(monkeypatch):
     monkeypatch.setattr(settings, "llm_backend", "ollama")
-    monkeypatch.setattr(settings, "ollama_keep_alive", "30m")
+    monkeypatch.setattr(settings, "ollama_keep_alive", "7m")
     llm = get_llm()
-    assert llm.keep_alive == "30m"
+    assert llm.keep_alive == "7m"
 
 
 def test_ollama_keep_alive_default_is_longer_than_ollama_default():
     # Ollama's own default is '5m'; ours must outlast a working-day gap.
-    assert settings.ollama_keep_alive != "5m"
+    value = settings.ollama_keep_alive
+    number = float(value[:-1])
+    unit = value[-1]
+    minutes = number * 60 if unit == "h" else number
+    assert minutes >= 30
 
 
 def test_openai_like_disables_thinking(monkeypatch):
@@ -23,6 +25,14 @@ def test_openai_like_disables_thinking(monkeypatch):
     llm = get_llm()
     body = llm.additional_kwargs["extra_body"]
     assert body["chat_template_kwargs"]["enable_thinking"] is False
+    # Without is_function_calling_model=True the agent emits ReAct text
+    # instead of tool calls — a silent, expensive failure (CLAUDE.md
+    # gotchas table).
+    assert llm.is_chat_model is True
+    assert llm.is_function_calling_model is True
+    # Proves the timeout fix landed: OpenAILike has no `request_timeout`
+    # field and silently drops it, leaving the SDK's 60s default.
+    assert llm.timeout == float(settings.active_request_timeout)
 
 
 def test_get_llm_builds_a_fresh_client_per_call(monkeypatch):
@@ -32,3 +42,8 @@ def test_get_llm_builds_a_fresh_client_per_call(monkeypatch):
     # (reproduced 2026-09-16). A fresh client per call is what keeps that safe.
     monkeypatch.setattr(settings, "llm_backend", "ollama")
     assert get_llm() is not get_llm()
+    # `is not` alone would still pass for `return _CACHED.model_copy()`: a
+    # copy is a distinct object but carries the same live `_async_client`
+    # over by reference, reintroducing the exact bug. A genuinely fresh
+    # client hasn't made a call yet, so `_async_client` must still be None.
+    assert get_llm()._async_client is None

@@ -18,9 +18,10 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
     llm_request_timeout: int = 120
     llm_remote_request_timeout: int = 300
-    # How long Ollama keeps the model resident after a request. Ollama's own
-    # default is "5m"; sporadic use then pays a reload (measured 3.8s-51.7s on
-    # the shared host). Not unbounded: the box is shared with other projects.
+    # How long Ollama keeps the model resident after a request, as a duration
+    # string (e.g. "30m", "1h"). Ollama's own default is "5m"; sporadic use
+    # then pays a reload (measured 3.8s-51.7s on the shared host). Not
+    # unbounded: the box is shared with other projects.
     ollama_keep_alive: str = "30m"
 
     # LLM backend
