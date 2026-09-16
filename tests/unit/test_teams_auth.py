@@ -28,7 +28,9 @@ def test_concurrent_callers_refresh_the_token_once(tmp_path, monkeypatch):
     threads = [threading.Thread(target=refresher.get_access_token) for _ in range(2)]
     for t in threads:
         t.start()
+    # Bounded: this test exercises locking, so a lock bug must fail it, not hang the suite.
     for t in threads:
-        t.join()
+        t.join(timeout=5)
+    assert not any(t.is_alive() for t in threads), "get_access_token did not return — deadlock?"
 
     assert calls == [1], f"token refreshed {len(calls)} times"

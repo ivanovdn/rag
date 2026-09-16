@@ -141,6 +141,11 @@ class TeamsBot:
         # out of the processed set, so a restart re-delivers unanswered work
         # instead of skipping it. In-memory last_check still advances, so the
         # running process never re-enqueues what it already holds.
+        # Bounded by the staleness clamp in _load_state: this re-delivery guarantee
+        # only holds for a restart within teams_max_state_age_minutes. After a longer
+        # outage the rewound watermark is discarded by the clamp, and these ids were
+        # deliberately left out of processed_messages, so in-flight questions are lost
+        # rather than re-delivered. That is the anti-backlog-flood trade, not a bug.
         watermark = min(pending_times) - timedelta(milliseconds=1) if pending_times else self.last_check
 
         ids = [
@@ -278,6 +283,16 @@ class TeamsBot:
         if message_id and created_time:
             with self._inflight_lock:
                 self._inflight[message_id] = created_time
+        else:
+            # Untracked: the watermark advances past this message, so a crash before
+            # it is answered drops it silently. Unreachable from process_new_messages
+            # (_should_process_message rejects messages with no id or no parseable
+            # timestamp) — log it rather than let a future caller lose work quietly.
+            print(
+                f"WARNING: enqueuing untracked message in {chat_id} "
+                f"(message_id={message_id!r}, created_time={created_time!r}); "
+                "a crash before it is answered will drop it"
+            )
 
         self._send_message(chat_id, ACK_HTML)
         self._work_q.put((chat_id, text, sender_name, message_id or ""))
@@ -468,6 +483,7 @@ class TeamsBot:
                 sender_name = safe_get_nested(message, "from", "user", "displayName", default="Unknown")
 
                 created_datetime = message.get("createdDateTime")
+                created_time = None  # never carry the previous iteration's timestamp
                 if created_datetime:
                     try:
                         created_time = datetime.fromisoformat(created_datetime.replace("Z", "+00:00"))
@@ -485,7 +501,7 @@ class TeamsBot:
                     chat_id, clean_message,
                     sender_name=sender_name,
                     message_id=message_id,
-                    created_time=created_time if created_datetime else None,
+                    created_time=created_time,
                 )
 
         if newest_message_time > self.last_check:
@@ -499,8 +515,9 @@ class TeamsBot:
 
     def run(self):
         self._acquire_pid_lock()
-        self._ensure_worker()
         try:
+            # Inside the try: a failure to start the worker must still release the PID lock.
+            self._ensure_worker()
             print("Starting Compliance Teams Bot...")
             print("=" * 50)
             print(f"LLM: {settings.llm_model} ({settings.active_ollama_url})")

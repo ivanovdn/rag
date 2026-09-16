@@ -6,8 +6,10 @@ from rag.router import RouterDecision, Category
 
 
 @pytest.fixture
-def teams_bot(monkeypatch):
+def teams_bot(monkeypatch, tmp_path):
     """A TeamsBot with network + RAG mocked; records every HTML it 'sends'."""
+    # Hermetic: never read or write the developer's real bot_state.json.
+    monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
     b = bot.TeamsBot(token_refresher=object())
     sent = []
     monkeypatch.setattr(b, "_send_message", lambda chat_id, text, content_type="html": sent.append(text) or True)

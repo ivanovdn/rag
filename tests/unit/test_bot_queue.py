@@ -1,3 +1,4 @@
+import json
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -6,9 +7,25 @@ import pytest
 import channels.teams.bot as bot
 
 
+def _drain(work_q, timeout=5):
+    """Bounded wait for the queue to empty.
+
+    queue.Queue.join() takes no timeout, so a worker that dies before task_done()
+    would hang the whole suite. Wait on a helper thread instead: a stuck queue
+    fails the test rather than blocking CI. When join() returns, _worker_loop's
+    finally block has already popped the in-flight id.
+    """
+    joiner = threading.Thread(target=work_q.join, daemon=True)
+    joiner.start()
+    joiner.join(timeout)
+    assert not joiner.is_alive(), f"queue did not drain within {timeout}s"
+
+
 @pytest.fixture
-def qbot(monkeypatch):
+def qbot(monkeypatch, tmp_path):
     """A TeamsBot with network mocked; records every HTML it 'sends'."""
+    # Hermetic: never read or write the developer's real bot_state.json.
+    monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
     b = bot.TeamsBot(token_refresher=object())
     sent = []
     monkeypatch.setattr(b, "_send_message",
@@ -52,14 +69,42 @@ def test_worker_drains_job_and_clears_inflight(monkeypatch, qbot):
 
     t = threading.Thread(target=qbot._worker_loop, daemon=True)
     t.start()
-    qbot._work_q.join()
+    _drain(qbot._work_q)
 
     assert qbot._inflight == {}
     assert any("See AUP." in h for h in qbot._sent)
 
 
+def test_worker_survives_an_exception_and_never_leaks_its_text(monkeypatch, qbot):
+    """A failing job gets a fixed message, not the exception, and the worker lives on."""
+    monkeypatch.setattr(bot.settings, "router_enabled", False)
+    secret = "Traceback-detail-that-must-not-be-rendered"
+    calls = {"n": 0}
+
+    def _rag(question):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError(secret)
+        return {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}}
+
+    monkeypatch.setattr(bot, "_run_rag", _rag)
+    now = datetime.now(timezone.utc)
+    qbot._handle_inbound("chat1", "first question", "Ann", "m1", now)
+    qbot._handle_inbound("chat1", "second question", "Ann", "m2", now)
+
+    t = threading.Thread(target=qbot._worker_loop, daemon=True)
+    t.start()
+    _drain(qbot._work_q)
+
+    assert any("Something went wrong while looking this up." in h for h in qbot._sent)
+    # The renderer does not HTML-escape — raw exception text must never reach a user.
+    assert not any(secret in h for h in qbot._sent)
+    # The worker survived the failure and drained the next job.
+    assert any("See AUP." in h for h in qbot._sent)
+    assert qbot._inflight == {}
+
+
 def test_saved_watermark_is_held_before_the_oldest_inflight_message(qbot, tmp_path, monkeypatch):
-    import json
     monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
     old = datetime.now(timezone.utc) - timedelta(minutes=2)
     new = datetime.now(timezone.utc)
@@ -78,7 +123,6 @@ def test_saved_watermark_is_held_before_the_oldest_inflight_message(qbot, tmp_pa
 
 
 def test_saved_watermark_is_last_check_when_nothing_inflight(qbot, tmp_path, monkeypatch):
-    import json
     monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
     now = datetime.now(timezone.utc)
     qbot.last_check = now
@@ -88,6 +132,14 @@ def test_saved_watermark_is_last_check_when_nothing_inflight(qbot, tmp_path, mon
     qbot._save_state()
     saved = json.loads((tmp_path / "bot_state.json").read_text())
     assert datetime.fromisoformat(saved["last_check"]) == now
+
+
+def test_ensure_worker_is_idempotent_while_alive(qbot):
+    """The headline invariant: exactly one worker, never more."""
+    qbot._ensure_worker()
+    first = qbot._worker
+    qbot._ensure_worker()
+    assert qbot._worker is first
 
 
 def test_ensure_worker_restarts_a_dead_worker(qbot):

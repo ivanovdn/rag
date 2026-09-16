@@ -57,7 +57,10 @@ class TokenRefresher:
             "scope": _SCOPE,
         }
         try:
-            response = requests.post(_TOKEN_ENDPOINT, data=data)
+            # Timeout is required: get_access_token() holds self._lock across this
+            # call, so a silent socket would stall the poll thread (no detection,
+            # no acks) for as long as the OS lets the read hang.
+            response = requests.post(_TOKEN_ENDPOINT, data=data, timeout=settings.teams_api_timeout)
             response.raise_for_status()
             token_data = response.json()
 
