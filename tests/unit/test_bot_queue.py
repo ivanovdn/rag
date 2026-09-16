@@ -104,6 +104,37 @@ def test_worker_survives_an_exception_and_never_leaks_its_text(monkeypatch, qbot
     assert qbot._inflight == {}
 
 
+def test_undelivered_answer_is_logged_and_the_worker_moves_on(monkeypatch, qbot, capsys):
+    """A reply POST that failed even after retries must not leave the user in silence."""
+    monkeypatch.setattr(bot.settings, "router_enabled", False)
+    answers = iter([
+        {"answer": "UNDELIVERABLE", "citations": [], "escalation": {"needed": False}},
+        {"answer": "second answer", "citations": [], "escalation": {"needed": False}},
+    ])
+    monkeypatch.setattr(bot, "_run_rag", lambda q: next(answers))
+
+    def _send(chat_id, text, content_type="html"):
+        qbot._sent.append(text)
+        return None if "UNDELIVERABLE" in text else True  # transport gave up
+
+    monkeypatch.setattr(qbot, "_send_message", _send)
+
+    now = datetime.now(timezone.utc)
+    qbot._handle_inbound("chat1", "first question", "Ann", "m1", now)
+    qbot._handle_inbound("chat1", "second question", "Ann", "m2", now)
+
+    t = threading.Thread(target=qbot._worker_loop, daemon=True)
+    t.start()
+    _drain(qbot._work_q)
+
+    logged = capsys.readouterr().out
+    assert "ERROR: answer not delivered" in logged
+    assert "chat1" in logged and "first question" in logged
+    # The worker drained the failed job and went on to the next one.
+    assert any("second answer" in h for h in qbot._sent)
+    assert qbot._inflight == {}
+
+
 def test_saved_watermark_is_held_before_the_oldest_inflight_message(qbot, tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
     old = datetime.now(timezone.utc) - timedelta(minutes=2)

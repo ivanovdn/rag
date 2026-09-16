@@ -34,6 +34,13 @@ PID_FILE = Path("channels/teams/data/bot.pid")
 
 _VALID_RATINGS = {"-1", "0", "1", "2"}
 
+# Bounded retry for transient Graph failures (timeouts, connection errors, 5xx).
+# Deliberately short and deliberately local: rag.resilience is for the model/vector
+# backends, its _TRANSIENT_TYPES does not cover requests' exceptions, and importing it
+# here would pull qdrant_client/openai into this module's header (observability-first).
+# The poll thread's ack goes through the same call, so this must not become a stall.
+_GRAPH_RETRY_BACKOFFS: tuple[float, ...] = (0.5, 1.0)
+
 # Pending ratings: chat_id → context dict
 # Lost on restart — acceptable
 _pending_ratings: dict[str, dict] = {}
@@ -207,32 +214,51 @@ class TeamsBot:
         }
 
     def _api_request(self, url, method="GET", json_data=None):
-        try:
-            if method == "GET":
-                response = requests.get(url, headers=self._get_headers(), timeout=settings.teams_api_timeout)
-            elif method == "POST":
-                response = requests.post(url, json=json_data, headers=self._get_headers(), timeout=settings.teams_api_timeout)
-            else:
+        """Call Graph, retrying transient failures a bounded number of times.
+
+        Retries timeouts, connection errors and 5xx — a Graph blip that clears. Never
+        retries 4xx: a deleted chat or a bad payload will not come back, and retrying
+        it only burns a poll cycle. Returns None once the attempts are exhausted.
+        """
+        for attempt in range(len(_GRAPH_RETRY_BACKOFFS) + 1):
+            try:
+                if method == "GET":
+                    response = requests.get(url, headers=self._get_headers(), timeout=settings.teams_api_timeout)
+                elif method == "POST":
+                    response = requests.post(url, json=json_data, headers=self._get_headers(), timeout=settings.teams_api_timeout)
+                else:
+                    return None
+
+                response.raise_for_status()
+
+                if method == "POST":
+                    try:
+                        return response.json() or True
+                    except Exception:
+                        return True
+                data = response.json()
+                return data if data else None
+
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                reason = f"{type(e).__name__} for {url}"
+            except requests.exceptions.HTTPError as e:
+                status = getattr(e.response, "status_code", None)
+                if status is None or status < 500:
+                    print(f"HTTP error for {url}: {e}")
+                    return None
+                reason = f"HTTP {status} for {url}"
+            except Exception as e:
+                print(f"Request failed for {url}: {e}")
                 return None
 
-            response.raise_for_status()
-
-            if method == "POST":
-                try:
-                    return response.json() or True
-                except Exception:
-                    return True
-            data = response.json()
-            return data if data else None
-        except requests.exceptions.Timeout:
-            print(f"Request timeout for {url}")
-            return None
-        except requests.exceptions.HTTPError as e:
-            print(f"HTTP error for {url}: {e}")
-            return None
-        except Exception as e:
-            print(f"Request failed for {url}: {e}")
-            return None
+            if attempt < len(_GRAPH_RETRY_BACKOFFS):
+                delay = _GRAPH_RETRY_BACKOFFS[attempt]
+                print(f"Transient Graph failure ({reason}); retrying in {delay}s")
+                time.sleep(delay)
+            else:
+                print(f"Transient Graph failure ({reason}); gave up after "
+                      f"{len(_GRAPH_RETRY_BACKOFFS) + 1} attempts")
+        return None
 
     def _send_message(self, chat_id, text, content_type="html"):
         url = f"{GRAPH_API}/me/chats/{chat_id}/messages"
@@ -303,7 +329,14 @@ class TeamsBot:
         while True:
             chat_id, text, sender_name, message_id = self._work_q.get()
             try:
-                self._answer(chat_id, text, sender_name=sender_name)
+                if not self._answer(chat_id, text, sender_name=sender_name):
+                    # The answer was produced but the reply POST failed even after
+                    # retries. Nothing re-sends it — the user has an ack and then
+                    # silence — so say so loudly instead of dropping it quietly.
+                    print(
+                        f"ERROR: answer not delivered to chat {chat_id} "
+                        f"(message_id={message_id or 'unknown'}, question={text[:80]!r})"
+                    )
             except Exception as e:
                 # Log the detail; never send raw exception text to a user — the
                 # renderer does not HTML-escape, and today these never reach the chat.
