@@ -161,7 +161,13 @@ class TeamsBot:
             mid for mid in list(self.processed_messages)[-settings.teams_max_processed_messages:]
             if mid not in pending_ids
         ]
-        with open(STATE_FILE, "w") as f:
+        # Atomic: this file is the sole carrier of the crash-recovery guarantee, and
+        # a plain open("w") truncates first — a SIGKILL mid-dump would leave truncated
+        # JSON, _load_state would fall back to its default, and every in-flight question
+        # would be lost. Write beside it and rename over it (atomic on POSIX; the temp
+        # file must be in the same directory, since os.replace across filesystems is not).
+        tmp_file = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+        with open(tmp_file, "w") as f:
             json.dump(
                 {
                     "last_check": watermark.isoformat(),
@@ -170,6 +176,9 @@ class TeamsBot:
                 f,
                 indent=2,
             )
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_file, STATE_FILE)
 
     # ------------------------------------------------------------------
     # PID lock

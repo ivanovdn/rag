@@ -12,6 +12,7 @@ from config import settings
 _TOKEN_ENDPOINT = f"https://login.microsoftonline.com/{settings.teams_tenant_id}/oauth2/v2.0/token"
 _SCOPE = "https://graph.microsoft.com/.default"
 _TOKEN_REFRESH_BUFFER = 300  # seconds before expiry to refresh
+_TOKEN_REFRESH_COOLDOWN = 30  # seconds to wait before retrying a refresh that failed
 _TOKEN_FILE = Path("channels/teams/data/refresh_token.json")
 
 
@@ -31,6 +32,8 @@ class TokenRefresher:
                 raise RuntimeError("No refresh token found. Set TEAMS_REFRESH_TOKEN in .env or run get_refresh_token.py")
         self.access_token = None
         self.token_expires_at = None
+        # Set after a failed refresh; blocks further attempts until it passes.
+        self._retry_refresh_after = None
         # Both the poll thread and the RAG worker call get_access_token().
         self._lock = threading.Lock()
 
@@ -67,6 +70,7 @@ class TokenRefresher:
             self.access_token = token_data.get("access_token")
             expires_in = token_data.get("expires_in", 3600)
             self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            self._retry_refresh_after = None
 
             if "refresh_token" in token_data:
                 self.refresh_token = token_data["refresh_token"]
@@ -80,6 +84,11 @@ class TokenRefresher:
             print(f"Error refreshing token: {e}")
             if hasattr(e, "response") and hasattr(e.response, "text"):
                 print(f"Response: {e.response.text}")
+            # Cool off. Without this the token stays "expired", so every _get_headers()
+            # on every Graph call retries the refresh under the lock at ~10s a time —
+            # at 30 chats that is minutes of poll-thread stall per cycle during an AAD
+            # outage. A dead credential is now retried every 30s instead.
+            self._retry_refresh_after = datetime.now(timezone.utc) + timedelta(seconds=_TOKEN_REFRESH_COOLDOWN)
             return None
 
     def get_access_token(self):
@@ -91,5 +100,10 @@ class TokenRefresher:
         """
         with self._lock:
             if self._is_token_expired():
+                # A failed refresh cools off rather than retrying on every Graph call.
+                # _is_token_expired() alone can't throttle it: with no access_token yet
+                # it is unconditionally True, so the cool-off is tracked separately.
+                if self._retry_refresh_after and datetime.now(timezone.utc) < self._retry_refresh_after:
+                    return self.access_token
                 self._refresh_access_token()
             return self.access_token

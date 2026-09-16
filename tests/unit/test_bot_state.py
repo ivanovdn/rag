@@ -1,6 +1,7 @@
 """Startup clamp on bot_state.json last_check — prevents a long-stopped bot from
 re-answering the whole message backlog into the channel."""
 import json
+import pathlib
 from datetime import datetime, timedelta, timezone
 
 import channels.teams.bot as bot
@@ -85,3 +86,32 @@ def test_missing_state_file_uses_fresh_default(tmp_path, monkeypatch):
     age = datetime.now(timezone.utc) - b.last_check
     assert age < timedelta(minutes=10)
     assert not b.processed_messages
+
+
+def test_state_file_is_written_atomically(tmp_path, monkeypatch):
+    """A SIGKILL mid-write must not be able to leave truncated JSON: this file is the
+    only carrier of the crash-recovery guarantee."""
+    state = tmp_path / "bot_state.json"
+    monkeypatch.setattr(bot, "STATE_FILE", state)
+    b = bot.TeamsBot(token_refresher=object())
+    for i in range(50):
+        b._mark_processed(f"chat1:m{i}")
+
+    replaced = {}
+    real_replace = bot.os.replace
+
+    def _spy(src, dst):
+        # At the moment of the rename the target must still hold the previous, valid
+        # content — never a partially written file.
+        replaced["src"] = str(src)
+        replaced["dst"] = str(dst)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(bot.os, "replace", _spy)
+    b._save_state()
+
+    assert replaced["dst"] == str(state), "the final write must be a rename onto the target"
+    assert replaced["src"] != str(state), "content must be staged in a separate file"
+    assert pathlib.Path(replaced["src"]).parent == state.parent, \
+        "the temp file must share a directory with the target, or the rename is not atomic"
+    assert json.loads(state.read_text())["processed_messages"][0] == "chat1:m0"
