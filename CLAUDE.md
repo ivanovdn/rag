@@ -110,5 +110,6 @@ ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFID
 | Bot log empty / "not starting" when output redirected to a file | Python block-buffers stdout when not a TTY. Start with `python -u` (unbuffered) — the bot was alive and polling, just not flushing. |
 | Stale `bot_state.json` floods the channel with backlog | `_load_state` clamps `last_check` on startup: if older than `TEAMS_MAX_STATE_AGE_MINUTES` (default 60) it resets to `now − lookback` and warns. Normal restarts (downtime < that) still resume; long downtime can't flood. |
 | Router live test imports `rag.router` inside the test fn (not at top) | Deliberate exception to imports-at-top: a module-top import pulls llama-index at pytest **collection** on every offline run, but `tests/live/` auto-skips without an LLM. Keep it function-local. |
+| Qwen3 on `openai-compatible` silently thinks | `get_llm()`'s Ollama branch sets `thinking=False`; the `OpenAILike` branch needs `additional_kwargs={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}`. Measured 34.5s vs 2.2s for one router call — and it still parses, so it degrades quietly. |
 
 **Not yet implemented:** email escalation. (Tier-A pytest suite exists under `tests/`; Tier-B/C and CI still pending.)

@@ -151,6 +151,13 @@ ALL_TOOLS = [
     escalate_to_compliance_tool,
 ]
 
+# Qwen3-family models emit reasoning traces by default on vLLM/llama-server.
+# Measured: 294 reasoning tokens and 34.5s to produce a 16-token router
+# classification, versus 2.2s with thinking off. The tolerant JSON extractor
+# still parses it, so this regresses silently — hence the explicit switch.
+# The Ollama branch has its own native `thinking=False` argument.
+_NO_THINKING_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+
 
 def get_llm(model: str | None = None):
     if settings.llm_backend == "openai-compatible":
@@ -164,6 +171,7 @@ def get_llm(model: str | None = None):
             request_timeout=float(settings.active_request_timeout),
             is_chat_model=True,
             is_function_calling_model=True,
+            additional_kwargs={"extra_body": _NO_THINKING_BODY},
         )
     else:
         from llama_index.llms.ollama import Ollama
