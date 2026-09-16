@@ -174,6 +174,7 @@ def get_llm(model: str | None = None):
             request_timeout=float(settings.active_request_timeout),
             temperature=settings.llm_temperature,
             thinking=False,
+            keep_alive=settings.ollama_keep_alive,
             additional_kwargs={"num_predict": 4096, "num_ctx": 8192},
         )
 
