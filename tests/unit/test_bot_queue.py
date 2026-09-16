@@ -140,7 +140,7 @@ def test_saved_watermark_is_held_before_the_oldest_inflight_message(qbot, tmp_pa
     old = datetime.now(timezone.utc) - timedelta(minutes=2)
     new = datetime.now(timezone.utc)
     qbot.last_check = new
-    qbot.processed_messages = {"m_old", "m_done"}
+    qbot.processed_messages = dict.fromkeys(["m_old", "m_done"])
     qbot._inflight = {"m_old": old}
 
     qbot._save_state()
@@ -157,7 +157,7 @@ def test_saved_watermark_is_last_check_when_nothing_inflight(qbot, tmp_path, mon
     monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
     now = datetime.now(timezone.utc)
     qbot.last_check = now
-    qbot.processed_messages = {"m1"}
+    qbot.processed_messages = dict.fromkeys(["m1"])
     qbot._inflight = {}
 
     qbot._save_state()

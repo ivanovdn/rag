@@ -117,13 +117,14 @@ class TeamsBot:
         fresh_check = now - timedelta(minutes=settings.teams_initial_lookback_minutes)
         default = {
             "last_check": fresh_check,
-            "processed_messages": set(),
+            "processed_messages": {},
         }
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
             last_check = datetime.fromisoformat(data["last_check"])
-            processed = set(data.get("processed_messages", []))
+            # dict, not set: insertion order is what makes eviction genuinely oldest-first.
+            processed = dict.fromkeys(data.get("processed_messages", []))
             # Clamp a stale last_check so a long-stopped bot can't treat the whole
             # backlog as new and answer it all into the channel. Normal restarts
             # (downtime < teams_max_state_age_minutes) still resume from last_check.
@@ -155,6 +156,7 @@ class TeamsBot:
         # rather than re-delivered. That is the anti-backlog-flood trade, not a bug.
         watermark = min(pending_times) - timedelta(milliseconds=1) if pending_times else self.last_check
 
+        # processed_messages is insertion-ordered, so this slice really is "the newest N".
         ids = [
             mid for mid in list(self.processed_messages)[-settings.teams_max_processed_messages:]
             if mid not in pending_ids
@@ -452,34 +454,43 @@ class TeamsBot:
             return False, "already_processed"
 
         if message.get("messageType") != "message":
-            self.processed_messages.add(message_id)
+            self._mark_processed(message_id)
             return False, "system_message"
 
         sender_id = safe_get_nested(message, "from", "user", "id")
         if sender_id == my_user_id:
-            self.processed_messages.add(message_id)
+            self._mark_processed(message_id)
             return False, "self_message"
 
         created_datetime = message.get("createdDateTime")
         if not created_datetime:
-            self.processed_messages.add(message_id)
+            self._mark_processed(message_id)
             return False, "no_timestamp"
 
         try:
             created_time = datetime.fromisoformat(created_datetime.replace("Z", "+00:00"))
             if created_time <= self.last_check:
-                self.processed_messages.add(message_id)
+                self._mark_processed(message_id)
                 return False, "old_message"
         except ValueError:
-            self.processed_messages.add(message_id)
+            self._mark_processed(message_id)
             return False, "invalid_timestamp"
 
         return True, None
 
+    def _mark_processed(self, message_id):
+        """Record an id as seen.
+
+        processed_messages is a dict (values unused) rather than a set purely for
+        insertion order: a set iterates by hash, so evicting a slice of it drops
+        near-random ids instead of the oldest ones.
+        """
+        self.processed_messages[message_id] = None
+
     def _cleanup_processed_messages(self):
         if len(self.processed_messages) > settings.teams_max_processed_messages:
             remove_count = len(self.processed_messages) // 5
-            self.processed_messages = set(list(self.processed_messages)[remove_count:])
+            self.processed_messages = dict.fromkeys(list(self.processed_messages)[remove_count:])
 
     def process_new_messages(self):
         my_user_id = self._get_my_user_id()
@@ -529,7 +540,7 @@ class TeamsBot:
                 display = clean_message if clean_message.strip() else "[media/emoji]"
                 print(f'\nNew message from {sender_name}: "{display}"')
 
-                self.processed_messages.add(message_id)
+                self._mark_processed(message_id)
                 self._handle_inbound(
                     chat_id, clean_message,
                     sender_name=sender_name,
