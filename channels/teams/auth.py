@@ -1,6 +1,7 @@
 """Microsoft Graph API token management."""
 
 import json
+import os
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,14 +14,14 @@ _TOKEN_ENDPOINT = f"https://login.microsoftonline.com/{settings.teams_tenant_id}
 _SCOPE = "https://graph.microsoft.com/.default"
 _TOKEN_REFRESH_BUFFER = 300  # seconds before expiry to refresh
 _TOKEN_REFRESH_COOLDOWN = 30  # seconds to wait before retrying a refresh that failed
-_TOKEN_FILE = Path("channels/teams/data/refresh_token.json")
+TOKEN_FILE = Path("channels/teams/data/refresh_token.json")
 
 
 class TokenRefresher:
     def __init__(self):
         # Prefer saved file (rotated token), fall back to .env (initial seed)
         try:
-            with open(_TOKEN_FILE, "r") as f:
+            with open(TOKEN_FILE, "r") as f:
                 data = json.load(f)
                 self.refresh_token = data["refresh_token"]
                 print("Using refresh token from file")
@@ -38,10 +39,21 @@ class TokenRefresher:
         self._lock = threading.Lock()
 
     def _save_refresh_token(self):
+        # Atomic: once Azure rotates past the .env seed, this file is the only copy of
+        # the live credential — a plain open("w") truncates before writing, so a
+        # container kill mid-write would leave an empty file and strand the bot with no
+        # unattended way back (recovery is an interactive sign-in, scripts/get_refresh_token.py).
+        # Stage in a same-directory temp file and rename over the target instead (atomic
+        # on POSIX; os.replace across filesystems is not, so the temp file must sit next
+        # to it, not under a different mount such as /tmp). Mirrors bot.py's _save_state.
         try:
-            _TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(_TOKEN_FILE, "w") as f:
+            TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp_file = TOKEN_FILE.with_name(TOKEN_FILE.name + ".tmp")
+            with open(tmp_file, "w") as f:
                 json.dump({"refresh_token": self.refresh_token}, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, TOKEN_FILE)
         except OSError:
             pass
 

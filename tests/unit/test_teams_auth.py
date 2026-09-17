@@ -1,4 +1,5 @@
 import json
+import pathlib
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -33,7 +34,7 @@ def test_concurrent_callers_refresh_the_token_once(tmp_path, monkeypatch):
     token must be refreshed once, not once per thread."""
     token_file = tmp_path / "refresh_token.json"
     token_file.write_text(json.dumps({"refresh_token": "seed"}))
-    monkeypatch.setattr(auth, "_TOKEN_FILE", token_file)
+    monkeypatch.setattr(auth, "TOKEN_FILE", token_file)
     refresher = auth.TokenRefresher()
 
     watched = _WatchedLock()
@@ -77,7 +78,7 @@ def test_failed_refresh_cools_off_instead_of_retrying_every_call(tmp_path, monke
     once per request, and each attempt costs a ~10s POST under the lock."""
     token_file = tmp_path / "refresh_token.json"
     token_file.write_text(json.dumps({"refresh_token": "seed"}))
-    monkeypatch.setattr(auth, "_TOKEN_FILE", token_file)
+    monkeypatch.setattr(auth, "TOKEN_FILE", token_file)
     refresher = auth.TokenRefresher()
 
     calls = []
@@ -99,3 +100,34 @@ def test_failed_refresh_cools_off_instead_of_retrying_every_call(tmp_path, monke
     refresher._retry_refresh_after = datetime.now(timezone.utc) - timedelta(seconds=1)
     refresher.get_access_token()
     assert len(calls) == 2
+
+
+def test_refresh_token_file_is_written_atomically(tmp_path, monkeypatch):
+    """A container kill mid-write must not be able to leave an empty or truncated
+    file: Azure invalidates the refresh token on every use, so this file is the only
+    surviving copy of the live credential and losing it means an interactive
+    device-code sign-in (scripts/get_refresh_token.py) to recover."""
+    token_file = tmp_path / "refresh_token.json"
+    token_file.write_text(json.dumps({"refresh_token": "seed"}))
+    monkeypatch.setattr(auth, "TOKEN_FILE", token_file)
+    refresher = auth.TokenRefresher()
+    refresher.refresh_token = "fake-refresh-token"
+
+    replaced = {}
+    real_replace = auth.os.replace
+
+    def _spy(src, dst):
+        # At the moment of the rename the target must still hold the previous, valid
+        # content — never a partially written file.
+        replaced["src"] = str(src)
+        replaced["dst"] = str(dst)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(auth.os, "replace", _spy)
+    refresher._save_refresh_token()
+
+    assert replaced["dst"] == str(token_file), "the final write must be a rename onto the target"
+    assert replaced["src"] != str(token_file), "content must be staged in a separate file"
+    assert pathlib.Path(replaced["src"]).parent == token_file.parent, \
+        "the temp file must share a directory with the target, or the rename is not atomic"
+    assert json.loads(token_file.read_text())["refresh_token"] == "fake-refresh-token"
