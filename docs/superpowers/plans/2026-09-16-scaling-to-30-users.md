@@ -409,7 +409,7 @@ def test_concurrent_callers_refresh_the_token_once(tmp_path, monkeypatch):
     token must be refreshed once, not once per thread."""
     token_file = tmp_path / "refresh_token.json"
     token_file.write_text(json.dumps({"refresh_token": "seed"}))
-    monkeypatch.setattr(auth, "_TOKEN_FILE", token_file)
+    monkeypatch.setattr(auth, "TOKEN_FILE", token_file)
     refresher = auth.TokenRefresher()
 
     calls = []
