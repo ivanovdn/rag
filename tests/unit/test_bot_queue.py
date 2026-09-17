@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import channels.teams.bot as bot
+import rag.tools.search_policies as sp
+from rag.resilience import RETRY_BACKOFFS
 
 
 def _drain(work_q, timeout=5):
@@ -227,3 +229,68 @@ def test_pending_rating_is_not_armed_when_the_prompt_failed_to_send(monkeypatch,
 
     assert qbot._answer("chat1", "Can I install software?") is True  # the answer landed
     assert "chat1" not in bot._pending_ratings
+
+
+# --- _run_rag diagnostic logging (CLAUDE.md gotcha: "unavailable" with no cause in the log) ---
+#
+# These call the real bot._run_rag rather than faking it wholesale like the tests above:
+# the new log lines live inside it, so a faked _run_rag would only prove the test's own
+# fake prints something, not that the real code does. To reach the transient/retrieval
+# branches without a real network or LLM, only a dependency deep inside _run_rag is faked
+# (rag.resilience.retry_transient, and rag.agent.build_agent for the retrieval case) — same
+# module-attribute-patch technique as tests/unit/test_resilience.py's `time.sleep` patch.
+
+def test_run_rag_logs_transient_llm_failure_type_and_message(monkeypatch, capsys):
+    """Reproduces the production incident: a poisoned Ollama runner raises a builtin
+    ConnectionError. The log must name the component (llm), the exception type and
+    message, and that it was retried — that detail is otherwise only in Phoenix, and
+    only as a type, not a message."""
+    def fake_retry_transient(fn):
+        raise ConnectionError("CUDA error: an illegal memory access was encountered (status code: 500)")
+
+    monkeypatch.setattr("rag.resilience.retry_transient", fake_retry_transient)
+
+    result = bot._run_rag("Can I install software?")
+
+    assert result == {"status": "unavailable"}
+    logged = capsys.readouterr().out
+    assert "[worker]" in logged
+    assert "llm" in logged
+    assert "ConnectionError" in logged
+    assert "CUDA error: an illegal memory access was encountered" in logged
+    assert f"gave up after {len(RETRY_BACKOFFS) + 1} attempts" in logged
+
+
+def test_run_rag_truncates_a_long_llm_error_message(monkeypatch, capsys):
+    """A backend can return a long body; the log line must not carry all of it."""
+    def fake_retry_transient(fn):
+        raise ConnectionError("x" * 500)
+
+    monkeypatch.setattr("rag.resilience.retry_transient", fake_retry_transient)
+
+    bot._run_rag("Can I install software?")
+
+    logged = capsys.readouterr().out
+    assert "x" * 500 not in logged
+    assert "x" * 200 in logged
+
+
+def test_run_rag_logs_retrieval_as_the_failing_component(monkeypatch, capsys):
+    """search_policies (not _run_rag) hits the transient error; it swallows it and only
+    sets sp._retrieval_unavailable (LlamaIndex swallows tool exceptions — see CLAUDE.md).
+    The log must still say "retrieval", distinctly from the "llm" wording above, so an
+    operator can tell the two apart at a glance."""
+    class _FakeAgent:
+        async def run(self, user_msg):
+            sp._retrieval_unavailable = True  # what search_policies would have set
+            return "unused — the unavailable flag is checked before the response is parsed"
+
+    monkeypatch.setattr("rag.resilience.retry_transient", lambda fn: fn())
+    monkeypatch.setattr("rag.agent.build_agent", lambda: _FakeAgent())
+
+    result = bot._run_rag("Can I install software?")
+
+    assert result == {"status": "unavailable"}
+    logged = capsys.readouterr().out
+    assert "[worker]" in logged
+    assert "retrieval" in logged

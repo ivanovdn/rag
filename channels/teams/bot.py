@@ -84,6 +84,16 @@ def _run_rag(question: str) -> dict:
     except Exception as e:
         if is_transient(e):
             record_infra_unavailable("llm", type(e).__name__, len(RETRY_BACKOFFS))
+            msg = str(e)
+            if len(msg) > 200:
+                msg = msg[:200] + "..."
+            # +1: retry_transient makes len(backoffs)+1 total calls (its own docstring) —
+            # the retries_attempted passed above is deliberately the smaller retry count,
+            # not the call count. Different numbers on purpose; don't "fix" them to match.
+            print(
+                f"[worker] Unavailable (llm): {type(e).__name__}: {msg}; "
+                f"gave up after {len(RETRY_BACKOFFS) + 1} attempts"
+            )
             return {"status": "unavailable"}
         print(f"RAG pipeline error: {e}")
         return {
@@ -94,7 +104,11 @@ def _run_rag(question: str) -> dict:
 
     # Retrieval failed inside the tool (LlamaIndex swallows tool exceptions) →
     # the flag was set in search_policies; surface the unavailable outcome.
+    # search_policies itself does not print/log — it only emits the Phoenix
+    # infra_unavailable span — so this is the only container-log record that
+    # retrieval (not the LLM) was the failing component.
     if sp._retrieval_unavailable:
+        print("[worker] Unavailable (retrieval): search_policies flagged the backend unavailable (embeddings/qdrant)")
         return {"status": "unavailable"}
 
     return parse_agent_response(str(response))
