@@ -378,7 +378,21 @@ class TeamsBot:
         # Enqueue first: a slow ack POST must not delay the work it acknowledges.
         # In-flight registration stays above both, so a crash anywhere here re-delivers.
         self._work_q.put((chat_id, text, sender_name, message_key or ""))
-        self._send_message(chat_id, ACK_HTML)
+        # Depth right after enqueueing, so it shows how deep this sender landed in the
+        # backlog. qsize() is approximate under concurrency — fine for a log line, not
+        # worth a lock. Kept immediately adjacent to process_new_messages' "New message
+        # from ..." print: the gap between those two lines is the ack latency.
+        depth = self._work_q.qsize()
+        acked = self._send_message(chat_id, ACK_HTML)
+        if acked:
+            print(f"Ack sent to chat {chat_id} (queue depth {depth})")
+        else:
+            # User-visible degradation: they'll get an answer out of nowhere with no
+            # acknowledgement. The question itself is not lost — it was enqueued above.
+            print(
+                f"ERROR: ack not delivered to chat {chat_id} (queue depth {depth}); "
+                "question is still queued and will be answered without ever being acknowledged"
+            )
         return True
 
     def _worker_loop(self):

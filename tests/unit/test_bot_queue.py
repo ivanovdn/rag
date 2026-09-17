@@ -48,6 +48,36 @@ def test_inbound_acks_immediately_and_does_not_run_rag(monkeypatch, qbot):
     assert qbot._work_q.qsize() == 1
 
 
+def test_inbound_logs_ack_sent_with_queue_depth(monkeypatch, qbot, capsys):
+    """The ack line is what makes the branch's headline claim (~2s ack latency,
+    measured against process_new_messages' "New message from ..." print) checkable
+    after the fact. No [worker] prefix: _handle_inbound runs on the poll thread."""
+    monkeypatch.setattr(bot, "_run_rag", lambda q: pytest.fail("poll thread must not run RAG"))
+    now = datetime.now(timezone.utc)
+    qbot._handle_inbound("chat1", "Can I install software?", "Ann", "m1", now)
+
+    logged = capsys.readouterr().out
+    assert "Ack sent to chat chat1 (queue depth 1)" in logged
+    assert "[worker]" not in logged
+
+
+def test_inbound_logs_ack_failure_but_keeps_the_question_queued(monkeypatch, qbot, capsys):
+    """A failed ack is silent today: the user gets an answer out of nowhere with no
+    acknowledgement, because the question was enqueued before the ack was attempted.
+    The log line must stand out and say the question was not lost."""
+    monkeypatch.setattr(qbot, "_send_message",
+                        lambda chat_id, text, content_type="html", retry=False: None)
+    now = datetime.now(timezone.utc)
+    qbot._handle_inbound("chat1", "Can I install software?", "Ann", "m1", now)
+
+    logged = capsys.readouterr().out
+    assert "ERROR: ack not delivered to chat chat1 (queue depth 1)" in logged
+    assert "still queued" in logged
+    assert "[worker]" not in logged
+    # The failed ack must not drop the question: it is still enqueued.
+    assert qbot._work_q.qsize() == 1
+
+
 def test_inbound_marks_message_inflight(qbot):
     now = datetime.now(timezone.utc)
     qbot._handle_inbound("chat1", "Can I install software?", "Ann", "m1", now)
