@@ -194,7 +194,13 @@ def get_llm(model: str | None = None):
             temperature=settings.llm_temperature,
             thinking=False,
             keep_alive=settings.ollama_keep_alive,
-            additional_kwargs={"num_predict": 4096, "num_ctx": 8192},
+            # num_ctx: settings.ollama_num_ctx (4096) is the only value the
+            # upstream crash matrix proved safe against the MoE+CUDA fault —
+            # see docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md.
+            # num_predict=1024 is ~66% headroom over the observed max
+            # completion (617 tokens, Phoenix spans) and, unlike the old
+            # 4096, actually fits alongside the prompt in that same window.
+            additional_kwargs={"num_predict": 1024, "num_ctx": settings.ollama_num_ctx},
         )
 
 
