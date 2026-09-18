@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -125,6 +126,31 @@ class Settings(BaseSettings):
     teams_max_state_age_minutes: int = 60   # clamp last_check older than this on startup (anti-backlog-flood)
     teams_max_consecutive_errors: int = 5
     teams_max_processed_messages: int = 1000
+
+    @model_validator(mode="after")
+    def _validate_business_hours(self) -> "Settings":
+        """Warn (never crash) on a business-hours window that silently misbehaves.
+
+        TeamsBot._current_poll_interval compares these as plain ints against
+        datetime.hour (0-23); it never raises on a bad value, it just quietly
+        always returns one interval — start == end is an always-empty window
+        (always idle), and anything outside 0-23 (e.g. END=24, meant as
+        "midnight") doesn't behave the way that value implies.
+        """
+        start = self.teams_business_hours_start_utc
+        end = self.teams_business_hours_end_utc
+        if not (0 <= start <= 23) or not (0 <= end <= 23):
+            print(
+                f"WARNING: TEAMS_BUSINESS_HOURS_START_UTC/_END_UTC must be 0-23 "
+                f"(got start={start}, end={end}); hour comparisons will not behave as expected."
+            )
+        elif start == end:
+            print(
+                f"WARNING: TEAMS_BUSINESS_HOURS_START_UTC == TEAMS_BUSINESS_HOURS_END_UTC "
+                f"({start}); that window is always empty, so polling will always use the "
+                "idle interval, never the fast one."
+            )
+        return self
 
     # Observability (Phoenix)
     phoenix_enabled: bool = True

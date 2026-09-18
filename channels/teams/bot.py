@@ -133,6 +133,15 @@ class TeamsBot:
         state = self._load_state()
         self.last_check = state["last_check"]
         self.processed_messages = state["processed_messages"]
+        # Wall-clock time the current last_check hold began; None when not held.
+        # process_new_messages sets this the first cycle any fetch comes back
+        # incomplete, and clears it the moment last_check next advances (normally
+        # or by the force-advance below). Mirrors _load_state's startup staleness
+        # clamp, but enforced continuously at runtime: an unbounded hold lets
+        # _cleanup_processed_messages evict ids the frozen watermark still needs,
+        # and Ruling B's own back-paging then re-fetches and re-answers them — see
+        # process_new_messages for the bounded force-advance that prevents it.
+        self._hold_since: datetime | None = None
         # EXACTLY ONE worker consumes this queue. Do not raise the worker count.
         # rag/tools/search_policies.py keeps _retrieval_unavailable and
         # _last_search_results as module globals, reset before an agent run and
@@ -410,6 +419,11 @@ class TeamsBot:
         for _ in range(_MESSAGES_MAX_PAGES):
             data = self._api_request(url)
             if not data:
+                print(
+                    f"WARNING: message fetch failed for chat {chat_id}; treating this "
+                    "chat as incomplete this cycle so the watermark is not advanced "
+                    "past unread messages"
+                )
                 return messages, False
             page = data.get("value", []) or []
             messages.extend(page)
@@ -705,6 +719,14 @@ class TeamsBot:
         return settings.teams_idle_poll_interval
 
     def process_new_messages(self):
+        """One poll cycle: read the chat list, read each chat's new messages, answer.
+
+        last_check only advances when every fetch this cycle succeeded in full —
+        see the `fully_synced` handling after the main loop below, and R-1 in
+        task-4-rereview.md for why an *unbounded* hold on that watermark is itself
+        a bug (it lets _cleanup_processed_messages evict ids the hold still needs,
+        which then get re-fetched and re-answered by Ruling B's own back-paging).
+        """
         my_user_id = self._get_my_user_id()
         if not my_user_id:
             return
@@ -729,7 +751,9 @@ class TeamsBot:
 
             messages, chat_complete = self._get_chat_messages(chat_id)
             if not chat_complete:
-                # _get_chat_messages already logged the specifics. This chat's
+                # _get_chat_messages logs a WARNING on every path that returns
+                # complete=False (fetch failure or page-cap exhaustion) — see its
+                # docstring; both branches print before returning. This chat's
                 # unread history is not fully in hand, so — same reasoning as the
                 # chat-list case above — the cycle as a whole cannot advance
                 # last_check without risking messages behind the gap.
@@ -773,9 +797,55 @@ class TeamsBot:
                     created_time=created_time,
                 )
 
-        if fully_synced and newest_message_time > self.last_check:
-            self.last_check = newest_message_time
-        self._cleanup_processed_messages()
+        if fully_synced:
+            self._hold_since = None
+            if newest_message_time > self.last_check:
+                self.last_check = newest_message_time
+        else:
+            # Bound the hold (Ruling G / R-1) — mirrors _load_state's startup
+            # staleness clamp, applied continuously at runtime instead of only at
+            # startup. Without this, one persistently-unreadable chat freezes
+            # last_check forever: nothing here raises, so run()'s
+            # consecutive_errors guard never trips; every message after the
+            # freeze point stays permanently "new" by timestamp
+            # (_should_process_message); and _cleanup_processed_messages evicts
+            # the oldest ids with no regard for the freeze, so Ruling B's own
+            # back-paging then re-fetches and re-answers them — the exact
+            # "bot spams old answers" incident this project already fixed once
+            # for the restart path. A bounded, logged, one-time skip of whatever
+            # is stuck behind an unreadable chat is strictly better than an
+            # unbounded stream of duplicate answers to everyone else.
+            now = datetime.now(timezone.utc)
+            if self._hold_since is None:
+                self._hold_since = now
+            held_for = now - self._hold_since
+            if held_for > timedelta(minutes=settings.teams_max_state_age_minutes):
+                forced_watermark = max(newest_message_time, now)
+                print(
+                    f"WARNING: last_check held for {held_for} (exceeds "
+                    f"{settings.teams_max_state_age_minutes} min); force-advancing to "
+                    f"{forced_watermark.isoformat()} anyway. Messages in chats that "
+                    "could not be read this cycle may be permanently skipped."
+                )
+                self.last_check = forced_watermark
+                # The hold is over: treat this cycle as synced from here on (the
+                # cleanup gate below may run), and — this is what un-latches a
+                # chat that by itself holds the freeze once far enough behind
+                # (R-1's "self-latching" case) — a still-unreadable chat starts a
+                # brand new hold timer against the now-current watermark rather
+                # than perpetuating this one. It also re-bounds Ruling B's
+                # back-paging reach (R-3): reach only grows with how long the
+                # hold has run, and the hold is now capped.
+                fully_synced = True
+                self._hold_since = None
+
+        # Ruling H: never evict while the watermark is held. An evicted id is
+        # precisely what becomes re-answerable once its chat's back-paging (Ruling
+        # B) reaches far enough to refetch it — eviction and an active hold must
+        # never overlap. Safe to run immediately after a forced advance above:
+        # the hold (if any) has just ended for this cycle.
+        if fully_synced:
+            self._cleanup_processed_messages()
         self._save_state()
 
     # ------------------------------------------------------------------
