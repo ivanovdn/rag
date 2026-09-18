@@ -9,7 +9,7 @@ Provenance: **Reported** = from the upstream issue thread, reproduced by the rep
 
 ## Verdict — understood, not fixed
 
-On 17 September 2026 the bot answered a user with "⚠️ Policy service temporarily unavailable". The resilience layer worked exactly as designed — `is_transient` classified the failure as retryable, retries were exhausted cleanly, the unavailable notice went out, and no feedback row or false content escalation was created (see CLAUDE.md, "Infra resilience"). What was new was the cause: a CUDA fault on the shared Ollama host, specific to constrained-decoding (tool-calling) requests rather than a runner-wide poisoning — plain requests on the same model instance kept succeeding throughout, and the apparent ten-minute recovery was most likely our own diagnostic calls forcing a reload, not Ollama self-healing (see §1). We filed it upstream (ollama/ollama#17434, still open) and, working from that thread plus our own Phoenix traces, pinned down all five conditions that must hold at once. **The decision made today is to write the mechanism down, change nothing server-side, and take the one client-side lever the matrix already proved safe** — see §6: the confirmed fix isn't ours to make; lowering `num_ctx` to 4096 is, and it trades the crash for a documented correctness risk instead of an unmeasured gamble.
+On 17 September 2026 the bot answered a user with "⚠️ Policy service temporarily unavailable". The resilience layer worked exactly as designed — `is_transient` classified the failure as retryable, retries were exhausted cleanly, the unavailable notice went out, and no feedback row or false content escalation was created (see CLAUDE.md, "Infra resilience"). What was new was the cause: a CUDA fault on the shared Ollama host, specific to constrained-decoding (tool-calling) requests rather than a runner-wide poisoning — plain requests on the same model instance kept succeeding throughout, and the apparent ten-minute recovery was most likely our own diagnostic calls forcing a reload, not Ollama self-healing (see §1). We filed it upstream (ollama/ollama#17434, still open) and, working from that thread plus our own Phoenix traces, pinned down all five conditions that must hold at once, dated the onset to a single day, and ruled out our own `keep_alive` deploy as the cause (§8) — the leading explanation is a host-side Ollama upgrade, now an open question for the team that owns the host, not us. **The decision made today is to write the mechanism down, change nothing server-side, and take the one client-side lever the matrix already proved safe** — see §6: the confirmed fix isn't ours to make; lowering `num_ctx` to 4096 is, and it trades the crash for a documented correctness risk instead of an unmeasured gamble.
 
 ## Before you touch the host — this is time-sensitive
 
@@ -84,6 +84,16 @@ num_ctx  result
 
 The threshold on this deployment is **≥4352, not ≥8192** — 4096 is the ceiling itself, not a margin below one. 4096 passing while 4352 fails points at a KV-cache allocation boundary rather than the round number in the upstream matrix.
 
+**`keep_alive` and model residency are also exonerated.** A separate, earlier deploy — not the `num_ctx` fix in §6, which came a day later in response to the crash — landed ~45 minutes before the first CUDA error (§8), and `keep_alive` was the only thing it changed on the Ollama call path. That made it the obvious next suspect, especially with diagnostic `curl` calls that skip `keep_alive` already implicated (§1) in the misread "self-heal". It is not the cause. Tested directly, with the model verifiably unloaded first — `/api/ps` confirmed `qwen3.6:latest` specifically absent, not merely "some model" gone; an earlier version of this test reported a misleading result because it waited for `/api/ps` to be *empty*, which never happens on a shared host where another team's model stays resident:
+
+```
+A) COLD load, NO keep_alive, num_ctx=8192 : FAIL  6.1s  CUDA
+B) WARM (resident), NO keep_alive, 8192   : FAIL  7.1s  CUDA
+C) COLD load, NO keep_alive, num_ctx=4096 : OK   18.7s
+```
+
+Three things follow. A freshly loaded model fails identically to a resident one, so residency is irrelevant — this also kills a plausible-sounding theory that our 30-minute `keep_alive` versus Ollama's 5-minute default explained the timing. Every row above ran with no `keep_alive` at all — the exact configuration from before that deploy — and 8192 still failed: reverting `keep_alive` would not have helped. `num_ctx` is the variable that matters, and 4096 working from cold (row C) confirms the shipped fix independently of the warm-instance measurements in the sweep above.
+
 ## 5 — Recognising it in production (Ours)
 
 - Log line: `[worker] Unavailable (llm): ResponseError: ...CUDA error...` (`channels/teams/bot.py:94`, added this branch).
@@ -110,6 +120,21 @@ The threshold on this deployment is **≥4352, not ≥8192** — 4096 is the cei
 ## 7 — Residual risk
 
 `OLLAMA_NUM_CTX=4096` (client-side, §6) keeps condition 4 false no matter what the host does with flash attention, so the mechanism in §2 should no longer trigger through our traffic. Two risks remain. The old one, softened rather than closed: if `num_ctx` is ever raised above 4096 by someone who hasn't read this document, the crash comes back — and per §4's measured boundary it doesn't take much: 4352 is already enough, well short of the 8192 someone skimming only the upstream issue might assume is the danger zone. `config.py` carries the warning, but warnings get skipped, and without this document the crash would look like a brand-new mystery instead of a five-condition failure mode we already understand. The new one, introduced by the fix itself: capping the prompt+answer budget at 4096 tokens risks the silent truncation described in §6 — a correctness problem, not an availability one, and one we haven't hit yet.
+
+## 8 — Why now: onset timeline, and an open question for the host team (Ours)
+
+A full Phoenix audit, 2026-05-04 through 2026-09-18, dates the onset precisely and points away from anything we did:
+
+- ~74 `AgentWorkflow.run` spans from May through 2026-09-15, zero ERROR spans — the same code path, tools attached, `num_ctx: 8192`, `thinking=False`, throughout.
+- Agent runs by day: teens per day from 4–28 May, then sparse single runs through June and July, then 2026-09-10 (1 run) and 2026-09-15 (2 runs) — all clean.
+- **First CUDA error: 2026-09-17T12:02:21.** Near-total failure of tool-calling requests since.
+- The model itself hasn't changed since 2026-04-24 (`/api/tags` `modified_at`).
+
+`num_ctx: 8192` and `thinking=False` predate all of this by months, so neither is what changed — and neither is our own `keep_alive` change, which is independently ruled out above (§4).
+
+**Open question for the host team — a hypothesis, not yet a finding.** The leading explanation is that the Ollama host itself was upgraded. The upstream issue reports the regression landing in 0.32.5; `172.20.0.22` now runs 0.34.0. If the host crossed 0.32.5 between 15 and 17 September, every fact above fits: four clean months, an abrupt onset, a known regression, identical hardware throughout. We can't confirm this without the team that owns the host — that's the question to put to them. A confirmed date would also be useful upstream: it would date the regression against a real production workload instead of only the reporter's own synthetic probe.
+
+This resolves what earlier drafts of this document left open: the cause is a host-side change (pending the host team's confirmation above), not our code and not our config. The trigger itself, independent of when or why the host changed, is `num_ctx` ≥ 4352 together with constrained decoding (§2, §4). Our client-side fix (§6, option 2) stands on its own regardless of how the host question resolves.
 
 ---
 
