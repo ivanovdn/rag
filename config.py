@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # then pays a reload (measured 3.8s-51.7s on the shared host). Not
     # unbounded: the box is shared with other projects.
     ollama_keep_alive: str = "30m"
+    # Allocated Ollama context window (num_ctx). 4096 is the ONLY value the
+    # upstream MoE+CUDA crash matrix proved safe — see
+    # docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md. This is a
+    # crash-avoidance value, not a performance knob: do not raise it without
+    # re-measuring against that spec.
+    ollama_num_ctx: int = 4096
 
     # LLM backend
     llm_backend: str = "ollama"  # "ollama" or "openai-compatible"

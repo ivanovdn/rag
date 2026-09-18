@@ -6,11 +6,13 @@ from rag.router import RouterDecision, Category
 
 
 @pytest.fixture
-def teams_bot(monkeypatch):
+def teams_bot(monkeypatch, tmp_path):
     """A TeamsBot with network + RAG mocked; records every HTML it 'sends'."""
+    # Hermetic: never read or write the developer's real bot_state.json.
+    monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
     b = bot.TeamsBot(token_refresher=object())
     sent = []
-    monkeypatch.setattr(b, "_send_message", lambda chat_id, text, content_type="html": sent.append(text) or True)
+    monkeypatch.setattr(b, "_send_message", lambda chat_id, text, content_type="html", retry=False: sent.append(text) or True)
     bot._pending_ratings.clear()
     b._sent = sent
     return b
@@ -26,10 +28,10 @@ def test_greeting_replies_welcome_no_search(monkeypatch, teams_bot):
     _force(monkeypatch, Category.GREETING)
     called = {"rag": False}
     monkeypatch.setattr(bot, "_run_rag", lambda q: called.__setitem__("rag", True) or {})
-    teams_bot._send_reply("chat1", "hello")
+    teams_bot._answer("chat1", "hello")
     assert called["rag"] is False
     assert any("Trinetix Compliance" in h for h in teams_bot._sent)  # WELCOME_HTML
-    assert not any("Searching compliance policies" in h for h in teams_bot._sent)
+    assert not any("Got your message" in h for h in teams_bot._sent)  # ack is the poll thread's job
     assert "chat1" not in bot._pending_ratings
 
 
@@ -37,9 +39,9 @@ def test_out_of_scope_replies_redirect_no_search(monkeypatch, teams_bot):
     monkeypatch.setattr(bot.settings, "router_enabled", True)
     _force(monkeypatch, Category.OUT_OF_SCOPE)
     monkeypatch.setattr(bot, "_run_rag", lambda q: pytest.fail("must not search"))
-    teams_bot._send_reply("chat1", "order me a pizza")
+    teams_bot._answer("chat1", "order me a pizza")
     assert any("only answer questions about company policies" in h for h in teams_bot._sent)
-    assert not any("Searching compliance policies" in h for h in teams_bot._sent)
+    assert not any("Got your message" in h for h in teams_bot._sent)  # ack is the poll thread's job
     assert "chat1" not in bot._pending_ratings
 
 
@@ -47,9 +49,9 @@ def test_unintelligible_replies_retype_no_search(monkeypatch, teams_bot):
     monkeypatch.setattr(bot.settings, "router_enabled", True)
     _force(monkeypatch, Category.UNINTELLIGIBLE)
     monkeypatch.setattr(bot, "_run_rag", lambda q: pytest.fail("must not search"))
-    teams_bot._send_reply("chat1", "църфе ші")
+    teams_bot._answer("chat1", "църфе ші")
     assert any("retype" in h.lower() for h in teams_bot._sent)
-    assert not any("Searching compliance policies" in h for h in teams_bot._sent)
+    assert not any("Got your message" in h for h in teams_bot._sent)  # ack is the poll thread's job
     assert "chat1" not in bot._pending_ratings
 
 
@@ -58,8 +60,7 @@ def test_in_scope_runs_rag_and_prompts_rating(monkeypatch, teams_bot):
     _force(monkeypatch, Category.IN_SCOPE)
     monkeypatch.setattr(bot, "_run_rag",
                         lambda q: {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}})
-    teams_bot._send_reply("chat1", "Can I install software?")
-    assert any("Searching compliance policies" in h for h in teams_bot._sent)  # LOADING_HTML
+    teams_bot._answer("chat1", "Can I install software?")
     assert "chat1" in bot._pending_ratings  # rating prompt stored
 
 
@@ -71,7 +72,7 @@ def test_low_confidence_safe_default_searches(monkeypatch, teams_bot):
     called = {"rag": False}
     monkeypatch.setattr(bot, "_run_rag",
                         lambda q: called.__setitem__("rag", True) or {"answer": "x", "citations": [], "escalation": {"needed": False}})
-    teams_bot._send_reply("chat1", "ambiguous thing")
+    teams_bot._answer("chat1", "ambiguous thing")
     assert called["rag"] is True
     assert not any("only answer questions about company policies" in h for h in teams_bot._sent)
     assert not any("Trinetix Compliance" in h for h in teams_bot._sent)
@@ -83,7 +84,7 @@ def test_router_disabled_bypasses_classifier(monkeypatch, teams_bot):
     monkeypatch.setattr(router, "classify_message", lambda text: pytest.fail("classifier must not run"))
     monkeypatch.setattr(bot, "_run_rag",
                         lambda q: {"answer": "x", "citations": [], "escalation": {"needed": False}})
-    teams_bot._send_reply("chat1", "hello")  # would be a greeting, but router off -> search
+    teams_bot._answer("chat1", "hello")  # would be a greeting, but router off -> search
     assert "chat1" in bot._pending_ratings
 
 
@@ -116,8 +117,20 @@ def test_fallback_decision_sets_fallback_flag_and_searches(monkeypatch, teams_bo
 
     monkeypatch.setattr("rag.observability.record_classification", _record)
 
-    teams_bot._send_reply("chat1", "Can I install software?")
+    teams_bot._answer("chat1", "Can I install software?")
 
     assert rag_called["called"] is True, "in_scope path must run RAG"
     assert recorded.get("fallback") is True, "record_classification must be called with fallback=True"
     assert recorded.get("message") == "Can I install software?", "message must be recorded for audit"
+
+
+def test_router_branches_report_a_failed_send(monkeypatch, teams_bot):
+    """Every branch out of _answer returns its send result, so the worker's
+    undelivered-answer ERROR log covers greetings and redirects too."""
+    monkeypatch.setattr(bot.settings, "router_enabled", True)
+    monkeypatch.setattr(teams_bot, "_send_message",
+                        lambda chat_id, text, content_type="html", retry=False: None)
+
+    for category in (Category.GREETING, Category.OUT_OF_SCOPE, Category.UNINTELLIGIBLE):
+        _force(monkeypatch, category)
+        assert not teams_bot._answer("chat1", "hello"), f"{category} must report the failed send"

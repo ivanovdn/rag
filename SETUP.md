@@ -197,7 +197,9 @@ TEAMS_CLIENT_SECRET=...
 TEAMS_REFRESH_TOKEN=...
 ```
 
-The refresh token is obtained one-time via the device-code flow (use `scripts/get_refresh_token.py` from the original `legal-compliance-qa-agent` repo). The bot rotates and persists the token to `channels/teams/data/refresh_token.json`.
+The refresh token is obtained via the device-code flow: `PYTHONPATH=. python scripts/get_refresh_token.py` (run from the repo root; sign in with the bot's Teams account when prompted). The bot then rotates and persists the token to `channels/teams/data/refresh_token.json` on every use.
+
+This same command is also the **recovery** procedure if `channels/teams/data/refresh_token.json` is ever lost or corrupted — not just a one-time setup step. Azure invalidates a refresh token as soon as it is used, so the `TEAMS_REFRESH_TOKEN` seed in `.env` is superseded after the bot's very first refresh; restoring an old copy of the token file does not work either, since that copy has already been rotated past too. Re-running the script and signing in again is the only way back.
 
 ### Start
 
@@ -501,7 +503,7 @@ uv pip install -r requirements.txt
 All settings live in `.env`. See `config.py` for full schema. Notable groups:
 
 ### LLM & Backend
-`LLM_BACKEND`, `LLM_MODEL`, `OPENAI_MODEL`, `OPENAI_API_BASE`, `OPENAI_API_KEY`, `LLM_TEMPERATURE`, `USE_REMOTE_OLLAMA`, `OLLAMA_BASE_URL`, `OLLAMA_REMOTE_URL`, `LLM_REQUEST_TIMEOUT`, `LLM_REMOTE_REQUEST_TIMEOUT`, `OLLAMA_KEEP_ALIVE`
+`LLM_BACKEND`, `LLM_MODEL`, `OPENAI_MODEL`, `OPENAI_API_BASE`, `OPENAI_API_KEY`, `LLM_TEMPERATURE`, `USE_REMOTE_OLLAMA`, `OLLAMA_BASE_URL`, `OLLAMA_REMOTE_URL`, `LLM_REQUEST_TIMEOUT`, `LLM_REMOTE_REQUEST_TIMEOUT`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_NUM_CTX`
 
 ### Embeddings
 `EMBEDDING_SOURCE`, `EMBEDDING_MODEL`, `EMBEDDING_QUERY_PREFIX`, `EMBEDDING_PASSAGE_PREFIX`, `OLLAMA_EMBEDDING_URL`, `HF_TOKEN`

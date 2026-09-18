@@ -42,7 +42,7 @@ rag/
   observability.py   # Phoenix init + tracer + record_infra_unavailable() + record_classification()
   tools/             # search_policies (call FIRST), get_section, escalate_to_compliance
                      #   (clarify.py exists but is NOT imported/used)
-channels/teams/      # bot.py (poll+RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
+channels/teams/      # bot.py (poll→queue→1 worker; RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
 eval/                # evaluators.py, agent_wrapper.py, run_experiment.py
 scripts/             # ingest_all, test_query, run_eval, make_dataset, start_*.sh
 tests/               # unit/ (pure-logic) + docs/ (corpus parsing) + live/ (live-LLM accuracy); docs+live auto-skip; see SETUP.md Testing
@@ -51,7 +51,9 @@ tests/               # unit/ (pure-logic) + docs/ (corpus parsing) + live/ (live
 
 **Search flow:** `embed_query → vector_search (RERANKER_CANDIDATES) → [BM25 RRF] → [rerank → top RERANKER_TOP_N] → format_sources()` with `[Source N]` headers. The 3 agent tools: `search_policies` (search+rerank+format, always first), `get_section` (full section by doc_id+section_name), `escalate_to_compliance`.
 
-**Input classification (router):** before retrieval, `_send_reply` (when `ROUTER_ENABLED`) runs one temperature-0 LLM call (`rag/router.py` `classify_message`) tagging the message `greeting | in_scope | out_of_scope | unintelligible`. Only `in_scope` reaches the RAG pipeline; greeting→`WELCOME_HTML`, out_of_scope→`render_out_of_scope()`, unintelligible→`render_unintelligible()` (no search, no rating). **Safe-default invariant:** confidence `< ROUTER_CONFIDENCE_FLOOR`, or ANY classifier failure/unparseable output → `in_scope` (it can never refuse a real question). Logged to Phoenix via `record_classification` (`router_category/confidence/fallback/message` — full message recorded for audit). Editable tuning surface: `ROUTER_SYSTEM_PROMPT` (prompt+categories) in `rag/router.py`, the two messages in `renderer.py`.
+**Message flow (Teams):** the poll thread runs `_handle_inbound` (commands, ratings, an immediate `ACK_HTML`) and enqueues onto `_work_q`; **exactly one** worker thread runs `_answer` (router + RAG + reply), so detection never blocks on the ~16s pipeline. `_ensure_worker()` restarts the worker if it dies. The persisted `last_check` is held behind in-flight messages so a restart re-delivers unanswered questions — at-least-once, bounded by the `TEAMS_MAX_STATE_AGE_MINUTES` clamp.
+
+**Input classification (router):** before retrieval, `_answer` (when `ROUTER_ENABLED`) runs one temperature-0 LLM call (`rag/router.py` `classify_message`) tagging the message `greeting | in_scope | out_of_scope | unintelligible`. Only `in_scope` reaches the RAG pipeline; greeting→`WELCOME_HTML`, out_of_scope→`render_out_of_scope()`, unintelligible→`render_unintelligible()` (no search, no rating). **Safe-default invariant:** confidence `< ROUTER_CONFIDENCE_FLOOR`, or ANY classifier failure/unparseable output → `in_scope` (it can never refuse a real question). Logged to Phoenix via `record_classification` (`router_category/confidence/fallback/message` — full message recorded for audit). Editable tuning surface: `ROUTER_SYSTEM_PROMPT` (prompt+categories) in `rag/router.py`, the two messages in `renderer.py`.
 
 **Infra resilience:** transient backend failures (conn errors, timeouts, 5xx from embeddings/Qdrant/LLM) are retried (`retry_transient`, backoffs `(0.5,1,2)s` → up to 4 attempts) and, if still failing, become a clean **"service temporarily unavailable"** reply — never a content escalation, never a leaked raw error. Two interception points: retrieval (inside `search_policies` → sets `sp._retrieval_unavailable`, returns sentinel `POLICY_SEARCH_UNAVAILABLE`) and the LLM/agent boundary (in `_run_rag`, returns `{"status":"unavailable"}`). Each records a distinct `infra_unavailable` Phoenix span (`failed_component`, `error_type`, `retries_attempted`). The unavailable reply gets no rating prompt and creates no feedback row. Non-transient errors still propagate to escalation as before.
 
@@ -83,6 +85,7 @@ ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFID
 - If `search_policies` returns `NO_RELEVANT_POLICY_FOUND` → escalate.
 - `init_observability()` must run FIRST in every entry point (before any LlamaIndex/Ollama import).
 - Never cache the LLM client across requests (no `lru_cache` on `get_llm`, no module-level client) — `_run_rag` uses a fresh `asyncio.run()` loop per request. See the gotchas table.
+- **Exactly one worker thread** consumes `_work_q` — `search_policies`' module globals (`_retrieval_unavailable`, `_last_search_results`) are reset-then-read across an agent run, so a second worker silently turns a transient infra failure into a false content escalation.
 
 ## Code Style
 
@@ -113,5 +116,6 @@ ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFID
 | Router live test imports `rag.router` inside the test fn (not at top) | Deliberate exception to imports-at-top: a module-top import pulls llama-index at pytest **collection** on every offline run, but `tests/live/` auto-skips without an LLM. Keep it function-local. |
 | Qwen3 on `openai-compatible` silently thinks | `get_llm()`'s Ollama branch sets `thinking=False`; the `OpenAILike` branch needs `additional_kwargs={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}`. Measured 34.5s vs 2.2s for one router call — and it still parses, so it degrades quietly. |
 | Caching the LLM client (`lru_cache(get_llm)`, module-level `Ollama`) breaks every other question with `RuntimeError: Event loop is closed` | `_run_rag` uses `asyncio.run()` per request; llama-index's `Ollama` reuses one `httpx.AsyncClient` across loops. Not transient → false content escalation. Build a fresh client per call (guarded by `test_get_llm_builds_a_fresh_client_per_call`), or give the worker a persistent loop first. |
+| `⚠️ Policy service temporarily unavailable` reaches users; log shows repeated `AgentWorkflowStartEvent` cycles ending in `[worker] Unavailable notice sent` | Not a bot bug — retry-then-notice is the resilience layer working as designed. Root cause: a 5-condition Ollama crash — MoE model + constrained decoding (incl. tool-calling) + `think:false` + `num_ctx`≥4352 measured on our box, allocated not tokens used (upstream reports ≥8192) + host flash attention, all five required. Specific to tool-calling requests, not a poisoned runner — plain requests keep working; the apparent self-heal was likely our own diagnostic `curl` resetting `keep_alive`. Confirm with `curl http://172.20.0.22:11434/api/ps`. Upstream: ollama/ollama#17434 (open). Mechanism/matrix/options considered: `docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md`. |
 
 **Not yet implemented:** email escalation. (Tier-A pytest suite exists under `tests/`; Tier-B/C and CI still pending.)

@@ -259,7 +259,7 @@ Four consequences to get right:
 
 1. **Acknowledgement copy.** The ack is now sent *before* routing, so it must suit all four outcomes — a greeting must not be told "Searching compliance policies…". `LOADING_HTML` is replaced by an outcome-neutral `ACK_HTML`.
 2. **Crash safety.** `last_check` currently advances for every message *seen*. With a queue, a restart with queued work would skip those messages forever — they were marked processed but never answered. The persisted watermark is therefore held back to just before the oldest in-flight message, and in-flight IDs are excluded from the persisted `processed_messages`. In-memory state still advances, so the running process never re-enqueues. Semantics become at-least-once: a crash between sending an answer and clearing in-flight re-delivers that answer. That is the right trade for a compliance bot — a duplicate answer beats a silently dropped question.
-3. **Two threads now call Graph.** `_send_message` runs on both the poll thread (ack, ratings, welcome) and the worker (answers), and both go through `TokenRefresher.get_access_token`, which refreshes and rewrites `refresh_token.json` with no lock. Two threads seeing an expired token at once would refresh twice and could interleave the file write. A lock in `TokenRefresher` closes this (Step 4b). `_pending_ratings` needs none: each access is one dict operation. Its only cross-thread effect is benign — a rating that arrives while the next question is still queued is credited to the last *answered* question, which is what the user meant.
+3. **Two threads now call Graph.** `_send_message` runs on both the poll thread (ack, ratings, welcome) and the worker (answers), and both go through `TokenRefresher.get_access_token`, which refreshes and rewrites `refresh_token.json` with no lock. Two threads seeing an expired token at once would refresh twice and could interleave the file write. A lock in `TokenRefresher` closes this (Step 4b). `_pending_ratings` needs none: each access is one dict operation. Note what actually happens in the awkward window, which is *not* "credited to the last answered question": once the user sends a new question, `_handle_inbound` clears the pending rating immediately, before that question is even queued. So if they then type `2` while it is still waiting for the worker, the `2` is no longer recognised as a rating — it is acked and enqueued as a new question and goes through the RAG pipeline. A rating only lands when it arrives after an answer and before the next message. That is reasonable behaviour, not a bug; it is documented here because it is easy to assume otherwise.
 4. **A dead worker must not be silent.** If the worker thread ever exits, the poll thread would keep sending "Got your message" forever and nobody would get an answer. The poll loop therefore checks the worker every cycle and restarts it (`_ensure_worker`). The worker also never sends raw exception text to a user — today those exceptions never reach the chat, and the renderer does not HTML-escape.
 
 **Files:**
@@ -409,7 +409,7 @@ def test_concurrent_callers_refresh_the_token_once(tmp_path, monkeypatch):
     token must be refreshed once, not once per thread."""
     token_file = tmp_path / "refresh_token.json"
     token_file.write_text(json.dumps({"refresh_token": "seed"}))
-    monkeypatch.setattr(auth, "_TOKEN_FILE", token_file)
+    monkeypatch.setattr(auth, "TOKEN_FILE", token_file)
     refresher = auth.TokenRefresher()
 
     calls = []

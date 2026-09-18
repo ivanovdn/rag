@@ -18,6 +18,28 @@ def test_ollama_keep_alive_default_is_longer_than_ollama_default():
     assert minutes >= 30
 
 
+def test_ollama_llm_gets_num_ctx_from_settings(monkeypatch):
+    monkeypatch.setattr(settings, "llm_backend", "ollama")
+    # Distinctive value: neither the old hardcoded 8192 nor the 4096
+    # default, so this can only pass if num_ctx truly flows from settings.
+    monkeypatch.setattr(settings, "ollama_num_ctx", 12345)
+    llm = get_llm()
+    assert llm.additional_kwargs["num_ctx"] == 12345
+
+
+def test_ollama_num_ctx_default_is_below_crash_threshold():
+    # num_ctx >= 8192 is one of five conditions for the reproducible
+    # MoE+CUDA crash documented in
+    # docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md. The
+    # upstream crash matrix proved only 4096 safe; this guard fails the
+    # suite if the default is ever raised back past that boundary.
+    # Bind to a local first (not `assert settings.ollama_num_ctx < 8192`
+    # directly) so a failure's pytest introspection never prints the
+    # Settings repr, which carries live secrets (hf_token, smtp_password, …).
+    value = settings.ollama_num_ctx
+    assert value < 8192
+
+
 def test_openai_like_disables_thinking(monkeypatch):
     # Qwen3 models think by default on vLLM. Measured cost: 294 reasoning
     # tokens and 34.5s for one 16-token router classification.
