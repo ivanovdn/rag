@@ -152,6 +152,32 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_hold_bound(self) -> "Settings":
+        """Warn (never crash) if the runtime watermark hold could never release.
+
+        TeamsBot's force-advance (Ruling G, targeted per Ruling M) advances
+        last_check to `now - teams_initial_lookback_minutes` once a hold has
+        lasted longer than teams_max_state_age_minutes. That only guarantees
+        forward progress while the lookback is strictly smaller than the
+        bound — at or above it, a quiet cycle's force-advance can fail to
+        move last_check at all (or by a margin too small to matter), so the
+        hold never actually ends and the duplicate-answer path it exists to
+        prevent (R-1) reopens. A realistic way to reach this: raising
+        TEAMS_INITIAL_LOOKBACK_MINUTES after an incident without also raising
+        TEAMS_MAX_STATE_AGE_MINUTES.
+        """
+        lookback = self.teams_initial_lookback_minutes
+        bound = self.teams_max_state_age_minutes
+        if lookback >= bound:
+            print(
+                f"WARNING: TEAMS_INITIAL_LOOKBACK_MINUTES ({lookback}) >= "
+                f"TEAMS_MAX_STATE_AGE_MINUTES ({bound}); the runtime watermark hold "
+                "may never release, which can reopen the duplicate-answer path it "
+                "exists to prevent."
+            )
+        return self
+
     # Observability (Phoenix)
     phoenix_enabled: bool = True
     phoenix_endpoint: str = "http://localhost:6006/v1/traces"
