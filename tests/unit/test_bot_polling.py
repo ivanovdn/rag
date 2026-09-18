@@ -148,7 +148,7 @@ def test_chat_list_follows_next_link(monkeypatch, pbot):
     assert any("chatB/messages" in u for u in urls), urls
 
 
-def test_cyclic_next_link_terminates(monkeypatch, pbot):
+def test_cyclic_next_link_terminates(monkeypatch, pbot, capsys):
     """A self-referential @odata.nextLink must not spin the poll thread forever
     (Finding 4): the loop never raises, so consecutive_errors would never trip
     and the bot would go silently dead while still 'running'.
@@ -181,9 +181,14 @@ def test_cyclic_next_link_terminates(monkeypatch, pbot):
 
     assert complete is False
     assert calls["n"] == 1  # the seen_urls guard must catch the repeat on the very next call
+    # Fix 5: this WARNING is what tells an operator the chat list was cut short
+    # by a repeated link, distinctly from the plain page-cap case below.
+    logged = capsys.readouterr().out
+    assert "repeated" in logged
+    assert "incomplete" in logged
 
 
-def test_unbounded_next_link_hits_the_page_cap(monkeypatch, pbot):
+def test_unbounded_next_link_hits_the_page_cap(monkeypatch, pbot, capsys):
     """Distinct from the cyclic case above: an endless run of NOVEL links (no
     repeat for the cycle guard to catch) must still terminate via the numeric cap.
 
@@ -208,11 +213,16 @@ def test_unbounded_next_link_hits_the_page_cap(monkeypatch, pbot):
 
     assert complete is False
     assert calls["n"] == bot._CHATS_MAX_PAGES
+    # Fix 5: this WARNING is what tells an operator the chat list was cut short
+    # by the numeric cap, distinctly from the cyclic-link case above.
+    logged = capsys.readouterr().out
+    assert "page cap" in logged
+    assert "incomplete" in logged
 
 
 # --- Finding 1: an incomplete chat list must not advance last_check -----------
 
-def test_truncated_chat_list_holds_last_check(monkeypatch, pbot):
+def test_truncated_chat_list_holds_last_check(monkeypatch, pbot, capsys):
     """A chat-list page fetch that fails partway through must not let last_check
     advance past chats it never saw. Otherwise those chats' messages are marked
     already-old — and lost for good — the moment the watermark passes them,
@@ -247,6 +257,11 @@ def test_truncated_chat_list_holds_last_check(monkeypatch, pbot):
     # ...but the watermark must not move: chatB (behind the failed page) was
     # never seen this cycle, so it must be retried, not marked already-seen.
     assert pbot.last_check == original_last_check
+    # Fix 5: this WARNING is the operator's only signal that the chat list was
+    # cut short and last_check is being held because of it.
+    logged = capsys.readouterr().out
+    assert "chat list" in logged
+    assert "incomplete" in logged
 
 
 # --- Findings 2/3: a burst bigger than one page must not lose messages --------
@@ -288,7 +303,7 @@ def test_message_burst_larger_than_the_page_is_not_dropped(monkeypatch, pbot):
     assert queued == [f"question {n}" for n in range(1, 7)]
 
 
-def test_message_paging_cap_marks_the_chat_incomplete(monkeypatch, pbot):
+def test_message_paging_cap_marks_the_chat_incomplete(monkeypatch, pbot, capsys):
     """Symmetric to the chat-list page cap: a burst so large it never pages back
     to last_check must report itself incomplete rather than claim a full picture
     it does not have (see process_new_messages: an incomplete chat must not let
@@ -309,6 +324,11 @@ def test_message_paging_cap_marks_the_chat_incomplete(monkeypatch, pbot):
 
     assert complete is False
     assert calls["n"] == bot._MESSAGES_MAX_PAGES
+    # Fix 5: this WARNING is the operator's only signal that this chat's paging
+    # gave up without ever reaching last_check.
+    logged = capsys.readouterr().out
+    assert "chat1" in logged
+    assert "page" in logged and "cap" in logged
 
 
 def test_message_paging_cap_holds_last_check_via_process_new_messages(monkeypatch, pbot):
@@ -345,10 +365,55 @@ def test_message_paging_cap_holds_last_check_via_process_new_messages(monkeypatc
     assert pbot.last_check == original_last_check
 
 
+def test_message_fetch_failure_holds_last_check_via_process_new_messages(monkeypatch, pbot, capsys):
+    """Branch review Fix 3: of the three incompleteness paths (chat-list failure,
+    per-chat page-cap exhaustion, per-chat fetch failure), the last is uncovered
+    end to end and the likeliest to fire in production -- any single
+    4xx/5xx/timeout on one chat. Mutation-tested: flipping _get_chat_messages'
+    `return messages, False` to `True` on outright fetch failure passed the
+    entire 272-test suite before this test existed.
+
+    A second, HEALTHY chat with a genuinely new message is essential here, not
+    decoration: with only the stuck chat in play, newest_message_time never
+    moves past last_check either way, so `last_check == original_last_check`
+    would pass whether or not the fetch-failure is honoured -- that shape of
+    test is exactly what let the mutation above survive on a first attempt.
+    The healthy chat gives fully_synced something to wrongly act on if the
+    stuck chat's incompleteness is ever ignored."""
+    monkeypatch.setattr(bot.settings, "teams_max_state_age_minutes", 60)
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    monkeypatch.setattr(pbot, "_send_message", lambda *a, **k: True)
+    original_last_check = pbot.last_check
+    future = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        if "/messages" not in url:
+            return {"value": [{"id": "stuck"}, {"id": "healthy"}]}
+        if "healthy" in url:
+            return {"value": [{
+                "id": "hm1", "messageType": "message",
+                "from": {"user": {"id": "someone"}},
+                "createdDateTime": future, "body": {"content": "healthy chat question"},
+            }]}
+        return None  # "stuck" chat's message fetch fails outright, first page
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+
+    pbot.process_new_messages()
+
+    # The healthy chat's newer message must not drag last_check forward while
+    # "stuck" has unread history behind it.
+    assert pbot.last_check == original_last_check
+    # Fix 5: this is the only per-chat-fetch-failure log line an operator gets.
+    logged = capsys.readouterr().out
+    assert "stuck" in logged
+    assert "fetch failed" in logged
+
+
 # --- Ruling G: an unbounded hold must not become an unbounded duplicate-answer
 # machine (R-1) ------------------------------------------------------------------
 
-def test_hold_force_advances_last_check_past_the_threshold(monkeypatch, pbot):
+def test_hold_force_advances_last_check_past_the_threshold(monkeypatch, pbot, capsys):
     """R-1: making last_check conditional on fully_synced (Ruling A) turns one
     persistently-failing chat into an unbounded, self-latching watermark freeze —
     reproduced in the re-review as 8 re-answers of the same question in 39 cycles.
@@ -374,6 +439,38 @@ def test_hold_force_advances_last_check_past_the_threshold(monkeypatch, pbot):
     assert pbot.last_check > original_last_check
     assert pbot._hold_since is None  # force-advancing must reset the hold clock,
                                       # which is what un-latches a self-latched freeze
+    # Fix 5: this is the ONLY record anywhere that user questions were
+    # deliberately discarded — if this text is ever dropped, they vanish with
+    # no trace at all. Fix 6: this scenario's cause is the chat list itself
+    # (fake_api above), not one chat, so the warning must say so distinctly.
+    logged = capsys.readouterr().out
+    assert "force-advancing" in logged
+    assert "permanently skipped" in logged
+    assert "chat list itself" in logged
+
+
+def test_force_advance_warning_distinguishes_one_chat_from_the_whole_list(monkeypatch, pbot, capsys):
+    """Fix 6, other branch: the test above covers the chat-list-itself cause;
+    this covers a single unreadable chat while the chat list and every other
+    chat are fine -- an operator reading the warning needs to know it is NOT
+    everyone's traffic at risk, just this one chat's."""
+    monkeypatch.setattr(bot.settings, "teams_max_state_age_minutes", 60)
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    monkeypatch.setattr(pbot, "_send_message", lambda *a, **k: True)
+    pbot._hold_since = datetime.now(timezone.utc) - timedelta(minutes=61)
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        if "/messages" not in url:
+            return {"value": [{"id": "stuck"}]}  # the chat list itself is fine
+        return None  # this one chat's message fetch always fails
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+
+    pbot.process_new_messages()
+
+    logged = capsys.readouterr().out
+    assert "one or more individual chats" in logged
+    assert "chat list itself" not in logged
 
 
 def test_force_advance_does_not_bury_a_message_within_the_lookback_window(monkeypatch, pbot):
@@ -474,6 +571,35 @@ def test_hold_does_not_force_advance_before_the_threshold(monkeypatch, pbot):
 
     assert pbot.last_check == original_last_check
     assert pbot._hold_since is not None  # the hold clock must now be running
+
+
+def test_hold_clock_resets_on_the_next_healthy_cycle(monkeypatch, pbot):
+    """Branch review Fix 4: deleting `self._hold_since = None` on a healthy cycle
+    passed the entire 272-test suite. Without it, the clock latches on the very
+    first-ever blip and is never cleared by recovery -- from an hour after that
+    first blip onward, every LATER transient blip sees held_for > 60 min
+    immediately and force-advances on the spot, so Ruling A's protection (hold,
+    don't lose) is worth nothing for the rest of the process's life. Two cycles:
+    incomplete (the clock must start), then healthy (the clock must clear --
+    not merely "not force-advance", which test_hold_does_not_force_advance_
+    before_the_threshold above already covers without proving the clock itself
+    resets)."""
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    monkeypatch.setattr(pbot, "_send_message", lambda *a, **k: True)
+
+    # Cycle 1: chat list fails outright -> incomplete, the hold clock starts.
+    monkeypatch.setattr(pbot, "_api_request",
+                         lambda url, method="GET", json_data=None, retry=False: None)
+    pbot.process_new_messages()
+    assert pbot._hold_since is not None
+
+    # Cycle 2: fully healthy (empty chat list, no chats to fail) -> the clock
+    # must clear here, not just "not force-advance" -- nothing else in a
+    # genuinely-synced cycle like this one touches _hold_since.
+    monkeypatch.setattr(pbot, "_api_request",
+                         lambda url, method="GET", json_data=None, retry=False: {"value": []})
+    pbot.process_new_messages()
+    assert pbot._hold_since is None
 
 
 def test_eviction_is_skipped_while_the_watermark_is_held(monkeypatch, pbot):

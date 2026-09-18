@@ -206,13 +206,32 @@ class TeamsBot:
         # outage the rewound watermark is discarded by the clamp, and these ids were
         # deliberately left out of processed_messages, so in-flight questions are lost
         # rather than re-delivered. That is the anti-backlog-flood trade, not a bug.
-        watermark = min(pending_times) - timedelta(milliseconds=1) if pending_times else self.last_check
+        #
+        # Branch review Fix 1: must never persist AHEAD of self.last_check. In the
+        # healthy case in-flight times are always <= last_check (a message is only
+        # ever in-flight because it was just accepted as newer-than-last_check, and
+        # last_check itself only ever advances to cover it in the same cycle), so
+        # min(pending) - 1ms already sits behind last_check and this floor changes
+        # nothing there — see test_saved_watermark_is_held_before_the_oldest_inflight_message
+        # and test_saved_watermark_is_last_check_when_nothing_inflight, unchanged, for that.
+        # But while last_check is HELD (frozen behind an unreadable chat), a healthy
+        # chat can keep producing in-flight messages far NEWER than the freeze point;
+        # without the floor, min(pending) - 1ms then runs ahead of the hold — reproduced
+        # as a 28-minute jump — and a restart loads that jumped watermark and marks
+        # everything the hold was protecting as old_message, permanently. self._hold_since
+        # is not itself persisted, but that is fine: _load_state's own staleness clamp
+        # (same teams_max_state_age_minutes) bounds a crash-looping restart the same way.
+        watermark = self.last_check
+        if pending_times:
+            watermark = min(watermark, min(pending_times) - timedelta(milliseconds=1))
 
-        # processed_messages is insertion-ordered, so this slice really is "the newest N".
-        ids = [
-            mid for mid in list(self.processed_messages)[-settings.teams_max_processed_messages:]
-            if mid not in pending_ids
-        ]
+        # Branch review Fix 2: no slice here. _cleanup_processed_messages (gated on
+        # fully_synced in process_new_messages) is the ONLY place eviction happens —
+        # this used to apply its own identical [-teams_max_processed_messages:] slice
+        # on every save, held or not, silently dropping ids while the in-memory
+        # cleanup was correctly blocked. Persist the set as-is; only in-flight ids
+        # are still held back, same as always.
+        ids = [mid for mid in self.processed_messages if mid not in pending_ids]
         # Atomic: this file is the sole carrier of the crash-recovery guarantee, and
         # a plain open("w") truncates first — a SIGKILL mid-dump would leave truncated
         # JSON, _load_state would fall back to its default, and every in-flight question
@@ -733,7 +752,14 @@ class TeamsBot:
 
         url = f"{GRAPH_API}/me/chats?$top={_CHATS_PAGE_SIZE}"
         chats, fully_synced = self._get_all_pages(url)
-        if not fully_synced:
+        # Remembered past this point (fully_synced gets overwritten below) so the
+        # force-advance warning can say WHICH kind of incompleteness this cycle
+        # had — Fix 6: "a chat" undersold it when the chat list itself is what
+        # failed (e.g. a revoked refresh token surfacing as a swallowed 401),
+        # which affects every chat's traffic, not one.
+        chat_list_incomplete = not fully_synced
+        any_chat_incomplete = False
+        if chat_list_incomplete:
             print(
                 f"WARNING: chat list fetch incomplete ({len(chats)} chat(s) retrieved); "
                 "processing them but holding last_check so the chats behind the gap are "
@@ -758,6 +784,7 @@ class TeamsBot:
                 # chat-list case above — the cycle as a whole cannot advance
                 # last_check without risking messages behind the gap.
                 fully_synced = False
+                any_chat_incomplete = True
             # Graph returns newest-first. Answer people in the order they asked:
             # createdDateTime is a fixed-width ISO-8601 UTC string, so it sorts
             # chronologically as text. The watermark logic below is order-agnostic.
@@ -799,6 +826,16 @@ class TeamsBot:
 
         if fully_synced:
             self._hold_since = None
+            # Known, pre-existing, out of this branch's scope (branch review
+            # finding 8): newest_message_time is the max across ALL chats, so a
+            # message arriving in chat A after A's own fetch, earlier this same
+            # cycle, is buried if a later-read chat carries something newer —
+            # the identical intra-cycle race Ruling M reasons about for the
+            # force-advance below, just unguarded here. Unchanged since before
+            # this branch; the window is a fraction of one poll cycle. Not
+            # widening this branch's scope to fix it — recorded here so the
+            # asymmetry with the force-advance's ten lines of reasoning reads
+            # as a deliberate choice, not an oversight.
             if newest_message_time > self.last_check:
                 self.last_check = newest_message_time
         else:
@@ -812,9 +849,17 @@ class TeamsBot:
             # the oldest ids with no regard for the freeze, so Ruling B's own
             # back-paging then re-fetches and re-answers them — the exact
             # "bot spams old answers" incident this project already fixed once
-            # for the restart path. A bounded, logged, one-time skip of whatever
-            # is stuck behind an unreadable chat is strictly better than an
-            # unbounded stream of duplicate answers to everyone else.
+            # for the restart path. A bounded, logged, one-time skip is strictly
+            # better than an unbounded stream of duplicate answers to everyone
+            # else — but "whatever is stuck behind an unreadable chat" undersells
+            # it (branch review Fix 6): this same path fires when the CHAT LIST
+            # itself is unreadable (e.g. a revoked refresh token surfacing as a
+            # swallowed 401, since _api_request never raises on one), in which
+            # case it is not one chat's traffic that gets skipped but everyone's,
+            # for up to teams_max_state_age_minutes. Either way nothing raises,
+            # so run()'s consecutive_errors guard never trips and the process
+            # looks healthy throughout — the WARNING below, which now says which
+            # of the two happened, is the only signal.
             now = datetime.now(timezone.utc)
             if self._hold_since is None:
                 self._hold_since = now
@@ -839,11 +884,24 @@ class TeamsBot:
                     newest_message_time,
                     now - timedelta(minutes=settings.teams_initial_lookback_minutes),
                 )
+                # Fix 6: say which kind of incompleteness this is. "A chat" reads
+                # as one user's traffic; "the chat list itself" is everyone's.
+                if chat_list_incomplete:
+                    scope = (
+                        "the chat list itself was unreadable this cycle, so every "
+                        "chat's traffic (not just one) may be affected"
+                    )
+                elif any_chat_incomplete:
+                    scope = "one or more individual chats were unreadable this cycle"
+                else:
+                    # Defensive: fully_synced is False, so one of the two flags
+                    # above should always be set. Should not be reachable.
+                    scope = "an unrecognized incompleteness"
                 print(
                     f"WARNING: last_check held for {held_for} (exceeds "
-                    f"{settings.teams_max_state_age_minutes} min); force-advancing to "
-                    f"{forced_watermark.isoformat()} anyway. Messages in chats that "
-                    "could not be read this cycle may be permanently skipped."
+                    f"{settings.teams_max_state_age_minutes} min) because {scope}; "
+                    f"force-advancing to {forced_watermark.isoformat()} anyway. "
+                    "Messages in the affected chat(s) may be permanently skipped."
                 )
                 self.last_check = forced_watermark
                 # The hold is over: treat this cycle as synced from here on (the
@@ -861,7 +919,10 @@ class TeamsBot:
         # precisely what becomes re-answerable once its chat's back-paging (Ruling
         # B) reaches far enough to refetch it — eviction and an active hold must
         # never overlap. Safe to run immediately after a forced advance above:
-        # the hold (if any) has just ended for this cycle.
+        # the hold (if any) has just ended for this cycle. _cleanup_processed_messages
+        # is the ONLY place eviction happens: _save_state (branch review Fix 2) no
+        # longer applies its own slice, so there is nothing else to gate — a second,
+        # ungated eviction site is exactly how this comment went false once already.
         if fully_synced:
             self._cleanup_processed_messages()
         self._save_state()
