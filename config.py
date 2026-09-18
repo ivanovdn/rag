@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     teams_client_secret: str = ""
     teams_refresh_token: str = ""
     teams_poll_interval: int = 5
+    teams_idle_poll_interval: int = 30        # outside business hours / weekends
+    teams_business_hours_start_utc: int = 7   # fast polling from this UTC hour (inclusive), Mon-Fri...
+    teams_business_hours_end_utc: int = 19    # ...until this UTC hour (exclusive)
+    teams_messages_page_size: int = 5         # $top on the per-chat message fetch (Graph default: 20)
     teams_api_timeout: int = 10
     teams_initial_lookback_minutes: int = 5
     teams_max_state_age_minutes: int = 60   # clamp last_check older than this on startup (anti-backlog-flood)

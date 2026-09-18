@@ -233,7 +233,9 @@ def test_messages_are_enqueued_oldest_first(qbot, monkeypatch):
                 "createdDateTime": stamp, "body": {"content": f"question {n}"}}
 
     def _api(url, method="GET", json_data=None, retry=False):
-        if url.endswith("/me/chats"):
+        # Match on the chat-list call without assuming its exact query string:
+        # it now carries "$top=..." (Task 4) and may gain "$expand=..." (Task 5).
+        if "/messages" not in url:
             return {"value": [{"id": "chat1"}]}
         return {"value": [_msg(3), _msg(1), _msg(2)]}  # newest-first, as Graph returns
 

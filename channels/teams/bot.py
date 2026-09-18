@@ -32,6 +32,10 @@ GRAPH_API = "https://graph.microsoft.com/v1.0"
 STATE_FILE = Path("channels/teams/data/bot_state.json")
 PID_FILE = Path("channels/teams/data/bot.pid")
 
+# Graph pages /me/chats at 20 per page by default; 50 is the documented maximum.
+# Fewer pages per cycle — and _get_all_pages follows @odata.nextLink for the rest.
+_CHATS_PAGE_SIZE = 50
+
 _VALID_RATINGS = {"-1", "0", "1", "2"}
 
 # Bounded retry for transient Graph failures (timeouts, connection errors, 5xx).
@@ -320,6 +324,22 @@ class TeamsBot:
         payload = {"body": {"contentType": content_type, "content": text}}
         return self._api_request(url, method="POST", json_data=payload, retry=retry)
 
+    def _get_all_pages(self, url):
+        """GET a Graph collection, following @odata.nextLink until exhausted.
+
+        Graph pages every collection. Reading only the first page of /me/chats
+        silently stops polling chats past the first 20 — invisible at 5 users,
+        a dropped-user bug at 30.
+        """
+        items = []
+        while url:
+            data = self._api_request(url)
+            if not data:
+                break
+            items.extend(data.get("value", []))
+            url = data.get("@odata.nextLink")
+        return items
+
     # ------------------------------------------------------------------
     # Message processing
     # ------------------------------------------------------------------
@@ -565,14 +585,30 @@ class TeamsBot:
             remove_count = len(self.processed_messages) // 5
             self.processed_messages = dict.fromkeys(list(self.processed_messages)[remove_count:])
 
+    @staticmethod
+    def _current_poll_interval(now):
+        """Poll fast during the working week, slowly otherwise.
+
+        The bot is a business-hours tool; polling every 5s around the clock
+        spends roughly 70% of its Graph budget on hours nobody is asking.
+        `now` must be timezone-aware UTC. The window is configured in UTC
+        (default 07-19, i.e. 09/10-21/22 Kyiv) so it needs no tz database.
+        """
+        is_weekday = now.weekday() < 5
+        is_business_hours = (
+            settings.teams_business_hours_start_utc <= now.hour < settings.teams_business_hours_end_utc
+        )
+        if is_weekday and is_business_hours:
+            return settings.teams_poll_interval
+        return settings.teams_idle_poll_interval
+
     def process_new_messages(self):
         my_user_id = self._get_my_user_id()
         if not my_user_id:
             return
 
-        url = f"{GRAPH_API}/me/chats"
-        chats_data = self._api_request(url)
-        chats = chats_data.get("value", []) if chats_data else []
+        url = f"{GRAPH_API}/me/chats?$top={_CHATS_PAGE_SIZE}"
+        chats = self._get_all_pages(url)
 
         newest_message_time = self.last_check
 
@@ -583,7 +619,10 @@ class TeamsBot:
             if not chat_id:
                 continue
 
-            messages_url = f"{GRAPH_API}/me/chats/{chat_id}/messages"
+            messages_url = (
+                f"{GRAPH_API}/me/chats/{chat_id}/messages"
+                f"?$top={settings.teams_messages_page_size}"
+            )
             messages_data = self._api_request(messages_url)
             messages = messages_data.get("value", []) if messages_data else []
             # Graph returns newest-first. Answer people in the order they asked:
@@ -642,7 +681,11 @@ class TeamsBot:
             print("Starting Compliance Teams Bot...")
             print("=" * 50)
             print(f"LLM: {settings.llm_model} ({settings.active_ollama_url})")
-            print(f"Polling every {settings.teams_poll_interval}s")
+            print(
+                f"Polling every {settings.teams_poll_interval}s "
+                f"({settings.teams_business_hours_start_utc:02d}-{settings.teams_business_hours_end_utc:02d} UTC Mon-Fri), "
+                f"{settings.teams_idle_poll_interval}s otherwise"
+            )
             print("Workers: 1 (single-threaded by design — see _work_q comment)")
             print("=" * 50)
             print("\nWaiting for messages...\n")
@@ -654,7 +697,7 @@ class TeamsBot:
                     self._ensure_worker()  # restarts the worker if it ever died
                     self.process_new_messages()
                     consecutive_errors = 0
-                    time.sleep(settings.teams_poll_interval)
+                    time.sleep(self._current_poll_interval(datetime.now(timezone.utc)))
                 except KeyboardInterrupt:
                     print("\n\nBot stopped by user")
                     break
