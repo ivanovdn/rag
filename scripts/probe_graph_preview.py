@@ -1,6 +1,11 @@
 """Does /me/chats?$expand=lastMessagePreview carry a usable message body?
 
-Run ON THE BOT HOST WITH THE BOT STOPPED — refresh tokens rotate on use.
+Run ON THE BOT HOST WITH THE BOT STOPPED — refresh tokens rotate on use, and
+this probe consumes and rotates the ONLY copy of the one the production bot
+holds (channels/teams/data/refresh_token.json). Run it anywhere else, or
+with the bot still running, and Azure invalidates the token the bot is
+using — taking it offline with no unattended way back. Recovery is an
+interactive sign-in (see scripts/get_refresh_token.py), not a restart.
 
     PYTHONPATH=. python scripts/probe_graph_preview.py
 """
