@@ -25,7 +25,7 @@ Answers are **grounded** — the bot quotes policy text directly, never paraphra
 ```
 Teams 1:1 message
        │
-       ▼  poll Microsoft Graph every 5s
+       ▼  poll Microsoft Graph (5s business hours, 30s otherwise)
 ┌─────────────────────────────────────────────────────────┐
 │  Teams bot (channels/teams/)                            │
 │                                                         │

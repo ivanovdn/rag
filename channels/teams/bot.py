@@ -35,6 +35,14 @@ PID_FILE = Path("channels/teams/data/bot.pid")
 # Graph pages /me/chats at 20 per page by default; 50 is the documented maximum.
 # Fewer pages per cycle — and _get_all_pages follows @odata.nextLink for the rest.
 _CHATS_PAGE_SIZE = 50
+# Hard caps on backward/forward pagination. Both guard against the same class of
+# failure: a page fetch that never terminates (a cyclic or self-referential
+# @odata.nextLink) would spin the poll thread forever without ever raising, so
+# consecutive_errors never trips and the bot goes silently dead while still
+# "running". Bounding every pagination loop means the worst case is a loud log
+# line and an incomplete cycle, never a hang.
+_CHATS_MAX_PAGES = 20      # /me/chats: bounds a cyclic/self-referential nextLink
+_MESSAGES_MAX_PAGES = 10   # per-chat messages: bounds how far back a burst pages
 
 _VALID_RATINGS = {"-1", "0", "1", "2"}
 
@@ -330,15 +338,102 @@ class TeamsBot:
         Graph pages every collection. Reading only the first page of /me/chats
         silently stops polling chats past the first 20 — invisible at 5 users,
         a dropped-user bug at 30.
+
+        Returns (items, complete). `complete` is False when a page fetch failed,
+        the page cap (_CHATS_MAX_PAGES) was hit, or a @odata.nextLink was revisited
+        (a cyclic or self-referential link would otherwise spin this loop, and
+        therefore the poll thread, forever). Running out of @odata.nextLink is the
+        only normal, complete termination.
+
+        The caller must not treat an incomplete result as the full chat list: see
+        process_new_messages, which holds last_check when this returns incomplete
+        so chats behind the gap are retried next cycle instead of being marked
+        "already seen" and lost for good.
         """
         items = []
+        seen_urls = set()
+        pages = 0
         while url:
+            if pages >= _CHATS_MAX_PAGES:
+                print(
+                    f"WARNING: /me/chats pagination hit the {_CHATS_MAX_PAGES}-page cap; "
+                    "treating the chat list as incomplete this cycle"
+                )
+                return items, False
+            if url in seen_urls:
+                print(
+                    "WARNING: @odata.nextLink on /me/chats repeated a URL already "
+                    "fetched this cycle (cyclic or self-referential link?); stopping "
+                    "pagination and treating the chat list as incomplete this cycle"
+                )
+                return items, False
+            seen_urls.add(url)
+            pages += 1
             data = self._api_request(url)
             if not data:
-                break
+                return items, False
             items.extend(data.get("value", []))
             url = data.get("@odata.nextLink")
-        return items
+        return items, True
+
+    def _get_chat_messages(self, chat_id):
+        """Fetch one chat's new messages, paging backward until the window covers last_check.
+
+        A fixed $top page only returns the newest N messages. That is enough in
+        the steady state — a quiet chat's newest teams_messages_page_size messages
+        already reach back past last_check — but two things make a burst of more
+        than N messages in one chat ordinary rather than exotic: the idle interval
+        is up to teams_idle_poll_interval seconds, and the bot itself posts 3
+        replies (ack, answer, rating prompt) into the same chat per question. A
+        fixed small page then silently drops the oldest messages in the burst, and
+        also breaks restart re-delivery: a message correctly held in-flight and
+        rewound in the persisted watermark becomes unfetchable once enough newer
+        messages push it off the single page.
+
+        So: follow @odata.nextLink, accumulating pages, until the oldest message
+        retrieved so far is at or before self.last_check — at that point the
+        window provably covers everything the watermark claims is unprocessed.
+        Capped at _MESSAGES_MAX_PAGES; a short chat history that runs out of
+        @odata.nextLink first is a normal, complete result, not a failure.
+
+        Returns (messages, complete). `complete` is False when the page cap was
+        hit, or a page fetch failed, before the window reached last_check — the
+        caller must not let this chat's absence of older messages advance the
+        global last_check watermark this cycle (same reasoning as _get_all_pages).
+        """
+        messages = []
+        oldest_seen = None
+        url = (
+            f"{GRAPH_API}/me/chats/{chat_id}/messages"
+            f"?$top={settings.teams_messages_page_size}"
+        )
+        for _ in range(_MESSAGES_MAX_PAGES):
+            data = self._api_request(url)
+            if not data:
+                return messages, False
+            page = data.get("value", []) or []
+            messages.extend(page)
+            for message in page:
+                stamp = (message or {}).get("createdDateTime")
+                if not stamp:
+                    continue
+                try:
+                    created = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if oldest_seen is None or created < oldest_seen:
+                    oldest_seen = created
+            if oldest_seen is not None and oldest_seen <= self.last_check:
+                return messages, True
+            url = data.get("@odata.nextLink")
+            if not url:
+                return messages, True  # short history; ran out of pages normally
+        print(
+            f"WARNING: message paging for chat {chat_id} hit the {_MESSAGES_MAX_PAGES}-page "
+            f"cap without reaching last_check ({self.last_check.isoformat()}); treating this "
+            "chat as incomplete this cycle so the watermark is not advanced past unread messages"
+        )
+        return messages, False
 
     # ------------------------------------------------------------------
     # Message processing
@@ -593,11 +688,18 @@ class TeamsBot:
         spends roughly 70% of its Graph budget on hours nobody is asking.
         `now` must be timezone-aware UTC. The window is configured in UTC
         (default 07-19, i.e. 09/10-21/22 Kyiv) so it needs no tz database.
+
+        start/end need not be ordered: start > end (e.g. 22-6) is a window that
+        wraps past midnight, not an empty one — treating it as start <= hour < end
+        would silently degrade to always-idle for any wrapping configuration.
         """
         is_weekday = now.weekday() < 5
-        is_business_hours = (
-            settings.teams_business_hours_start_utc <= now.hour < settings.teams_business_hours_end_utc
-        )
+        start = settings.teams_business_hours_start_utc
+        end = settings.teams_business_hours_end_utc
+        if start <= end:
+            is_business_hours = start <= now.hour < end
+        else:
+            is_business_hours = now.hour >= start or now.hour < end  # wraps past midnight
         if is_weekday and is_business_hours:
             return settings.teams_poll_interval
         return settings.teams_idle_poll_interval
@@ -608,7 +710,13 @@ class TeamsBot:
             return
 
         url = f"{GRAPH_API}/me/chats?$top={_CHATS_PAGE_SIZE}"
-        chats = self._get_all_pages(url)
+        chats, fully_synced = self._get_all_pages(url)
+        if not fully_synced:
+            print(
+                f"WARNING: chat list fetch incomplete ({len(chats)} chat(s) retrieved); "
+                "processing them but holding last_check so the chats behind the gap are "
+                "retried next cycle instead of being marked as already seen"
+            )
 
         newest_message_time = self.last_check
 
@@ -619,12 +727,13 @@ class TeamsBot:
             if not chat_id:
                 continue
 
-            messages_url = (
-                f"{GRAPH_API}/me/chats/{chat_id}/messages"
-                f"?$top={settings.teams_messages_page_size}"
-            )
-            messages_data = self._api_request(messages_url)
-            messages = messages_data.get("value", []) if messages_data else []
+            messages, chat_complete = self._get_chat_messages(chat_id)
+            if not chat_complete:
+                # _get_chat_messages already logged the specifics. This chat's
+                # unread history is not fully in hand, so — same reasoning as the
+                # chat-list case above — the cycle as a whole cannot advance
+                # last_check without risking messages behind the gap.
+                fully_synced = False
             # Graph returns newest-first. Answer people in the order they asked:
             # createdDateTime is a fixed-width ISO-8601 UTC string, so it sorts
             # chronologically as text. The watermark logic below is order-agnostic.
@@ -664,7 +773,7 @@ class TeamsBot:
                     created_time=created_time,
                 )
 
-        if newest_message_time > self.last_check:
+        if fully_synced and newest_message_time > self.last_check:
             self.last_check = newest_message_time
         self._cleanup_processed_messages()
         self._save_state()
