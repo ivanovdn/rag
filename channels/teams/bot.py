@@ -44,6 +44,23 @@ _CHATS_PAGE_SIZE = 50
 _CHATS_MAX_PAGES = 20      # /me/chats: bounds a cyclic/self-referential nextLink
 _MESSAGES_MAX_PAGES = 10   # per-chat messages: bounds how far back a burst pages
 
+# Branch review Fix D: this reach constant sets a ceiling on outage recovery,
+# not just burst handling. Once an outage runs longer than roughly
+# _MESSAGES_MAX_PAGES x teams_messages_page_size messages of traffic in a
+# chat, that chat can no longer page back far enough to reach the frozen
+# last_check once it recovers — so it stays "incomplete" AFTER the underlying
+# failure has cleared, and the hold runs all the way to Ruling G's
+# force-advance (teams_max_state_age_minutes) regardless. That makes a
+# full-length hold the NORMAL outcome of a long outage, not a worst case —
+# which is what makes the resident-size growth in Fix B/C's comments
+# (measured: 1723 ids / 136 KB for one full hold at 30 users) an expected
+# operating point, not an anomaly to chase.
+
+# Branch review Fix C: _load_state logs (never truncates) above this multiple
+# of teams_max_processed_messages — see _load_state for why truncation itself
+# would be the bug.
+_ABNORMAL_PROCESSED_MESSAGES_MULTIPLIER = 10
+
 _VALID_RATINGS = {"-1", "0", "1", "2"}
 
 # Bounded retry for transient Graph failures (timeouts, connection errors, 5xx).
@@ -177,6 +194,26 @@ class TeamsBot:
             last_check = datetime.fromisoformat(data["last_check"])
             # dict, not set: insertion order is what makes eviction genuinely oldest-first.
             processed = dict.fromkeys(data.get("processed_messages", []))
+            # Branch review Fix C: visibility only, never a cap here. _load_state
+            # used to inherit a size bound for free, because the writer
+            # (_save_state) capped the file on every save — it no longer does
+            # (Fix 2 removed that slice; _cleanup_processed_messages, gated on
+            # fully_synced, is the only eviction site left). Truncating on load
+            # would drop ids that are still newer than last_check — exactly the
+            # duplicate-answer bug this branch spent four rounds eliminating —
+            # so this only logs. A full-length hold is the NORMAL outcome of a
+            # long outage (see Fix D, next to _MESSAGES_MAX_PAGES), so treat the
+            # warning below as "go look", not "something is broken".
+            print(f"Loaded {len(processed)} processed message id(s) from {STATE_FILE}")
+            abnormal_threshold = _ABNORMAL_PROCESSED_MESSAGES_MULTIPLIER * settings.teams_max_processed_messages
+            if len(processed) > abnormal_threshold:
+                print(
+                    f"WARNING: {len(processed)} processed message ids loaded from "
+                    f"{STATE_FILE} — more than {_ABNORMAL_PROCESSED_MESSAGES_MULTIPLIER}x "
+                    f"teams_max_processed_messages ({settings.teams_max_processed_messages}); "
+                    "worth checking for a chat stuck in a long hold. Visibility only — "
+                    "nothing here truncates it."
+                )
             # Clamp a stale last_check so a long-stopped bot can't treat the whole
             # backlog as new and answer it all into the channel. Normal restarts
             # (downtime < teams_max_state_age_minutes) still resume from last_check.
@@ -709,6 +746,14 @@ class TeamsBot:
         self.processed_messages[message_key] = None
 
     def _cleanup_processed_messages(self):
+        # Branch review Fix B: teams_max_processed_messages is a TRIGGER here,
+        # not a cap — crossing it fires this, and this removes only 20% of the
+        # current size (remove_count below), so resident size can run well past
+        # the configured number (roughly 5x it in practice). Worse during a
+        # hold: this only runs when fully_synced (Ruling H), i.e. at most once
+        # per teams_max_state_age_minutes instead of every cycle. An operator
+        # tuning this number to bound memory should expect "~5x this number",
+        # not "this number" — see the setting's own comment in config.py.
         if len(self.processed_messages) > settings.teams_max_processed_messages:
             remove_count = len(self.processed_messages) // 5
             self.processed_messages = dict.fromkeys(list(self.processed_messages)[remove_count:])

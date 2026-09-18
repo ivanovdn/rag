@@ -473,6 +473,37 @@ def test_force_advance_warning_distinguishes_one_chat_from_the_whole_list(monkey
     assert "chat list itself" not in logged
 
 
+def test_force_advance_lets_cleanup_run_the_same_cycle(monkeypatch, pbot):
+    """Branch review Fix A: `fully_synced = True` right after the force-advance
+    survives mutation with the whole suite green. It is what lets the cleanup
+    gate (`if fully_synced: self._cleanup_processed_messages()`, just below)
+    fire at the end of a hold -- and since Fix 2 removed _save_state's own
+    slice, _cleanup_processed_messages is now the ONLY eviction path left
+    during a persistent failure. Delete this line and a chronically-failing
+    chat means zero evictions, ever, for as long as it keeps failing --
+    unbounded growth in both the in-memory dict and the persisted file."""
+    monkeypatch.setattr(bot.settings, "teams_max_state_age_minutes", 60)
+    monkeypatch.setattr(bot.settings, "teams_max_processed_messages", 10)
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    monkeypatch.setattr(pbot, "_send_message", lambda *a, **k: True)
+    pbot.processed_messages = dict.fromkeys([f"k{i}" for i in range(15)])  # already over cap
+    pbot._hold_since = datetime.now(timezone.utc) - timedelta(minutes=61)
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        if "/messages" in url:
+            return {"value": []}
+        return None  # the chat list itself is what's failing this cycle
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+
+    pbot.process_new_messages()
+
+    # The force-advance ended the hold this same cycle, so cleanup must run in
+    # it too -- waiting for a separate, later fully-synced cycle is not good
+    # enough while the same chat keeps failing and re-triggering the hold.
+    assert len(pbot.processed_messages) < 15
+
+
 def test_force_advance_does_not_bury_a_message_within_the_lookback_window(monkeypatch, pbot):
     """Ruling M: advancing all the way to `now` (round 2's implementation) is
     effectively silent loss of anything that arrives in a HEALTHY chat between

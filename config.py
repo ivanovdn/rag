@@ -125,6 +125,12 @@ class Settings(BaseSettings):
     teams_initial_lookback_minutes: int = 5
     teams_max_state_age_minutes: int = 60   # clamp last_check older than this on startup (anti-backlog-flood)
     teams_max_consecutive_errors: int = 5
+    # A TRIGGER threshold, not a hard cap (branch review Fix B): crossing it makes
+    # _cleanup_processed_messages fire, and that removes only 20% of the current
+    # size — see its comment in bot.py. Resident size can run to roughly 5x this
+    # value, worse during a hold, when cleanup is gated (Ruling H) to fire at most
+    # once per teams_max_state_age_minutes instead of every cycle. Tune expecting
+    # "~5x this number" of memory/file size, not "this number".
     teams_max_processed_messages: int = 1000
 
     @model_validator(mode="after")
