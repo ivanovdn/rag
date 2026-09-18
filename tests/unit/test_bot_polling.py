@@ -376,6 +376,83 @@ def test_hold_force_advances_last_check_past_the_threshold(monkeypatch, pbot):
                                       # which is what un-latches a self-latched freeze
 
 
+def test_force_advance_does_not_bury_a_message_within_the_lookback_window(monkeypatch, pbot):
+    """Ruling M: advancing all the way to `now` (round 2's implementation) is
+    effectively silent loss of anything that arrives in a HEALTHY chat between
+    that chat's fetch earlier in the cycle and this point, later in the same
+    cycle — narrow, but exactly the failure mode this whole fix exists to
+    eliminate. The force-advance must instead leave the same small re-read
+    buffer _load_state's startup clamp already leaves: now -
+    teams_initial_lookback_minutes, not now. A message inside that buffer must
+    still read as new, not "old_message", on the very next fetch."""
+    monkeypatch.setattr(bot.settings, "teams_max_state_age_minutes", 60)
+    monkeypatch.setattr(bot.settings, "teams_initial_lookback_minutes", 5)
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    monkeypatch.setattr(pbot, "_send_message", lambda *a, **k: True)
+    pbot._hold_since = datetime.now(timezone.utc) - timedelta(minutes=61)
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        if "/messages" in url:
+            return {"value": []}
+        return None  # the chat list itself is what's failing this cycle
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+
+    pbot.process_new_messages()
+
+    # A message from 2 minutes ago is comfortably inside the 5-minute lookback
+    # buffer, so it must land strictly after the force-advanced watermark...
+    recent = datetime.now(timezone.utc) - timedelta(minutes=2)
+    assert pbot.last_check < recent
+    # ...which is what keeps the next fetch from silently burying it as old.
+    should_process, reason = pbot._should_process_message(
+        {"id": "healthy1", "messageType": "message",
+         "from": {"user": {"id": "someone"}},
+         "createdDateTime": recent.isoformat().replace("+00:00", "Z")},
+        my_user_id="me", chat_id="healthy",
+    )
+    assert should_process is True, reason
+
+
+def test_force_advance_lookback_window_does_not_duplicate_already_processed(monkeypatch, pbot):
+    """The flip side of the test above, per the controller's explicit request to
+    confirm this by measurement rather than argument: re-opening a small window
+    behind `now` must not let an ALREADY-answered message become re-answerable.
+    Ruling H has been blocking eviction for the whole hold, so a healthy chat's
+    normal traffic during that hold is still in processed_messages when the
+    force-advance runs — _should_process_message must reject it by id before
+    the (now earlier) timestamp check ever runs."""
+    monkeypatch.setattr(bot.settings, "teams_max_state_age_minutes", 60)
+    monkeypatch.setattr(bot.settings, "teams_initial_lookback_minutes", 5)
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    monkeypatch.setattr(pbot, "_send_message", lambda *a, **k: True)
+    pbot._hold_since = datetime.now(timezone.utc) - timedelta(minutes=61)
+
+    # A message from 2 minutes ago -- inside the lookback window the force
+    # advance leaves open -- that a healthy chat already had answered earlier
+    # in the hold (eviction never ran, per Ruling H, so its id is still here).
+    recent = datetime.now(timezone.utc) - timedelta(minutes=2)
+    already_answered = {"id": "m1", "messageType": "message",
+                         "from": {"user": {"id": "someone"}},
+                         "createdDateTime": recent.isoformat().replace("+00:00", "Z")}
+    pbot._mark_processed(bot._message_key("healthy", "m1"))
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        if "/messages" in url:
+            return {"value": []}
+        return None
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+
+    pbot.process_new_messages()
+
+    # last_check now sits behind "recent" (the whole point of Ruling M)...
+    assert pbot.last_check < recent
+    # ...but the id check must still catch it first, so it is not re-answered.
+    should_process, reason = pbot._should_process_message(already_answered, my_user_id="me", chat_id="healthy")
+    assert should_process is False and reason == "already_processed"
+
+
 def test_hold_does_not_force_advance_before_the_threshold(monkeypatch, pbot):
     """The other half of Ruling G: a hold that has NOT yet outlasted
     teams_max_state_age_minutes must still behave like Ruling A intended — held,

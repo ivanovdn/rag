@@ -820,7 +820,25 @@ class TeamsBot:
                 self._hold_since = now
             held_for = now - self._hold_since
             if held_for > timedelta(minutes=settings.teams_max_state_age_minutes):
-                forced_watermark = max(newest_message_time, now)
+                # Target now - teams_initial_lookback_minutes, not now itself
+                # (Ruling M): advancing all the way to now would silently bury
+                # any message that arrives in a HEALTHY chat between that
+                # chat's fetch earlier in this cycle and this point, later in
+                # the same cycle — narrow, but exactly the silent loss this fix
+                # exists to eliminate. _load_state's startup clamp — the
+                # precedent this whole force-advance mirrors — makes the same
+                # choice for the same reason: it resets to now - lookback, not
+                # to now, deliberately leaving a small re-read window rather
+                # than a hard cut at the instant of recovery. Re-reading that
+                # window cannot create a duplicate: Ruling H has been blocking
+                # eviction for the whole hold, so every id a healthy chat
+                # already produced in that window is still in
+                # processed_messages, and _should_process_message rejects it
+                # by key before it ever reaches the timestamp check.
+                forced_watermark = max(
+                    newest_message_time,
+                    now - timedelta(minutes=settings.teams_initial_lookback_minutes),
+                )
                 print(
                     f"WARNING: last_check held for {held_for} (exceeds "
                     f"{settings.teams_max_state_age_minutes} min); force-advancing to "
