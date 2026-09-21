@@ -1,8 +1,10 @@
 import os
 
 import httpx
+from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
 from config import settings
+from rag.observability import get_tracer
 
 _embedding_model = None
 
@@ -48,15 +50,41 @@ def _ollama_embed(texts: list[str], prefix: str = "") -> list[list[float]]:
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """Embed a batch of texts (passage prefix applied automatically)."""
-    model = get_embedding_model()
-    if model == "ollama":
-        return _ollama_embed(texts, prefix=settings.embedding_passage_prefix)
-    return [model.get_text_embedding(t) for t in texts]
+    tracer = get_tracer()
+    with tracer.start_as_current_span(
+        "embed_texts",
+        attributes={
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.EMBEDDING.value,
+            SpanAttributes.EMBEDDING_MODEL_NAME: settings.embedding_model,
+            "embedding.backend": settings.embedding_source,
+            "embedding.text_count": len(texts),
+        },
+    ) as span:
+        model = get_embedding_model()
+        if model == "ollama":
+            result = _ollama_embed(texts, prefix=settings.embedding_passage_prefix)
+        else:
+            result = [model.get_text_embedding(t) for t in texts]
+        span.set_attribute("embedding.vector_dim", len(result[0]) if result else 0)
+        return result
 
 
 def embed_query(query: str) -> list[float]:
     """Embed a single query (query prefix applied automatically)."""
-    model = get_embedding_model()
-    if model == "ollama":
-        return _ollama_embed([query], prefix=settings.embedding_query_prefix)[0]
-    return model.get_query_embedding(query)
+    tracer = get_tracer()
+    with tracer.start_as_current_span(
+        "embed_query",
+        attributes={
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.EMBEDDING.value,
+            SpanAttributes.EMBEDDING_MODEL_NAME: settings.embedding_model,
+            "embedding.backend": settings.embedding_source,
+            "embedding.text_count": 1,
+        },
+    ) as span:
+        model = get_embedding_model()
+        if model == "ollama":
+            result = _ollama_embed([query], prefix=settings.embedding_query_prefix)[0]
+        else:
+            result = model.get_query_embedding(query)
+        span.set_attribute("embedding.vector_dim", len(result))
+        return result

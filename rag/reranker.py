@@ -17,8 +17,14 @@ Falls back to original ranking if server is unavailable — never blocks the pip
 import logging
 
 import httpx
+from openinference.semconv.trace import (
+    OpenInferenceSpanKindValues,
+    RerankerAttributes,
+    SpanAttributes,
+)
 
 from config import settings
+from rag.observability import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +85,33 @@ def rerank(
         - "rerank_score": float (0.0–1.0 relevance probability)
         - "original_rank": int (position before reranking, 1-indexed)
     """
+    tracer = get_tracer()
+    with tracer.start_as_current_span(
+        "rerank",
+        attributes={
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.RERANKER.value,
+            RerankerAttributes.RERANKER_QUERY: query,
+            RerankerAttributes.RERANKER_MODEL_NAME: settings.reranker_model,
+            "reranker.backend": settings.reranker_backend,
+            "reranker.candidates_in": len(results),
+        },
+    ) as span:
+        output = _rerank_impl(query, results, top_n, span)
+        span.set_attribute("reranker.results_out", len(output))
+        if output:
+            span.set_attribute("reranker.top_score", output[0].get("rerank_score", 0.0))
+        return output
+
+
+def _rerank_impl(
+    query: str, results: list[dict], top_n: int | None, span
+) -> list[dict]:
+    """Original rerank logic, factored out so `rerank` can bracket it with a span."""
     if not results:
         return results
 
     n = top_n or settings.reranker_top_n
+    span.set_attribute(RerankerAttributes.RERANKER_TOP_K, n)
     formatted_query = _build_query(query)
     documents = _build_documents([r.get("text", "") for r in results])
 

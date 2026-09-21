@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -12,6 +13,7 @@ from qdrant_client.models import (
 )
 
 from config import settings
+from rag.observability import get_tracer
 
 if TYPE_CHECKING:
     from ingest.chunk_models import PolicyChunk
@@ -104,14 +106,28 @@ def search_vectors(
     query_vector: list[float], top_k: int | None = None
 ) -> list:
     """Search for similar vectors, returns list of ScoredPoint."""
-    client = get_qdrant_client()
-    response = client.query_points(
-        collection_name=settings.qdrant_collection,
-        query=query_vector,
-        limit=top_k or settings.retrieval_top_k,
-        with_payload=True,
-    )
-    return response.points
+    tracer = get_tracer()
+    limit = top_k or settings.retrieval_top_k
+    with tracer.start_as_current_span(
+        "search_vectors",
+        attributes={
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.RETRIEVER.value,
+            "qdrant.collection": settings.qdrant_collection,
+            "qdrant.limit": limit,
+        },
+    ) as span:
+        client = get_qdrant_client()
+        response = client.query_points(
+            collection_name=settings.qdrant_collection,
+            query=query_vector,
+            limit=limit,
+            with_payload=True,
+        )
+        points = response.points
+        span.set_attribute("qdrant.returned_count", len(points))
+        if points:
+            span.set_attribute("qdrant.top_score", points[0].score)
+        return points
 
 
 def scroll_by_filter(filter_conditions: Filter, limit: int = 10) -> list:
