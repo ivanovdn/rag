@@ -94,12 +94,18 @@ def rerank(
             RerankerAttributes.RERANKER_MODEL_NAME: settings.reranker_model,
             "reranker.backend": settings.reranker_backend,
             "reranker.candidates_in": len(results),
+            # Set here so the success path is explicitly False and the attribute is
+            # always present to filter on. _rerank_impl flips it when it degrades.
+            "reranker.fallback": False,
         },
     ) as span:
         output = _rerank_impl(query, results, top_n, span)
         span.set_attribute("reranker.results_out", len(output))
-        if output:
-            span.set_attribute("reranker.top_score", output[0].get("rerank_score", 0.0))
+        # Only on the reranked path: fallback results carry no rerank_score, and
+        # defaulting to 0.0 there would read as "the reranker scored everything
+        # terribly" rather than "the reranker never ran".
+        if output and "rerank_score" in output[0]:
+            span.set_attribute("reranker.top_score", output[0]["rerank_score"])
         return output
 
 
@@ -145,15 +151,34 @@ def _rerank_impl(
 
         return reranked
 
+    # Each of these degrades silently by design — the pipeline must never block on
+    # the reranker. Silent for the USER is right; silent in Phoenix is not. Without
+    # these attributes the span reports OK while results are actually unranked, so a
+    # reranker outage looks like a healthy trace and only shows up as a stdout
+    # warning nobody is watching.
     except httpx.ConnectError:
         logger.warning(f"Reranker unavailable at {settings.reranker_url} — using original ranking")
+        _record_fallback(span, "connect_error")
         return results[:n]
     except httpx.TimeoutException:
         logger.warning("Reranker timed out — using original ranking")
+        _record_fallback(span, "timeout")
         return results[:n]
     except Exception as e:
         logger.warning(f"Reranker error: {e} — using original ranking")
+        _record_fallback(span, type(e).__name__)
         return results[:n]
+
+
+def _record_fallback(span, reason: str) -> None:
+    """Mark the rerank span as degraded-but-successful.
+
+    Deliberately not span.set_status(ERROR): the request succeeded and the user got
+    an answer, so failing the span would misreport the pipeline. Filter on
+    reranker.fallback to find these.
+    """
+    span.set_attribute("reranker.fallback", True)
+    span.set_attribute("reranker.fallback_reason", reason)
 
 
 def _call_rerank(query: str, documents: list[str], top_n: int) -> list[tuple[int, float]]:

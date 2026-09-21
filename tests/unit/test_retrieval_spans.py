@@ -356,3 +356,70 @@ def test_all_four_functions_work_with_phoenix_disabled(monkeypatch):
     assert embeddings_mod.embed_texts(["a", "b"]) == [[0.1, 0.2], [0.1, 0.2]]
     assert vector_store_mod.search_vectors([0.1, 0.2]) == fake_points
     assert reranker_mod.rerank("q", [{"text": "a"}])[0]["rerank_score"] == 0.8
+
+
+# --- reranker.fallback: make a silent degradation visible in Phoenix -----------
+#
+# rerank() swallows backend failures by design so the pipeline never blocks. That
+# is right for the user and wrong for the operator: without these attributes the
+# span reports OK while the results are actually unranked, so a reranker outage
+# looks like a perfectly healthy trace.
+
+
+def test_rerank_success_records_fallback_false(monkeypatch, span_exporter):
+    """The attribute is always present, so `reranker.fallback == false` is a usable
+    filter rather than 'absent means fine, probably'."""
+    monkeypatch.setattr(reranker_mod.settings, "reranker_top_n", 1)
+    monkeypatch.setattr(reranker_mod, "_call_rerank", lambda q, d, n: [(0, 0.9)])
+
+    reranker_mod.rerank("q", [{"text": "a"}])
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes["reranker.fallback"] is False
+    assert span.attributes["reranker.top_score"] == 0.9
+
+
+@pytest.mark.parametrize(
+    "exc, expected_reason",
+    [
+        (httpx.ConnectError("reranker down"), "connect_error"),
+        (httpx.TimeoutException("too slow"), "timeout"),
+        (RuntimeError("something else"), "RuntimeError"),
+    ],
+)
+def test_rerank_fallback_is_visible_on_the_span(
+    monkeypatch, span_exporter, exc, expected_reason
+):
+    def raise_it(query, documents, top_n):
+        raise exc
+
+    monkeypatch.setattr(reranker_mod, "_call_rerank", raise_it)
+    monkeypatch.setattr(reranker_mod.settings, "reranker_top_n", 1)
+
+    results = [{"text": "a"}, {"text": "b"}]
+    output = reranker_mod.rerank("q", results)
+
+    assert output == results[:1]  # fallback behaviour itself unchanged
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes["reranker.fallback"] is True
+    assert span.attributes["reranker.fallback_reason"] == expected_reason
+    # Still not an errored span: the request succeeded and the user got an answer.
+    assert span.status.status_code != StatusCode.ERROR
+
+
+def test_rerank_fallback_does_not_report_a_misleading_top_score(
+    monkeypatch, span_exporter
+):
+    """Fallback results carry no rerank_score. Defaulting it to 0.0 would read as
+    'the reranker scored everything terribly' instead of 'it never ran'."""
+
+    def raise_it(query, documents, top_n):
+        raise httpx.ConnectError("reranker down")
+
+    monkeypatch.setattr(reranker_mod, "_call_rerank", raise_it)
+    monkeypatch.setattr(reranker_mod.settings, "reranker_top_n", 1)
+
+    reranker_mod.rerank("q", [{"text": "a"}])
+
+    span = span_exporter.get_finished_spans()[0]
+    assert "reranker.top_score" not in span.attributes
