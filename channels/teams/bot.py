@@ -624,63 +624,94 @@ class TeamsBot:
 
     def _answer(self, chat_id, text, sender_name="Unknown"):
         """Worker thread: route, run RAG, reply. Never called from the poll loop."""
-        # Pre-retrieval classification: only in-scope questions reach policy search.
-        if settings.router_enabled:
-            from rag.router import classify_message, resolve, Category  # deferred: observability-first
-            from rag.observability import record_classification
+        # Deferred import: init_observability() (start_teams_bot.py) must run before
+        # LlamaIndex loads, so this module never imports anything observability-adjacent
+        # at module level — same reasoning as the deferred imports below and in _run_rag.
+        from rag.observability import get_tracer
+        from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
-            decision = classify_message(text)
-            category = resolve(decision, settings.router_confidence_floor)
-            record_classification(
-                category.value,
-                decision.confidence,
-                fallback=(category != decision.category or decision.fallback),
-                message=text,
-            )
+        tracer = get_tracer()
+        # One root span for the whole request, opened before the router call and made
+        # "current" (start_as_current_span attaches it) so every span started
+        # underneath it — the router's own classification span, and, via _run_rag,
+        # the agent run and its retrieval leaves (embed_query/search_vectors/rerank) —
+        # nests under it instead of each becoming its own disconnected trace. Without
+        # the attach, OpenInference's llama-index instrumentor finds no current span
+        # and opens its own root, no matter how deep the call stack goes.
+        with tracer.start_as_current_span(
+            "compliance_request",
+            attributes={
+                SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
+                # Full message text recorded deliberately, matching record_classification's
+                # audit convention for this compliance bot. Never chat id or sender name —
+                # those identify a person and the span does not need them.
+                "compliance_request.question": text,
+            },
+        ) as span:
+            # Pre-retrieval classification: only in-scope questions reach policy search.
+            if settings.router_enabled:
+                from rag.router import classify_message, resolve, Category  # deferred: observability-first
+                from rag.observability import record_classification
 
-            # These three report their send like every other path out of _answer, so a
-            # failed delivery reaches the worker's ERROR log instead of being silent.
-            # No retry though: no GPU work is lost and the user can just say hello again.
-            if category == Category.GREETING:
-                return bool(self._send_message(chat_id, WELCOME_HTML))
-            if category == Category.OUT_OF_SCOPE:
-                return bool(self._send_message(chat_id, render_out_of_scope()))
-            if category == Category.UNINTELLIGIBLE:
-                return bool(self._send_message(chat_id, render_unintelligible()))
-            # Category.IN_SCOPE falls through to the RAG pipeline below.
+                decision = classify_message(text)
+                category = resolve(decision, settings.router_confidence_floor)
+                record_classification(
+                    category.value,
+                    decision.confidence,
+                    fallback=(category != decision.category or decision.fallback),
+                    message=text,
+                )
 
-        result = _run_rag(text)
+                # These three report their send like every other path out of _answer, so a
+                # failed delivery reaches the worker's ERROR log instead of being silent.
+                # No retry though: no GPU work is lost and the user can just say hello again.
+                if category == Category.GREETING:
+                    span.set_attribute("compliance_request.outcome", "greeting")
+                    return bool(self._send_message(chat_id, WELCOME_HTML))
+                if category == Category.OUT_OF_SCOPE:
+                    span.set_attribute("compliance_request.outcome", "out_of_scope")
+                    return bool(self._send_message(chat_id, render_out_of_scope()))
+                if category == Category.UNINTELLIGIBLE:
+                    span.set_attribute("compliance_request.outcome", "unintelligible")
+                    return bool(self._send_message(chat_id, render_unintelligible()))
+                # Category.IN_SCOPE falls through to the RAG pipeline below.
 
-        # Transient backend failure — not an answer, not an escalation; no rating prompt.
-        if result.get("status") == "unavailable":
-            sent = self._send_message(chat_id, render_unavailable(), retry=True)
+            result = _run_rag(text)
+
+            # Transient backend failure — not an answer, not an escalation; no rating prompt.
+            if result.get("status") == "unavailable":
+                span.set_attribute("compliance_request.outcome", "unavailable")
+                sent = self._send_message(chat_id, render_unavailable(), retry=True)
+                if sent:
+                    print("[worker] Unavailable notice sent")
+                return bool(sent)
+
+            # Render response
+            escalation = result.get("escalation", {})
+            if escalation.get("needed"):
+                span.set_attribute("compliance_request.outcome", "escalated")
+                html = render_escalation(text, result)
+            elif result.get("answer"):
+                span.set_attribute("compliance_request.outcome", "answered")
+                html = render_answer(result)
+            else:
+                span.set_attribute("compliance_request.outcome", "error")
+                html = render_error(text, "No answer returned from the pipeline.")
+
+            # Worth retrying: the pipeline already spent ~16s producing this.
+            sent = self._send_message(chat_id, html, retry=True)
             if sent:
-                print("[worker] Unavailable notice sent")
+                print("[worker] Reply sent")
+                # Only arm rating capture if the prompt actually reached the user. Otherwise
+                # their next message silently becomes a rating whenever it reads as -1/0/1/2.
+                if self._send_message(chat_id, RATING_PROMPT_HTML):
+                    _pending_ratings[chat_id] = {
+                        "question": text,
+                        "answer": result.get("answer", ""),
+                        "citations": result.get("citations", []),
+                        "user": sender_name,
+                    }
             return bool(sent)
-
-        # Render response
-        escalation = result.get("escalation", {})
-        if escalation.get("needed"):
-            html = render_escalation(text, result)
-        elif result.get("answer"):
-            html = render_answer(result)
-        else:
-            html = render_error(text, "No answer returned from the pipeline.")
-
-        # Worth retrying: the pipeline already spent ~16s producing this.
-        sent = self._send_message(chat_id, html, retry=True)
-        if sent:
-            print("[worker] Reply sent")
-            # Only arm rating capture if the prompt actually reached the user. Otherwise
-            # their next message silently becomes a rating whenever it reads as -1/0/1/2.
-            if self._send_message(chat_id, RATING_PROMPT_HTML):
-                _pending_ratings[chat_id] = {
-                    "question": text,
-                    "answer": result.get("answer", ""),
-                    "citations": result.get("citations", []),
-                    "user": sender_name,
-                }
-        return bool(sent)
 
     def _get_my_user_id(self):
         if self._my_user_id:
