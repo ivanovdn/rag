@@ -1,3 +1,5 @@
+import asyncio
+
 from llama_index.core.tools import FunctionTool
 
 from config import settings
@@ -141,4 +143,28 @@ def format_sources(search_results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-search_policies_tool = FunctionTool.from_defaults(fn=search_policies)
+async def _search_policies_async(query: str, top_k: int = 6) -> str:
+    """Async companion to `search_policies`, run via `asyncio.to_thread`.
+
+    Why this exists — do not delete it as redundant indirection: without an
+    explicit `async_fn`, `FunctionTool.from_defaults` builds its own async
+    wrapper around the sync `search_policies` using `loop.run_in_executor`
+    directly, which does NOT propagate `contextvars`. Every OTel span opened
+    inside the tool (embed_query, search_vectors, rerank) would then start
+    with an empty context and come out as its own disconnected root trace
+    instead of nesting under the agent's tool-call span — exactly the bug
+    this file was patched to fix. `asyncio.to_thread` copies the current
+    context (`contextvars.copy_context()`) before handing the call to the
+    same default executor, so the spans nest correctly, with no change in
+    concurrency (still one pooled thread, not parallel execution).
+    """
+    return await asyncio.to_thread(search_policies, query, top_k)
+
+
+# `fn` (not `async_fn`) is what the tool schema/description is derived from, so the
+# LLM-facing signature `search_policies(query, top_k=6)` referenced in rag/agent.py's
+# system prompt is unchanged. `async_fn` only swaps out which coroutine actually runs.
+search_policies_tool = FunctionTool.from_defaults(
+    fn=search_policies,
+    async_fn=_search_policies_async,
+)
