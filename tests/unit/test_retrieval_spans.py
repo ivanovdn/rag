@@ -423,3 +423,39 @@ def test_rerank_fallback_does_not_report_a_misleading_top_score(
 
     span = span_exporter.get_finished_spans()[0]
     assert "reranker.top_score" not in span.attributes
+
+
+# --- Ollama embedding keep_alive ----------------------------------------------
+#
+# Regression guard for a measured production finding (2026-09-22): /api/embed was
+# sent without keep_alive, so the embedding model fell back to Ollama's default
+# 5-minute TTL while the chat model held 30m. Every question after a >5min gap —
+# the normal case for this bot — paid a full model reload: 1,589ms vs 27ms warm.
+
+
+def test_ollama_embed_sends_keep_alive(monkeypatch):
+    """The embedding model must be pinned as long as the chat model, or it is
+    evicted between questions and each query reloads it."""
+    captured = {}
+
+    def fake_post(url, json=None, timeout=None):
+        captured["json"] = json
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"embeddings": [[0.1, 0.2]]}
+
+        return _Resp()
+
+    monkeypatch.setattr(embeddings_mod.httpx, "post", fake_post)
+    monkeypatch.setattr(embeddings_mod.settings, "ollama_keep_alive", "30m")
+    monkeypatch.setattr(embeddings_mod.settings, "embedding_source", "ollama")
+    monkeypatch.setattr(embeddings_mod, "_embedding_model", "ollama")
+
+    embeddings_mod.embed_query("does the VPN policy cover contractors?")
+
+    keep_alive = captured["json"].get("keep_alive")
+    assert keep_alive == "30m", "embed payload must carry keep_alive"

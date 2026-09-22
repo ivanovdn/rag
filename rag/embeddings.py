@@ -41,7 +41,18 @@ def _ollama_embed(texts: list[str], prefix: str = "") -> list[list[float]]:
     prefixed = [f"{prefix}{t}" if prefix else t for t in texts]
     resp = httpx.post(
         url,
-        json={"model": settings.embedding_model, "input": prefixed},
+        json={
+            "model": settings.embedding_model,
+            "input": prefixed,
+            # Without this the embedding model gets Ollama's DEFAULT 5-minute
+            # keep_alive while the chat model gets settings.ollama_keep_alive (30m),
+            # so it is evicted between questions and every query pays a full model
+            # load. Measured in production 2026-09-22 via the new embedding span:
+            # 1,589ms after an 11-minute gap vs 27ms three minutes later — 59x.
+            # A compliance bot is asked questions sporadically, so gaps longer than
+            # five minutes are the NORM, which made the slow path the common path.
+            "keep_alive": settings.ollama_keep_alive,
+        },
         timeout=120.0,
     )
     resp.raise_for_status()
