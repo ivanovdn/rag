@@ -912,13 +912,13 @@ class TeamsBot:
             # Known, pre-existing, out of this branch's scope (branch review
             # finding 8): newest_message_time is the max across ALL chats, so a
             # message arriving in chat A after A's own fetch, earlier this same
-            # cycle, is buried if a later-read chat carries something newer —
-            # the identical intra-cycle race Ruling M reasons about for the
-            # force-advance below, just unguarded here. Unchanged since before
-            # this branch; the window is a fraction of one poll cycle. Not
-            # widening this branch's scope to fix it — recorded here so the
-            # asymmetry with the force-advance's ten lines of reasoning reads
-            # as a deliberate choice, not an oversight.
+            # cycle, is buried if a later-read chat carries something newer.
+            # The window is a fraction of one poll cycle, and unchanged since
+            # before this branch. The force-advance below now accepts this exact
+            # same race deliberately (Ruling M's lookback window was what used
+            # to guard against it there, and it was reverted — see the ABANDONED
+            # note), so the two paths are consistent: both prefer a sub-cycle
+            # burial to a rewound watermark.
             if newest_message_time > self.last_check:
                 self.last_check = newest_message_time
         else:
@@ -948,25 +948,42 @@ class TeamsBot:
                 self._hold_since = now
             held_for = now - self._hold_since
             if held_for > timedelta(minutes=settings.teams_max_state_age_minutes):
-                # Target now - teams_initial_lookback_minutes, not now itself
-                # (Ruling M): advancing all the way to now would silently bury
-                # any message that arrives in a HEALTHY chat between that
-                # chat's fetch earlier in this cycle and this point, later in
-                # the same cycle — narrow, but exactly the silent loss this fix
-                # exists to eliminate. _load_state's startup clamp — the
-                # precedent this whole force-advance mirrors — makes the same
-                # choice for the same reason: it resets to now - lookback, not
-                # to now, deliberately leaving a small re-read window rather
-                # than a hard cut at the instant of recovery. Re-reading that
-                # window cannot create a duplicate: Ruling H has been blocking
-                # eviction for the whole hold, so every id a healthy chat
-                # already produced in that window is still in
-                # processed_messages, and _should_process_message rejects it
-                # by key before it ever reaches the timestamp check.
-                forced_watermark = max(
-                    newest_message_time,
-                    now - timedelta(minutes=settings.teams_initial_lookback_minutes),
-                )
+                # Target `now`. The max() is only a guard against a clock that
+                # has stepped backwards: newest_message_time starts at
+                # self.last_check and only ever grows, so this can never move
+                # the watermark backwards. What targeting `now` buys is an
+                # invariant rather than an argument — after a force-advance,
+                # nothing still in processed_messages is newer than last_check,
+                # so the eviction below cannot drop an id that a later fetch
+                # would then re-accept. No counterexample can exist.
+                #
+                # ABANDONED — DO NOT REINSTATE: this targeted
+                # `now - teams_initial_lookback_minutes` (Ruling M), to avoid
+                # burying a message that lands in a HEALTHY chat between that
+                # chat's own fetch earlier in this cycle and this point, later
+                # in the same cycle. That window is real, but paying for it
+                # with a rewound watermark opened a far worse hole, because
+                # `fully_synced = True` below un-gates
+                # _cleanup_processed_messages IN THIS SAME CYCLE: the ids it
+                # evicts are exactly the ones sitting inside the re-opened
+                # window, so the next cycle re-fetches, re-acks and re-answers
+                # them. Measured by tests/load: 435 ids, 87 evicted, 87
+                # duplicate answers — and 208 duplicates at the default
+                # teams_max_processed_messages=1000. The comment that used to
+                # sit here claimed that re-read "cannot create a duplicate"
+                # because Ruling H blocks eviction throughout the hold. Ruling
+                # H does — but the force-advance ENDS the hold, and eviction
+                # runs before the window is ever re-read. Regression test:
+                # tests/load/test_teams_load.py
+                #   ::test_force_advance_does_not_re_answer_the_lookback_window
+                #
+                # The cost of `now` is Ruling M's window back: a message
+                # arriving in a healthy chat during the second or two between
+                # its own fetch and this point is buried. That happens at most
+                # once per teams_max_state_age_minutes, inside a state that
+                # already logs "may be permanently skipped" — set against
+                # 87-208 duplicate answers, it is not close.
+                forced_watermark = max(newest_message_time, now)
                 # Fix 6: say which kind of incompleteness this is. "A chat" reads
                 # as one user's traffic; "the chat list itself" is everyone's.
                 if chat_list_incomplete:
@@ -1001,8 +1018,13 @@ class TeamsBot:
         # Ruling H: never evict while the watermark is held. An evicted id is
         # precisely what becomes re-answerable once its chat's back-paging (Ruling
         # B) reaches far enough to refetch it — eviction and an active hold must
-        # never overlap. Safe to run immediately after a forced advance above:
-        # the hold (if any) has just ended for this cycle. _cleanup_processed_messages
+        # never overlap. Safe to run immediately after a forced advance above,
+        # but ONLY because that advance now targets `now`: an evicted id is
+        # re-answerable exactly when its message is newer than last_check, and
+        # after a force-advance to `now` no such id is left in the set. This
+        # pairing is load-bearing — rewinding the forced watermark by even a few
+        # minutes makes this same line a duplicate-answer machine (see the
+        # ABANDONED note above). _cleanup_processed_messages
         # is the ONLY place eviction happens: _save_state (branch review Fix 2) no
         # longer applies its own slice, so there is nothing else to gate — a second,
         # ungated eviction site is exactly how this comment went false once already.

@@ -358,52 +358,34 @@ def test_the_harness_actually_exercises_the_code_it_claims_to(build_sim, capsys)
                                max_state_bytes=MAX_STATE_BYTES_HEALTHY)
 
 
-# --- DEFECT: eviction and the force-advance overlap after all ------------------
+# --- regression: eviction and the force-advance must not overlap --------------
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Real defect found by this harness, deliberately NOT fixed here: a load "
-    "harness that also changes behaviour cannot be trusted as evidence about "
-    "that behaviour. Flip this to a plain test once process_new_messages is "
-    "fixed -- strict=True means it fails loudly if it ever starts passing."
-))
-def test_force_advance_must_not_re_answer_the_lookback_window(build_sim, monkeypatch):
-    """Messages answered during a hold get answered a SECOND time.
+def test_force_advance_does_not_re_answer_the_lookback_window(build_sim, monkeypatch):
+    """Regression for a duplicate-answer defect this harness found and measured.
 
-    process_new_messages states, at the force-advance, that re-opening the
-    lookback window "cannot create a duplicate: Ruling H has been blocking
-    eviction for the whole hold, so every id a healthy chat already produced in
-    that window is still in processed_messages". That is not unconditional. The
-    force-advance sets ``fully_synced = True``, which un-gates
-    ``_cleanup_processed_messages`` in the SAME cycle, and that eviction drops
-    the oldest 20% of the set -- which are inside the re-opened window whenever
-    the hold's traffic is concentrated in its final teams_initial_lookback_minutes.
+    Before the fix, process_new_messages force-advanced last_check to
+    ``now - teams_initial_lookback_minutes`` (Ruling M) and then set
+    ``fully_synced = True``, which un-gated ``_cleanup_processed_messages`` in
+    the SAME cycle. The eviction dropped the oldest 20% of the resident set --
+    which, whenever the hold's traffic was concentrated in its final few
+    minutes, were exactly the ids sitting inside the window the rewind had just
+    re-opened. Measured here, cycle by cycle:
 
-    Mechanism, measured cycle by cycle in this scenario:
       cycle 113  a burst lands at 09:56:30, is answered, ids marked processed
-      cycle 122  hold passes 60 min -> last_check force-advanced 08:55 -> 09:56
-                 (= now - lookback, because no message arrived THIS cycle, so
-                 newest_message_time never moved off the frozen watermark)
-                 -> fully_synced = True -> cleanup evicts 87 of 435 ids
-      cycle 123  those 87 messages are > last_check and no longer in
-                 processed_messages, so they are re-fetched, re-acked and
-                 re-answered: 87 duplicate answers, 174 extra Graph sends
+      cycle 122  the hold passes 60 min -> last_check force-advanced 08:55 ->
+                 09:56 (= now - lookback, because nothing arrived THIS cycle,
+                 so newest_message_time never moved off the frozen watermark)
+                 -> fully_synced = True -> cleanup evicted 87 of 435 ids
+      cycle 123  those 87 messages were newer than last_check and no longer in
+                 processed_messages, so they were re-fetched, re-acked and
+                 RE-ANSWERED: 87 duplicate answers, 174 extra Graph sends
 
-    Preconditions, all of which the branch's own comments describe as ordinary:
-      * a hold that runs the full teams_max_state_age_minutes (Fix D calls a
-        full-length hold "the NORMAL outcome of a long outage")
-      * processed_messages over teams_max_processed_messages, so eviction fires
-      * more than ~80% of the set created inside the last
-        teams_initial_lookback_minutes of the hold, and nothing arriving in the
-        force-advance cycle itself (otherwise newest_message_time carries
-        last_check forward to ~now and nothing is behind it)
-
-    Reachability scales with the tunable: measured 208 duplicate answers at the
-    production default teams_max_processed_messages=1000 (348 questions inside
-    the window), and 52 at 200 (87 questions). The shape is a morning burst
-    after an hour-long overnight outage, followed by a five-minute lull.
-
-    This is the duplicate-answer incident class the project has already been
-    bitten by twice, reached through a third route.
+    The fix targets ``now`` instead, which makes the eviction safe by
+    construction rather than by argument: nothing left in processed_messages can
+    be newer than last_check, so no evicted id can be re-accepted. This scenario
+    is kept exactly as it was when it produced 87 duplicates -- that is the
+    proof. Restoring the ``- timedelta(minutes=...lookback)`` term in
+    process_new_messages makes this test fail again (mutation-verified).
     """
     monkeypatch.setattr(bot.settings, "teams_max_processed_messages", 200)
     sim = build_sim(n_chats=30)
@@ -425,8 +407,17 @@ def test_force_advance_must_not_re_answer_the_lookback_window(build_sim, monkeyp
     sim.run_cycles(12, advance=timedelta(seconds=30))
 
     assert len(tokens) == 87
+    # The scenario must actually reach the force-advance, or it proves nothing.
+    assert sim.watermarks[-1] > sim.watermarks[0], "the hold never force-advanced"
     sim.assert_all_answered(tokens)
     sim.assert_no_duplicate_answers()
+    # Eviction must actually have run in the force-advance cycle -- that is the
+    # half of the interaction the fix makes safe rather than removes.
+    assert any(b < a for a, b in zip(sim.processed_sizes, sim.processed_sizes[1:])), \
+        "cleanup never fired, so the eviction/force-advance overlap was never exercised"
+    sim.assert_ack_precedes_reply()
+    sim.assert_watermark_never_regresses()
+    sim.assert_no_poll_loop_exceptions()
 
 
 # --- determinism --------------------------------------------------------------

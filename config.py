@@ -160,27 +160,32 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_hold_bound(self) -> "Settings":
-        """Warn (never crash) if the runtime watermark hold could never release.
+        """Warn (never crash) if the startup clamp would undo its own purpose.
 
-        TeamsBot's force-advance (Ruling G, targeted per Ruling M) advances
-        last_check to `now - teams_initial_lookback_minutes` once a hold has
-        lasted longer than teams_max_state_age_minutes. That only guarantees
-        forward progress while the lookback is strictly smaller than the
-        bound — at or above it, a quiet cycle's force-advance can fail to
-        move last_check at all (or by a margin too small to matter), so the
-        hold never actually ends and the duplicate-answer path it exists to
-        prevent (R-1) reopens. A realistic way to reach this: raising
-        TEAMS_INITIAL_LOOKBACK_MINUTES after an incident without also raising
-        TEAMS_MAX_STATE_AGE_MINUTES.
+        _load_state clamps a stale last_check — one older than
+        teams_max_state_age_minutes — back to `now - teams_initial_lookback_minutes`,
+        so a long-stopped bot cannot answer the whole backlog into the channel.
+        That only works while the lookback is strictly smaller than the bound.
+        At or above it the clamp re-opens a window at least as wide as the age
+        it just rejected as too stale, so the very messages the clamp exists to
+        suppress are handed straight back as new. A realistic way to reach this:
+        raising TEAMS_INITIAL_LOOKBACK_MINUTES after an incident without also
+        raising TEAMS_MAX_STATE_AGE_MINUTES.
+
+        Note this used to justify itself by the runtime force-advance, which
+        targeted `now - lookback` under Ruling M. It no longer does: that target
+        is now plain `now` (see process_new_messages), so the force-advance
+        always clears the hold whatever this setting says. The startup clamp is
+        the only reason left to warn — but it is reason enough.
         """
         lookback = self.teams_initial_lookback_minutes
         bound = self.teams_max_state_age_minutes
         if lookback >= bound:
             print(
                 f"WARNING: TEAMS_INITIAL_LOOKBACK_MINUTES ({lookback}) >= "
-                f"TEAMS_MAX_STATE_AGE_MINUTES ({bound}); the runtime watermark hold "
-                "may never release, which can reopen the duplicate-answer path it "
-                "exists to prevent."
+                f"TEAMS_MAX_STATE_AGE_MINUTES ({bound}); the startup clamp would "
+                "re-open a window at least as old as the staleness it rejects, so a "
+                "long-stopped bot can still answer the backlog it exists to suppress."
             )
         return self
 
