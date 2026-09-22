@@ -14,10 +14,12 @@ suffix) is required for both vLLM modes — without it, score discrimination col
 Falls back to original ranking if server is unavailable — never blocks the pipeline.
 """
 
+import json
 import logging
 
 import httpx
 from openinference.semconv.trace import (
+    DocumentAttributes,
     OpenInferenceSpanKindValues,
     RerankerAttributes,
     SpanAttributes,
@@ -27,6 +29,41 @@ from config import settings
 from rag.observability import get_tracer
 
 logger = logging.getLogger(__name__)
+
+# Mirrors rag/vector_store.py's constant of the same purpose: settings.reranker_top_n
+# (6) documents land on this span, each posted individually over HTTP by a
+# SimpleSpanProcessor — truncate document content so a debugging aid doesn't become
+# real payload weight per request.
+_DOCUMENT_CONTENT_MAX_CHARS = 1000
+
+
+def _document_span_attributes(results: list[dict]) -> dict:
+    """Flatten reranked result dicts into OpenInference retrieval.documents.{i}.* attrs.
+
+    Must never raise: this is purely a tracing side-channel, so every field is read
+    with `.get()` — a missing/partial key (e.g. on the fallback-to-original-order
+    path, which carries no `rerank_score`) must not break the pipeline. Identifying
+    fields go into DOCUMENT_METADATA as a JSON string, since those (doc_title/
+    section/clause_number) are what a person scanning a trace actually reads.
+    """
+    attributes: dict = {}
+    for i, r in enumerate(results):
+        prefix = f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.{i}."
+        attributes[prefix + DocumentAttributes.DOCUMENT_ID] = str(r.get("doc_id", ""))
+        attributes[prefix + DocumentAttributes.DOCUMENT_CONTENT] = str(
+            r.get("text", "")
+        )[:_DOCUMENT_CONTENT_MAX_CHARS]
+        attributes[prefix + DocumentAttributes.DOCUMENT_SCORE] = float(
+            r.get("rerank_score", 0.0) or 0.0
+        )
+        attributes[prefix + DocumentAttributes.DOCUMENT_METADATA] = json.dumps(
+            {
+                "doc_title": r.get("doc_title", ""),
+                "section": r.get("section", ""),
+                "clause_number": r.get("clause_number", ""),
+            }
+        )
+    return attributes
 
 
 _VLLM_SYSTEM = (
@@ -106,6 +143,7 @@ def rerank(
         # terribly" rather than "the reranker never ran".
         if output and "rerank_score" in output[0]:
             span.set_attribute("reranker.top_score", output[0]["rerank_score"])
+        span.set_attributes(_document_span_attributes(output))
         return output
 
 

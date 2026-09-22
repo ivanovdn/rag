@@ -1,6 +1,11 @@
+import json
 from typing import TYPE_CHECKING
 
-from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
+from openinference.semconv.trace import (
+    DocumentAttributes,
+    OpenInferenceSpanKindValues,
+    SpanAttributes,
+)
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -19,6 +24,41 @@ if TYPE_CHECKING:
     from ingest.chunk_models import PolicyChunk
 
 _client: QdrantClient | None = None
+
+# Up to settings.reranker_candidates (20) chunks land on the search_vectors span,
+# each posted individually over HTTP by a SimpleSpanProcessor — truncate document
+# content so a debugging aid doesn't become real payload weight per request.
+_DOCUMENT_CONTENT_MAX_CHARS = 1000
+
+
+def _document_span_attributes(points: list) -> dict:
+    """Flatten Qdrant ScoredPoints into OpenInference retrieval.documents.{i}.* attrs.
+
+    Must never raise: this is purely a tracing side-channel, so every payload
+    field is read with `.get()` — a missing/partial payload key must not break
+    a search. Identifying fields go into DOCUMENT_METADATA as a JSON string,
+    since those (doc_title/section/clause_number) are what a person scanning a
+    trace actually reads.
+    """
+    attributes: dict = {}
+    for i, point in enumerate(points):
+        payload = getattr(point, "payload", None) or {}
+        prefix = f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.{i}."
+        attributes[prefix + DocumentAttributes.DOCUMENT_ID] = str(getattr(point, "id", ""))
+        attributes[prefix + DocumentAttributes.DOCUMENT_CONTENT] = str(
+            payload.get("text", "")
+        )[:_DOCUMENT_CONTENT_MAX_CHARS]
+        attributes[prefix + DocumentAttributes.DOCUMENT_SCORE] = float(
+            getattr(point, "score", 0.0) or 0.0
+        )
+        attributes[prefix + DocumentAttributes.DOCUMENT_METADATA] = json.dumps(
+            {
+                "doc_title": payload.get("doc_title", ""),
+                "section": payload.get("section", ""),
+                "clause_number": payload.get("clause_number", ""),
+            }
+        )
+    return attributes
 
 
 def get_qdrant_client() -> QdrantClient:
@@ -127,6 +167,7 @@ def search_vectors(
         span.set_attribute("qdrant.returned_count", len(points))
         if points:
             span.set_attribute("qdrant.top_score", points[0].score)
+        span.set_attributes(_document_span_attributes(points))
         return points
 
 

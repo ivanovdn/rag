@@ -7,17 +7,21 @@ Uses an in-memory OTel span exporter — never a live Phoenix instance — and m
 HTTP/Qdrant calls, so nothing here touches the network or 172.20.0.22.
 """
 
+import asyncio
+import json
+
 import httpx
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
-from openinference.semconv.trace import SpanAttributes
+from openinference.semconv.trace import DocumentAttributes, SpanAttributes
 from qdrant_client.http.exceptions import ResponseHandlingException
 
 import rag.embeddings as embeddings_mod
 import rag.reranker as reranker_mod
+import rag.tools.search_policies as search_policies_mod
 import rag.vector_store as vector_store_mod
 
 
@@ -67,6 +71,22 @@ class _FakeQdrantClientRaises:
 
     def query_points(self, **kwargs):
         raise self._exc
+
+
+class _FakePointWithPayload:
+    """Like _FakePoint, but with `.id`/`.payload` so it round-trips through the
+    full `search_policies()` pipeline (which reads `r.payload[...]`), not just
+    the bare `search_vectors` span attributes."""
+
+    def __init__(self, score, payload, point_id="chunk-id"):
+        self.score = score
+        self.payload = payload
+        self.id = point_id
+
+
+def _doc_attr(index: int, field: str) -> str:
+    """Build a flattened retrieval.documents.{i}.document.{field} attribute key."""
+    return f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.{index}.{field}"
 
 
 # --- embed_query ----------------------------------------------------------------
@@ -222,6 +242,69 @@ def test_search_vectors_default_limit_falls_back_to_retrieval_top_k(monkeypatch,
     assert "qdrant.top_score" not in span.attributes  # no points -> no top score
 
 
+def test_search_vectors_span_includes_retrieval_documents(monkeypatch, span_exporter):
+    long_text = "x" * 1500
+    points = [
+        _FakePointWithPayload(
+            0.91,
+            {
+                "doc_title": "Backup Policy",
+                "doc_id": "doc-1",
+                "section": "Retention",
+                "clause_number": "3.2",
+                "text": long_text,
+            },
+            point_id="chunk-1",
+        ),
+        _FakePointWithPayload(
+            0.42,
+            {"doc_title": "Access Policy", "doc_id": "doc-2", "text": "short text"},
+            point_id="chunk-2",
+        ),
+    ]
+    monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient(points))
+
+    vector_store_mod.search_vectors([0.1, 0.2, 0.3], top_k=2)
+
+    span = span_exporter.get_finished_spans()[0]
+    attrs = span.attributes
+
+    assert attrs[_doc_attr(0, DocumentAttributes.DOCUMENT_ID)] == "chunk-1"
+    assert attrs[_doc_attr(0, DocumentAttributes.DOCUMENT_SCORE)] == 0.91
+    # Truncated: module-level constant caps document content on the span.
+    assert len(attrs[_doc_attr(0, DocumentAttributes.DOCUMENT_CONTENT)]) == 1000
+    meta0 = json.loads(attrs[_doc_attr(0, DocumentAttributes.DOCUMENT_METADATA)])
+    assert meta0 == {"doc_title": "Backup Policy", "section": "Retention", "clause_number": "3.2"}
+
+    assert attrs[_doc_attr(1, DocumentAttributes.DOCUMENT_ID)] == "chunk-2"
+    assert attrs[_doc_attr(1, DocumentAttributes.DOCUMENT_CONTENT)] == "short text"
+    meta1 = json.loads(attrs[_doc_attr(1, DocumentAttributes.DOCUMENT_METADATA)])
+    # Optional payload keys default to "" rather than being omitted or raising.
+    assert meta1 == {"doc_title": "Access Policy", "section": "", "clause_number": ""}
+
+
+def test_search_vectors_document_attrs_missing_payload_keys_does_not_raise(
+    monkeypatch, span_exporter
+):
+    points = [_FakePointWithPayload(0.5, {}, point_id="chunk-x")]  # empty payload
+    monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient(points))
+
+    result = vector_store_mod.search_vectors([0.1], top_k=1)  # must not raise
+
+    assert result == points
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes[_doc_attr(0, DocumentAttributes.DOCUMENT_CONTENT)] == ""
+
+
+def test_search_vectors_no_points_means_no_document_attrs(monkeypatch, span_exporter):
+    monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient([]))
+
+    vector_store_mod.search_vectors([0.1], top_k=1)
+
+    span = span_exporter.get_finished_spans()[0]
+    assert _doc_attr(0, DocumentAttributes.DOCUMENT_ID) not in span.attributes
+
+
 def test_search_vectors_exception_propagates_unchanged_and_span_errors(monkeypatch, span_exporter):
     boom = ResponseHandlingException("qdrant unreachable")
     monkeypatch.setattr(
@@ -269,6 +352,85 @@ def test_rerank_span_name_kind_and_attributes(monkeypatch, span_exporter):
     assert span.attributes["reranker.top_k"] == 2
     assert span.attributes["reranker.results_out"] == 2
     assert span.attributes["reranker.top_score"] == 0.95
+
+
+def test_rerank_span_includes_retrieval_documents(monkeypatch, span_exporter):
+    monkeypatch.setattr(reranker_mod.settings, "reranker_backend", "llama-server")
+    monkeypatch.setattr(reranker_mod.settings, "reranker_top_n", 2)
+    monkeypatch.setattr(
+        reranker_mod, "_call_rerank", lambda query, documents, top_n: [(1, 0.95), (0, 0.10)]
+    )
+
+    long_text = "a" * 1500
+    results = [
+        {
+            "text": long_text,
+            "doc_title": "Access Policy",
+            "doc_id": "doc-0",
+            "section": "Intro",
+            "clause_number": "1.1",
+        },
+        {
+            "text": "short",
+            "doc_title": "Backup Policy",
+            "doc_id": "doc-1",
+            "section": "Retention",
+            "clause_number": "3.2",
+        },
+    ]
+    reranker_mod.rerank("q", results)
+
+    span = span_exporter.get_finished_spans()[0]
+    attrs = span.attributes
+
+    # index 1 (doc-1) scored highest (0.95) so it becomes document 0 post-rerank.
+    assert attrs[_doc_attr(0, DocumentAttributes.DOCUMENT_ID)] == "doc-1"
+    assert attrs[_doc_attr(0, DocumentAttributes.DOCUMENT_SCORE)] == 0.95
+    assert attrs[_doc_attr(0, DocumentAttributes.DOCUMENT_CONTENT)] == "short"
+    meta0 = json.loads(attrs[_doc_attr(0, DocumentAttributes.DOCUMENT_METADATA)])
+    assert meta0 == {"doc_title": "Backup Policy", "section": "Retention", "clause_number": "3.2"}
+
+    assert attrs[_doc_attr(1, DocumentAttributes.DOCUMENT_ID)] == "doc-0"
+    assert attrs[_doc_attr(1, DocumentAttributes.DOCUMENT_SCORE)] == 0.10
+    # Truncated: module-level constant caps document content on the span.
+    assert len(attrs[_doc_attr(1, DocumentAttributes.DOCUMENT_CONTENT)]) == 1000
+
+
+def test_rerank_document_attrs_missing_fields_does_not_raise(monkeypatch, span_exporter):
+    monkeypatch.setattr(reranker_mod.settings, "reranker_top_n", 1)
+    monkeypatch.setattr(reranker_mod, "_call_rerank", lambda q, d, n: [(0, 0.5)])
+
+    output = reranker_mod.rerank("q", [{"text": "x"}])  # no doc_title/doc_id/etc.
+
+    assert output[0]["rerank_score"] == 0.5  # unchanged behaviour
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes[_doc_attr(0, DocumentAttributes.DOCUMENT_ID)] == ""
+    meta0 = json.loads(span.attributes[_doc_attr(0, DocumentAttributes.DOCUMENT_METADATA)])
+    assert meta0 == {"doc_title": "", "section": "", "clause_number": ""}
+
+
+def test_rerank_fallback_documents_have_no_misleading_score(monkeypatch, span_exporter):
+    """Fallback results carry no rerank_score (see the existing top_score test above);
+    the per-document score must default safely rather than raise a KeyError."""
+
+    def raise_it(query, documents, top_n):
+        raise httpx.ConnectError("reranker down")
+
+    monkeypatch.setattr(reranker_mod, "_call_rerank", raise_it)
+    monkeypatch.setattr(reranker_mod.settings, "reranker_top_n", 1)
+
+    reranker_mod.rerank("q", [{"text": "a", "doc_title": "X", "doc_id": "d1"}])
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes[_doc_attr(0, DocumentAttributes.DOCUMENT_SCORE)] == 0.0
+    assert span.attributes[_doc_attr(0, DocumentAttributes.DOCUMENT_ID)] == "d1"
+
+
+def test_rerank_empty_results_has_no_document_attrs(monkeypatch, span_exporter):
+    reranker_mod.rerank("q", [])
+
+    span = span_exporter.get_finished_spans()[0]
+    assert _doc_attr(0, DocumentAttributes.DOCUMENT_ID) not in span.attributes
 
 
 def test_rerank_swallows_transient_backend_error_without_marking_span_errored(
@@ -459,3 +621,65 @@ def test_ollama_embed_sends_keep_alive(monkeypatch):
 
     keep_alive = captured["json"].get("keep_alive")
     assert keep_alive == "30m", "embed payload must carry keep_alive"
+
+
+# --- search_policies_tool async wrapper: trace nesting -------------------------
+#
+# Production bug: FunctionTool.from_defaults(fn=search_policies) alone makes
+# llama-index build its own async wrapper via `sync_to_async`, which schedules
+# the call with bare `loop.run_in_executor` — that does NOT propagate
+# contextvars, so every span opened inside the tool (embed_query,
+# search_vectors, rerank) started its own brand-new root trace instead of
+# nesting under the agent's tool-call span. The fix gives the tool an explicit
+# `async_fn` that runs the sync function via `asyncio.to_thread`, which does
+# copy the context. This test exercises `search_policies_tool.acall` end to
+# end (mocked internals only) and asserts on trace id specifically — that is
+# the thing that was actually wrong in production, not merely "spans exist".
+
+
+def test_tool_acall_nests_retrieval_spans_under_parent_trace(monkeypatch, span_exporter):
+    monkeypatch.setattr(search_policies_mod.settings, "bm25_enabled", False)
+    monkeypatch.setattr(search_policies_mod.settings, "reranker_enabled", True)
+    monkeypatch.setattr(search_policies_mod.settings, "reranker_candidates", 5)
+    monkeypatch.setattr(search_policies_mod.settings, "reranker_top_n", 2)
+    monkeypatch.setattr(search_policies_mod.settings, "min_confidence_score", 0.0)
+
+    monkeypatch.setattr(embeddings_mod, "_embedding_model", None)
+    monkeypatch.setattr(embeddings_mod.settings, "embedding_source", "ollama")
+    monkeypatch.setattr(
+        embeddings_mod, "_ollama_embed", lambda texts, prefix="": [[0.1, 0.2, 0.3]]
+    )
+
+    fake_points = [
+        _FakePointWithPayload(
+            0.9, {"doc_title": "Backup Policy", "doc_id": "d1", "text": "chunk one"}, "c1"
+        ),
+        _FakePointWithPayload(
+            0.5, {"doc_title": "Access Policy", "doc_id": "d2", "text": "chunk two"}, "c2"
+        ),
+    ]
+    monkeypatch.setattr(
+        vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient(fake_points)
+    )
+    monkeypatch.setattr(reranker_mod, "_call_rerank", lambda q, d, n: [(0, 0.95), (1, 0.2)])
+
+    # Same tracer instance the span_exporter fixture patched every module's
+    # get_tracer() to return, so starting the "agent" parent span here shares
+    # the exact OTel Context that the retrieval spans below must inherit.
+    tracer = vector_store_mod.get_tracer()
+    with tracer.start_as_current_span("agent.tool_call") as parent_span:
+        parent_trace_id = parent_span.get_span_context().trace_id
+        result = asyncio.run(
+            search_policies_mod.search_policies_tool.acall(query="backup retention", top_k=2)
+        )
+
+    assert "RETRIEVED POLICY SOURCES" in result.raw_output  # pipeline still works
+
+    spans = span_exporter.get_finished_spans()
+    retrieval_spans = {s.name: s for s in spans if s.name in {"embed_query", "search_vectors", "rerank"}}
+    assert set(retrieval_spans) == {"embed_query", "search_vectors", "rerank"}
+    for name, s in retrieval_spans.items():
+        assert s.context.trace_id == parent_trace_id, (
+            f"{name} span started its own root trace instead of nesting under "
+            "the agent's tool-call span"
+        )
