@@ -698,19 +698,26 @@ class TeamsBot:
                 span.set_attribute("compliance_request.outcome", "error")
                 html = render_error(text, "No answer returned from the pipeline.")
 
+            # Answer and rating prompt as one Graph send, not two: RATING_PROMPT_HTML is
+            # a self-contained <p><i>...</i></p> block and <hr> is Teams-allowed (CLAUDE.md's
+            # rendering gotcha), so they concatenate cleanly. With one worker thread
+            # serialising every question, the second round-trip (~490ms measured) was pure
+            # queue wait for the next question — halving Graph round-trips here removes it.
             # Worth retrying: the pipeline already spent ~16s producing this.
-            sent = self._send_message(chat_id, html, retry=True)
+            sent = self._send_message(chat_id, html + "<hr>" + RATING_PROMPT_HTML, retry=True)
             if sent:
                 print("[worker] Reply sent")
-                # Only arm rating capture if the prompt actually reached the user. Otherwise
-                # their next message silently becomes a rating whenever it reads as -1/0/1/2.
-                if self._send_message(chat_id, RATING_PROMPT_HTML):
-                    _pending_ratings[chat_id] = {
-                        "question": text,
-                        "answer": result.get("answer", ""),
-                        "citations": result.get("citations", []),
-                        "user": sender_name,
-                    }
+                # Arm rating capture only if the combined send succeeded. This is now
+                # structural rather than a second check: the answer and the prompt are
+                # one message, so they always arrive together or not at all — it is no
+                # longer possible for the user to see the answer but not the prompt (or
+                # vice versa) and have their next message silently become a rating.
+                _pending_ratings[chat_id] = {
+                    "question": text,
+                    "answer": result.get("answer", ""),
+                    "citations": result.get("citations", []),
+                    "user": sender_name,
+                }
             return bool(sent)
 
     def _get_my_user_id(self):

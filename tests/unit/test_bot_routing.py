@@ -62,6 +62,51 @@ def test_in_scope_runs_rag_and_prompts_rating(monkeypatch, teams_bot):
                         lambda q: {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}})
     teams_bot._answer("chat1", "Can I install software?")
     assert "chat1" in bot._pending_ratings  # rating prompt stored
+    # Combined reply send: answer and rating prompt are one Graph call, not two.
+    assert len(teams_bot._sent) == 1
+    assert "See AUP." in teams_bot._sent[0]
+    assert "Was this helpful" in teams_bot._sent[0]
+
+
+def test_unavailable_path_sends_once_with_no_rating_prompt(monkeypatch, teams_bot):
+    monkeypatch.setattr(bot.settings, "router_enabled", False)
+    monkeypatch.setattr(bot, "_run_rag", lambda q: {"status": "unavailable"})
+
+    assert teams_bot._answer("chat1", "Can I install software?") is True
+
+    assert len(teams_bot._sent) == 1
+    assert "Was this helpful" not in teams_bot._sent[0]
+    assert "chat1" not in bot._pending_ratings
+
+
+def test_escalation_path_still_carries_rating_prompt_in_one_send(monkeypatch, teams_bot):
+    monkeypatch.setattr(bot.settings, "router_enabled", False)
+    monkeypatch.setattr(
+        bot, "_run_rag",
+        lambda q: {"answer": "", "citations": [], "escalation": {"needed": True, "reason": "No policy found."}},
+    )
+
+    teams_bot._answer("chat1", "Can I install software?")
+
+    assert len(teams_bot._sent) == 1
+    assert "Escalated to Compliance Team" in teams_bot._sent[0]
+    assert "Was this helpful" in teams_bot._sent[0]
+    assert "chat1" in bot._pending_ratings
+
+
+def test_error_path_still_carries_rating_prompt_in_one_send(monkeypatch, teams_bot):
+    monkeypatch.setattr(bot.settings, "router_enabled", False)
+    monkeypatch.setattr(
+        bot, "_run_rag",
+        lambda q: {"answer": "", "citations": [], "escalation": {"needed": False}},
+    )
+
+    teams_bot._answer("chat1", "Can I install software?")
+
+    assert len(teams_bot._sent) == 1
+    assert "Compliance lookup failed" in teams_bot._sent[0]
+    assert "Was this helpful" in teams_bot._sent[0]
+    assert "chat1" in bot._pending_ratings
 
 
 def test_low_confidence_safe_default_searches(monkeypatch, teams_bot):
