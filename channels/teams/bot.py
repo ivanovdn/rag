@@ -687,15 +687,28 @@ class TeamsBot:
                 # These three report their send like every other path out of _answer, so a
                 # failed delivery reaches the worker's ERROR log instead of being silent.
                 # No retry though: no GPU work is lost and the user can just say hello again.
+                # They log their SUCCESS too, naming the category: only the failure was
+                # ever logged (by _worker_loop), so a working greeting — the most common
+                # first message during onboarding — was indistinguishable in the log from
+                # a dropped one. Same "[worker] ... sent" shape as the two below.
                 if category == Category.GREETING:
                     span.set_attribute("compliance_request.outcome", "greeting")
-                    return bool(self._send_message(chat_id, WELCOME_HTML))
+                    sent = self._send_message(chat_id, WELCOME_HTML)
+                    if sent:
+                        print("[worker] Greeting reply sent")
+                    return bool(sent)
                 if category == Category.OUT_OF_SCOPE:
                     span.set_attribute("compliance_request.outcome", "out_of_scope")
-                    return bool(self._send_message(chat_id, render_out_of_scope()))
+                    sent = self._send_message(chat_id, render_out_of_scope())
+                    if sent:
+                        print("[worker] Out-of-scope reply sent")
+                    return bool(sent)
                 if category == Category.UNINTELLIGIBLE:
                     span.set_attribute("compliance_request.outcome", "unintelligible")
-                    return bool(self._send_message(chat_id, render_unintelligible()))
+                    sent = self._send_message(chat_id, render_unintelligible())
+                    if sent:
+                        print("[worker] Unintelligible reply sent")
+                    return bool(sent)
                 # Category.IN_SCOPE falls through to the RAG pipeline below.
 
             result = _run_rag(text)

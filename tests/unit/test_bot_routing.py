@@ -179,3 +179,55 @@ def test_router_branches_report_a_failed_send(monkeypatch, teams_bot):
     for category in (Category.GREETING, Category.OUT_OF_SCOPE, Category.UNINTELLIGIBLE):
         _force(monkeypatch, category)
         assert not teams_bot._answer("chat1", "hello"), f"{category} must report the failed send"
+
+
+# --- router short-circuit logging -------------------------------------------
+#
+# The three branches above return bool(self._send_message(...)) and used to print
+# nothing on success, while _worker_loop logs only the falsy-return case: a FAILED
+# send was reported and a SUCCESSFUL one was silent, so in the container log a
+# working greeting looked exactly like a dropped message. capsys as in
+# tests/unit/test_bot_queue.py's ack/worker log tests.
+
+@pytest.mark.parametrize(
+    "category, message, expected_line",
+    [
+        (Category.GREETING, "hi", "[worker] Greeting reply sent"),
+        (Category.OUT_OF_SCOPE, "order me a pizza", "[worker] Out-of-scope reply sent"),
+        (Category.UNINTELLIGIBLE, "църфе ші", "[worker] Unintelligible reply sent"),
+    ],
+)
+def test_router_short_circuit_logs_its_success_line(
+    monkeypatch, teams_bot, capsys, category, message, expected_line
+):
+    monkeypatch.setattr(bot.settings, "router_enabled", True)
+    _force(monkeypatch, category)
+    monkeypatch.setattr(bot, "_run_rag", lambda q: pytest.fail("must not search"))
+
+    assert teams_bot._answer("chat1", message) is True  # unchanged return value
+
+    logged = capsys.readouterr().out
+    assert expected_line in logged
+
+
+@pytest.mark.parametrize(
+    "category, message",
+    [
+        (Category.GREETING, "hi"),
+        (Category.OUT_OF_SCOPE, "order me a pizza"),
+        (Category.UNINTELLIGIBLE, "църфе ші"),
+    ],
+)
+def test_router_short_circuit_logs_nothing_when_the_send_fails(
+    monkeypatch, teams_bot, capsys, category, message
+):
+    """A failed send must stay the worker's ERROR to report, not a false success."""
+    monkeypatch.setattr(bot.settings, "router_enabled", True)
+    _force(monkeypatch, category)
+    monkeypatch.setattr(bot, "_run_rag", lambda q: pytest.fail("must not search"))
+    monkeypatch.setattr(teams_bot, "_send_message",
+                        lambda chat_id, text, content_type="html", retry=False: None)
+
+    assert teams_bot._answer("chat1", message) is False  # unchanged return value
+
+    assert "reply sent" not in capsys.readouterr().out.lower()
