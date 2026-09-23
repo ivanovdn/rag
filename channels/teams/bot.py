@@ -1075,7 +1075,7 @@ class TeamsBot:
         """Stop cleanly on SIGTERM — what `docker compose restart/stop` sends first.
 
         With no handler nothing acts on it: Docker waits out its stop grace (now
-        pinned to 15s in docker-compose-remote.yml, above teams_shutdown_grace_seconds;
+        pinned to 30s in docker-compose-remote.yml, above teams_shutdown_grace_seconds;
         it used to be Docker's 10s default) for an exit that never comes, then
         SIGKILLs — so every deploy is a hard crash. That
         costs real duplicate answers, because an answered id only becomes durable at

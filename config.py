@@ -127,7 +127,7 @@ class Settings(BaseSettings):
     teams_max_consecutive_errors: int = 5
     # Bounds the drain in TeamsBot._graceful_shutdown. It must stay BELOW the
     # container's stop grace — docker-compose-remote.yml pins the bot service's
-    # stop_grace_period to 15s for exactly this reason, and says so — so the bot
+    # stop_grace_period to 30s for exactly this reason, and says so — so the bot
     # finishes draining, saves state and exits on its own rather than being
     # SIGKILLed, which is the hard crash this whole path exists to avoid. Raising
     # this past that grace silently gives the behaviour back, and nothing fails
@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     # 12, not 8: measured on the VM 2026-09-23, a warm answer takes ~6.9s end to
     # end, so an 8s drain left 1.1s of margin and timed out on its very first
     # production restart. 12s clears a warm answer comfortably while still
-    # leaving 3s under the 15s container grace to save state and exit. A COLD
+    # leaving room under the 30s container grace to save state and exit. A COLD
     # answer (~15.9s, first question after a deploy) still exceeds this and will
     # time out — that is accepted, not overlooked: the drain is best-effort, and
     # a message it abandons stays in _inflight, so _save_state keeps its id out

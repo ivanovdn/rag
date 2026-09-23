@@ -18,7 +18,19 @@ services:
     # nothing fails loudly when that happens. Made explicit rather than relying on
     # Docker's 10s default, which left the two graces coupled invisibly across two
     # files. Change one, change the other.
-    stop_grace_period: 15s
+    #
+    # 30s, not 15s, and the headroom is deliberate. Python runs a signal handler
+    # but then RESUMES the interrupted syscall (PEP 475), so a SIGTERM landing
+    # inside a Graph call waits for that call to return — up to TEAMS_API_TIMEOUT
+    # (10s) — before the poll loop even notices the shutdown. Worst case is that
+    # stall plus the full 12s drain plus the state write, which overruns 15s and
+    # gets SIGKILLed: precisely the hard crash this setting exists to prevent.
+    # Graph timeouts are not hypothetical here; three were observed in one week
+    # at five chats, and the request budget grows with headcount.
+    # This costs nothing in the normal case — an idle bot takes the stop sentinel
+    # and exits in well under a second. It only spends the headroom when there is
+    # real work to finish.
+    stop_grace_period: 30s
     depends_on:
       phoenix:
         condition: service_healthy
