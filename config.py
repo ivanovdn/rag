@@ -132,7 +132,18 @@ class Settings(BaseSettings):
     # SIGKILLed, which is the hard crash this whole path exists to avoid. Raising
     # this past that grace silently gives the behaviour back, and nothing fails
     # loudly when it does: change both together.
-    teams_shutdown_grace_seconds: int = 8
+    #
+    # 12, not 8: measured on the VM 2026-09-23, a warm answer takes ~6.9s end to
+    # end, so an 8s drain left 1.1s of margin and timed out on its very first
+    # production restart. 12s clears a warm answer comfortably while still
+    # leaving 3s under the 15s container grace to save state and exit. A COLD
+    # answer (~15.9s, first question after a deploy) still exceeds this and will
+    # time out — that is accepted, not overlooked: the drain is best-effort, and
+    # a message it abandons stays in _inflight, so _save_state keeps its id out
+    # of the persisted set and holds the watermark behind it, and the next start
+    # re-delivers it. Timing out costs one wasted GPU run and a few seconds of
+    # delay, never a lost or duplicated answer.
+    teams_shutdown_grace_seconds: int = 12
     # A TRIGGER threshold, not a hard cap (branch review Fix B): crossing it makes
     # _cleanup_processed_messages fire, and that removes only 20% of the current
     # size — see its comment in bot.py. Resident size can run to roughly 5x this
