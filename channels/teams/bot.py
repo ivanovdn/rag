@@ -1117,8 +1117,11 @@ class TeamsBot:
         """
         return self._shutdown.wait(seconds)
 
-    def _graceful_shutdown(self):
+    def _graceful_shutdown(self, reason):
         """Stop accepting work, drain the in-flight answer, persist state.
+
+        `reason` names the exit that asked for this ("SIGTERM", the error limit) —
+        an operator reading a container log needs to know which one stopped the bot.
 
         Bounded by teams_shutdown_grace_seconds, which sits under Docker's stop
         grace so this finishes before SIGKILL. The bound is safe by construction:
@@ -1130,7 +1133,7 @@ class TeamsBot:
         The caller releases the PID lock (run()'s existing finally).
         """
         grace = settings.teams_shutdown_grace_seconds
-        print(f"\nShutdown requested (SIGTERM); draining the worker (grace {grace}s)...")
+        print(f"\nShutdown requested ({reason}); draining the worker (grace {grace}s)...")
         started = time.monotonic()
         # Unblock a worker parked in _work_q.get(); a busy one finishes the answer
         # it is on and then stops before taking another (see _worker_loop).
@@ -1179,6 +1182,8 @@ class TeamsBot:
             print("\nWaiting for messages...\n")
 
             consecutive_errors = 0
+            # Names the exit in the shutdown log; the error limit overwrites it below.
+            stop_reason = "SIGTERM"
 
             while not self._shutdown.is_set():
                 try:
@@ -1187,6 +1192,12 @@ class TeamsBot:
                     consecutive_errors = 0
                     self._wait_for_next_poll(self._current_poll_interval(datetime.now(timezone.utc)))
                 except KeyboardInterrupt:
+                    # The ONE exit that does not drain. Ctrl-C is an operator asking
+                    # to stop NOW, and making local dev wait up to
+                    # teams_shutdown_grace_seconds for an answer nobody is waiting on
+                    # is a bad trade. Nothing is lost that was not already covered:
+                    # the in-flight id stays out of the persisted state either way,
+                    # so the next start re-delivers it.
                     print("\n\nBot stopped by user")
                     break
                 except Exception as e:
@@ -1194,6 +1205,15 @@ class TeamsBot:
                     print(f"Error in main loop ({consecutive_errors}/{settings.teams_max_consecutive_errors}): {e}")
                     if consecutive_errors >= settings.teams_max_consecutive_errors:
                         print("Too many consecutive errors, stopping bot")
+                        # Drain like SIGTERM: this is a controlled decision to stop,
+                        # not a crash. Every failure counted here comes from the POLL
+                        # loop (Graph unreachable), which says nothing about the
+                        # worker — its answer may well complete and reach the user.
+                        # Abandoning it would make them wait for a restart to get an
+                        # answer the bot had already produced. Setting the event also
+                        # stops the worker picking up new work while we drain.
+                        stop_reason = "too many consecutive errors"
+                        self._shutdown.set()
                         break
                     error_sleep = min(settings.teams_poll_interval * (2 ** consecutive_errors), 60)
                     print(f"Retrying in {error_sleep}s...")
@@ -1201,9 +1221,10 @@ class TeamsBot:
                     # more so: this backoff runs to 60s, six times Docker's stop grace.
                     self._wait_for_next_poll(error_sleep)
 
-            # Only the SIGTERM path drains. A KeyboardInterrupt or the error-limit
-            # break falls straight through to the finally, exactly as before.
+            # Both controlled exits drain — SIGTERM and the error limit, which sets
+            # the event on its way out. KeyboardInterrupt does not, and that is the
+            # one deliberate asymmetry: see its branch above for why.
             if self._shutdown.is_set():
-                self._graceful_shutdown()
+                self._graceful_shutdown(stop_reason)
         finally:
             self._release_pid_lock()

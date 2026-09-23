@@ -150,7 +150,7 @@ def test_an_idle_worker_exits_on_the_shutdown_sentinel(sbot, capsys):
     assert worker is not None and worker.is_alive()
 
     sbot._shutdown.set()
-    sbot._graceful_shutdown()
+    sbot._graceful_shutdown("SIGTERM")
 
     assert not worker.is_alive()
     logged = capsys.readouterr().out
@@ -189,7 +189,7 @@ def test_the_drain_is_bounded_and_unfinished_work_is_re_delivered(
 
     sbot._shutdown.set()
     t0 = time.monotonic()
-    sbot._graceful_shutdown()
+    sbot._graceful_shutdown("SIGTERM")
     elapsed = time.monotonic() - t0
     release.set()
 
@@ -215,3 +215,60 @@ def test_a_signal_registration_failure_does_not_stop_the_bot(monkeypatch, sbot, 
     logged = capsys.readouterr().out
     assert "WARNING: could not install the SIGTERM handler" in logged
     assert "Waiting for messages" in logged  # it started anyway
+
+
+# --- which exits drain -------------------------------------------------------
+#
+# SIGTERM and the error limit both drain: both are controlled decisions to stop,
+# with an answer possibly mid-flight that can still be delivered. KeyboardInterrupt
+# deliberately does not — that asymmetry is pinned below so it cannot rot into
+# looking like an oversight.
+
+def test_the_error_limit_exit_drains_and_saves_too(monkeypatch, sbot, tmp_path, capsys):
+    """The failures are in the POLL loop (Graph unreachable) and say nothing about
+    the worker, whose answer may well complete and reach the user. Abandoning it
+    would make them wait for a restart for an answer the bot had already produced."""
+    monkeypatch.setattr(bot.settings, "teams_max_consecutive_errors", 2)
+    monkeypatch.setattr(bot.settings, "teams_poll_interval", 0)  # no real backoff wait
+    saves = {"n": 0}
+    real_save = sbot._save_state
+
+    def _counting_save():
+        saves["n"] += 1
+        real_save()
+
+    monkeypatch.setattr(sbot, "_save_state", _counting_save)
+
+    def _graph_is_down():
+        raise RuntimeError("Graph unreachable")
+
+    monkeypatch.setattr(sbot, "process_new_messages", _graph_is_down)
+
+    _run_bounded(sbot)
+
+    logged = capsys.readouterr().out
+    assert "Too many consecutive errors, stopping bot" in logged
+    assert "Shutdown requested (too many consecutive errors)" in logged  # names the exit
+    assert "Worker drained in" in logged
+    assert "State saved" in logged
+    assert saves["n"] == 1
+    assert (tmp_path / "bot_state.json").exists()
+    assert sbot._worker is not None and not sbot._worker.is_alive()
+
+
+def test_keyboard_interrupt_still_exits_without_draining(monkeypatch, sbot, tmp_path):
+    """Ctrl-C is an operator asking to stop NOW; making local dev wait up to
+    teams_shutdown_grace_seconds is a bad trade. Deliberately asymmetric."""
+    saves = {"n": 0}
+    monkeypatch.setattr(sbot, "_save_state", lambda: saves.__setitem__("n", saves["n"] + 1))
+
+    def _ctrl_c():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sbot, "process_new_messages", _ctrl_c)
+
+    _run_bounded(sbot)
+
+    assert saves["n"] == 0
+    assert not sbot._shutdown.is_set()
+    assert not (tmp_path / "bot.pid").exists()  # the PID lock is still released
