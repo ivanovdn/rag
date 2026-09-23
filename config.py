@@ -125,6 +125,13 @@ class Settings(BaseSettings):
     teams_initial_lookback_minutes: int = 5
     teams_max_state_age_minutes: int = 60   # clamp last_check older than this on startup (anti-backlog-flood)
     teams_max_consecutive_errors: int = 5
+    # Bounds the drain in TeamsBot._graceful_shutdown. 8 deliberately sits under
+    # Docker's default 10s stop grace (`docker stop` / `docker compose restart`;
+    # docker-compose-remote.yml sets no stop_grace_period), so the bot finishes
+    # draining, saves state and exits on its own rather than being SIGKILLed —
+    # which is the hard crash this whole path exists to avoid. Raising it past
+    # that grace silently gives the behaviour back; raise stop_grace_period too.
+    teams_shutdown_grace_seconds: int = 8
     # A TRIGGER threshold, not a hard cap (branch review Fix B): crossing it makes
     # _cleanup_processed_messages fire, and that removes only 20% of the current
     # size — see its comment in bot.py. Resident size can run to roughly 5x this

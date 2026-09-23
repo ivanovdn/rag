@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import queue
+import signal
 import sys
 import threading
 import time
@@ -62,6 +63,12 @@ _MESSAGES_MAX_PAGES = 10   # per-chat messages: bounds how far back a burst page
 _ABNORMAL_PROCESSED_MESSAGES_MULTIPLIER = 10
 
 _VALID_RATINGS = {"-1", "0", "1", "2"}
+
+# Shutdown sentinel for _work_q. A unique object rather than None so a malformed
+# job can never be mistaken for it: the only producer is _graceful_shutdown, and
+# its job is to unblock a worker parked in the blocking _work_q.get() so the
+# thread can exit instead of being killed mid-answer.
+_WORKER_STOP = object()
 
 # Bounded retry for transient Graph failures (timeouts, connection errors, 5xx).
 # Deliberately short and deliberately local: rag.resilience is for the model/vector
@@ -176,6 +183,10 @@ class TeamsBot:
         # Only the poll thread calls it today — this keeps the one-worker invariant
         # true in code rather than by convention.
         self._worker_lock = threading.Lock()
+        # Set by the SIGTERM handler (see _install_signal_handler). Read by the
+        # poll loop, waited on between cycles, and checked by the worker before it
+        # starts anything new.
+        self._shutdown = threading.Event()
 
     # ------------------------------------------------------------------
     # State persistence
@@ -583,7 +594,18 @@ class TeamsBot:
     def _worker_loop(self):
         """The single consumer. See the __init__ comment before adding a second."""
         while True:
-            chat_id, text, sender_name, message_key = self._work_q.get()
+            job = self._work_q.get()
+            # Stop before STARTING new work: either the shutdown sentinel (which is
+            # what unblocks an idle get()), or the shutdown event, since the ~16s a
+            # fresh question needs is no longer available. Either way the unstarted
+            # job is still in _inflight, so _save_state keeps its id out of
+            # processed_messages and holds the watermark behind it — the next start
+            # re-delivers it. An answer already in progress is NOT abandoned here;
+            # _graceful_shutdown waits for it, up to the grace.
+            if job is _WORKER_STOP or self._shutdown.is_set():
+                self._work_q.task_done()
+                return
+            chat_id, text, sender_name, message_key = job
             try:
                 if not self._answer(chat_id, text, sender_name=sender_name):
                     # The answer was produced but the reply POST failed even after
@@ -1036,7 +1058,91 @@ class TeamsBot:
     # Main loop
     # ------------------------------------------------------------------
 
+    def _install_signal_handler(self):
+        """Stop cleanly on SIGTERM — what `docker compose restart/stop` sends first.
+
+        With no handler nothing acts on it: Docker waits out its stop grace (10s by
+        default; docker-compose-remote.yml sets no stop_grace_period) for an exit
+        that never comes, then SIGKILLs — so every deploy is a hard crash. That
+        costs real duplicate answers, because an answered id only becomes durable at
+        the next _save_state, up to one poll cycle after the reply was sent; a kill
+        inside that window leaves the persisted state saying "never processed" and
+        the next start re-delivers an already-answered question.
+
+        SIGINT is deliberately left alone: run()'s KeyboardInterrupt branch already
+        handles local Ctrl-C. Returns True if the handler was installed.
+        """
+        def _request_shutdown(signum, frame):
+            # Signal-handler context: set the flag and get out. No printing (print
+            # takes a lock the interrupted frame may already hold) and no state
+            # work — the main thread does all of that once its wait wakes.
+            self._shutdown.set()
+
+        try:
+            signal.signal(signal.SIGTERM, _request_shutdown)
+            return True
+        except ValueError as e:
+            # signal.signal only works on the main thread of the main interpreter.
+            # An embedded or threaded host must still get a running bot, just
+            # without the graceful path — log it and carry on rather than refusing
+            # to start.
+            print(
+                f"WARNING: could not install the SIGTERM handler ({e}); shutdown will "
+                "not be graceful (the process will be killed after the stop grace)"
+            )
+            return False
+
+    def _wait_for_next_poll(self, seconds):
+        """Wait between poll cycles, but wake immediately on shutdown.
+
+        MUST stay an Event.wait and never go back to time.sleep(): a SIGTERM
+        arriving during the idle interval (teams_idle_poll_interval, 30s) would then
+        sit out the whole interval and be SIGKILLed before ever reaching the drain,
+        so the handler would be installed and do nothing. Returns True if shutdown
+        woke it, False on timeout — same contract as Event.wait.
+        """
+        return self._shutdown.wait(seconds)
+
+    def _graceful_shutdown(self):
+        """Stop accepting work, drain the in-flight answer, persist state.
+
+        Bounded by teams_shutdown_grace_seconds, which sits under Docker's stop
+        grace so this finishes before SIGKILL. The bound is safe by construction:
+        whatever does not finish in time is still in _inflight, so _save_state
+        leaves its id out of processed_messages AND holds the watermark behind it —
+        the next start re-delivers it. A timed-out drain therefore costs a re-asked
+        question, never a lost one, and never a duplicate answer.
+
+        The caller releases the PID lock (run()'s existing finally).
+        """
+        grace = settings.teams_shutdown_grace_seconds
+        print(f"\nShutdown requested (SIGTERM); draining the worker (grace {grace}s)...")
+        started = time.monotonic()
+        # Unblock a worker parked in _work_q.get(); a busy one finishes the answer
+        # it is on and then stops before taking another (see _worker_loop).
+        self._work_q.put(_WORKER_STOP)
+        worker = self._worker
+        if worker is not None:
+            worker.join(grace)
+        elapsed = time.monotonic() - started
+        if worker is None or not worker.is_alive():
+            print(f"Worker drained in {elapsed:.1f}s")
+        else:
+            print(
+                f"WARNING: worker still busy after {elapsed:.1f}s (grace {grace}s); "
+                "stopping without it — its message stays in flight and is re-delivered "
+                "on the next start"
+            )
+        with self._inflight_lock:
+            still_inflight = len(self._inflight)
+        self._save_state()
+        print(
+            f"State saved to {STATE_FILE} ({still_inflight} message(s) left in flight, "
+            "held for re-delivery on the next start)"
+        )
+
     def run(self):
+        graceful = self._install_signal_handler()
         self._acquire_pid_lock()
         try:
             # Inside the try: a failure to start the worker must still release the PID lock.
@@ -1050,17 +1156,22 @@ class TeamsBot:
                 f"{settings.teams_idle_poll_interval}s otherwise"
             )
             print("Workers: 1 (single-threaded by design — see _work_q comment)")
+            if graceful:
+                print(
+                    f"Shutdown: graceful on SIGTERM "
+                    f"(drain grace {settings.teams_shutdown_grace_seconds}s)"
+                )
             print("=" * 50)
             print("\nWaiting for messages...\n")
 
             consecutive_errors = 0
 
-            while True:
+            while not self._shutdown.is_set():
                 try:
                     self._ensure_worker()  # restarts the worker if it ever died
                     self.process_new_messages()
                     consecutive_errors = 0
-                    time.sleep(self._current_poll_interval(datetime.now(timezone.utc)))
+                    self._wait_for_next_poll(self._current_poll_interval(datetime.now(timezone.utc)))
                 except KeyboardInterrupt:
                     print("\n\nBot stopped by user")
                     break
@@ -1072,6 +1183,13 @@ class TeamsBot:
                         break
                     error_sleep = min(settings.teams_poll_interval * (2 ** consecutive_errors), 60)
                     print(f"Retrying in {error_sleep}s...")
-                    time.sleep(error_sleep)
+                    # Interruptible for the same reason as the poll wait above, and
+                    # more so: this backoff runs to 60s, six times Docker's stop grace.
+                    self._wait_for_next_poll(error_sleep)
+
+            # Only the SIGTERM path drains. A KeyboardInterrupt or the error-limit
+            # break falls straight through to the finally, exactly as before.
+            if self._shutdown.is_set():
+                self._graceful_shutdown()
         finally:
             self._release_pid_lock()
