@@ -1074,9 +1074,10 @@ class TeamsBot:
     def _install_signal_handler(self):
         """Stop cleanly on SIGTERM — what `docker compose restart/stop` sends first.
 
-        With no handler nothing acts on it: Docker waits out its stop grace (10s by
-        default; docker-compose-remote.yml sets no stop_grace_period) for an exit
-        that never comes, then SIGKILLs — so every deploy is a hard crash. That
+        With no handler nothing acts on it: Docker waits out its stop grace (now
+        pinned to 15s in docker-compose-remote.yml, above teams_shutdown_grace_seconds;
+        it used to be Docker's 10s default) for an exit that never comes, then
+        SIGKILLs — so every deploy is a hard crash. That
         costs real duplicate answers, because an answered id only becomes durable at
         the next _save_state, up to one poll cycle after the reply was sent; a kill
         inside that window leaves the persisted state saying "never processed" and
