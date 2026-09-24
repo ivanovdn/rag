@@ -1578,6 +1578,8 @@ Pass/fail on **citation accuracy** — `citation_doc_accuracy`, `citation_sectio
 
 Known signal to resolve here: on one covered question the new prompt produced **2 citations where the old prompt produced 3**, reproduced across three variations (tool-free, with tools, and with one cut repetition restored), so it is not noise and not caused by the trimming. Whether 2 or 3 is *correct* is what the labelled dataset answers. If citation accuracy regresses, the cut to restore first is the multi-source emphasis in `== RULES ==`.
 
+A transient backend failure on the shared host during the eval run produces rows with `status: "unavailable"`. Those rows score **0** on the four retrieval evaluators (`hit_evaluator`, `mrr_evaluator`, `retrieval_doc_hit`, `retrieval_section_hit`) **and** on `json_parse_success`, because `eval/run_experiment.py` sets `parse_success: False` on them. So a backend blip quietly depresses the exact numbers the ship decision rests on, and it looks like a regression in this branch. Before concluding the branch regressed, filter for `status: "unavailable"` rows and re-run if there are any.
+
 - [ ] **Step 6: Report before merging**
 
 Report the citation-accuracy deltas, the chosen threshold with its sample size, and the floor's rejection rate. Merging is a separate decision.
