@@ -171,9 +171,12 @@ class TeamsBot:
         self._hold_since: datetime | None = None
         # EXACTLY ONE worker consumes this queue. Do not raise the worker count.
         # rag/tools/search_policies.py keeps _retrieval_unavailable and
-        # _last_search_results as module globals, reset before an agent run and
-        # read ~16s later. A second worker interleaves those resets and turns a
-        # transient infra failure into a false content escalation, silently.
+        # _last_search_results as module globals. prefetch() (search-first,
+        # Task 5) resets then reads both itself, milliseconds apart and before
+        # the agent exists — narrower than the old ~16s agent-run window, not
+        # safer: a second worker can still interleave a reset with another's
+        # read and turn a transient infra failure into a false content
+        # escalation, silently.
         # Fix those globals (ToolCallResult.tool_output is per-request) before
         # ever running more than one.
         self._work_q: "queue.Queue[tuple[str, str, str, str, float]]" = queue.Queue()

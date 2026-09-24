@@ -91,7 +91,7 @@ ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFID
 - If `search_policies` returns `NO_RELEVANT_POLICY_FOUND` → escalate.
 - `init_observability()` must run FIRST in every entry point (before any LlamaIndex/Ollama import).
 - Never cache the LLM client across requests (no `lru_cache` on `get_llm`, no module-level client) — `_run_rag` uses a fresh `asyncio.run()` loop per request. See the gotchas table.
-- **Exactly one worker thread** consumes `_work_q` — `search_policies`' module globals (`_retrieval_unavailable`, `_last_search_results`) are reset-then-read across an agent run, so a second worker silently turns a transient infra failure into a false content escalation.
+- **Exactly one worker thread** consumes `_work_q` — `search_policies`' module globals (`_retrieval_unavailable`, `_last_search_results`) are reset-then-read inside `prefetch()`, milliseconds apart and before the agent exists — narrower than the old ~16s agent-run window, not safer: a second worker can still interleave a reset with another's read and silently turn a transient infra failure into a false content escalation.
 
 ## Code Style
 
