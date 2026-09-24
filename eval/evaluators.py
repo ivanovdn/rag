@@ -360,20 +360,6 @@ def agent_search_count(output, expected):
         return {"score": 0.5, "label": f"{n}_searches", "explanation": f"{n} searches — thrashing"}
 
 
-def agent_used_get_section(output, expected):
-    """Did agent call get_section? Optional — 0.5 if skipped, not penalized."""
-    if output is None:
-        return {"score": 0.0, "label": "error", "explanation": "Task returned None"}
-    meta = output.get("agent_metadata", {})
-    n = meta.get("num_section_fetches", 0)
-    fetches = meta.get("section_fetches", [])
-    if n == 0:
-        return {"score": 0.5, "label": "skipped", "explanation": "Skipped get_section (optional)"}
-    all_found = all(f["found"] for f in fetches)
-    return {"score": 1.0 if all_found else 0.5, "label": f"{n}_fetches",
-            "explanation": f"Fetched {n} section(s), all found: {all_found}"}
-
-
 # ============================================================
 # CONFIG EVALUATORS — show settings as columns in Phoenix
 # These return config values as labels, score is always 1.0.
@@ -423,7 +409,6 @@ GENERATION_EVALUATORS = [
 
 AGENT_EVALUATORS = [
     agent_search_count,
-    agent_used_get_section,
 ]
 
 TIER1_EVALUATORS = RETRIEVAL_EVALUATORS

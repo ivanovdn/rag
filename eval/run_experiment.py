@@ -113,20 +113,31 @@ def make_tier1_task(top_k: int):
 
 
 def make_agent_task(verbose: bool = False):
-    from eval.agent_wrapper import build_instrumented_agent, get_log, clear_log, parse_agent_response
+    from eval.agent_wrapper import (
+        build_instrumented_agent,
+        clear_log,
+        compose_agent_input,
+        get_log,
+        parse_agent_response,
+        prefetch_logged,
+    )
 
-    async def _run_fresh_agent(question, verbose):
+    async def _run_fresh_agent(agent_input, verbose):
         agent = build_instrumented_agent(verbose=verbose)
-        return await agent.run(question)
+        return await agent.run(agent_input)
 
     def e2e_task(input):
         question = input["question"]
         clear_log()
 
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(_run_fresh_agent(question, verbose))
+        pre = prefetch_logged(question)
 
-        parsed = parse_agent_response(str(result))
+        loop = asyncio.get_event_loop()
+        response = loop.run_until_complete(
+            _run_fresh_agent(compose_agent_input(question, pre.sources), verbose)
+        )
+
+        parsed = parse_agent_response(str(response))
         tool_calls = list(get_log())
 
         agent_search_results, search_queries = [], []
@@ -143,8 +154,7 @@ def make_agent_task(verbose: bool = False):
                 seen.add(key)
                 unique_results.append(r)
 
-        section_calls = [c for c in tool_calls if c["tool"] == "get_section"]
-        escalation_calls = [c for c in tool_calls if c["tool"] == "escalate_to_compliance"]
+        escalated = bool(parsed["escalation"].get("needed"))
 
         return {
             "answer": parsed["answer"],
@@ -156,13 +166,11 @@ def make_agent_task(verbose: bool = False):
             "agent_metadata": {
                 "search_queries": search_queries,
                 "num_searches": len(search_queries),
-                "num_section_fetches": len(section_calls),
-                "section_fetches": [
-                    {"doc_id": c["doc_id"], "section": c["section_name"], "found": c["found"]}
-                    for c in section_calls
-                ],
-                "escalated": len(escalation_calls) > 0,
-                "escalation_reason": escalation_calls[0]["reason"] if escalation_calls else None,
+                # Escalation is read from the JSON field, which is the only
+                # escalation path there has ever been in production — the tool
+                # that used to be counted here was never called.
+                "escalated": escalated,
+                "escalation_reason": parsed["escalation"].get("reason") or None,
             },
         }
     return e2e_task
