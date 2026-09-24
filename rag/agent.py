@@ -211,6 +211,12 @@ def build_agent() -> AgentWorkflow:
         tools_or_functions=ALL_TOOLS,
         llm=llm,
         system_prompt=SYSTEM_PROMPT,
-        verbose=True,
+        # Off: verbose=True prints ~20 [tick]/[run_agent_step] lines per question,
+        # which buries the bot's own log — the WARNING lines an operator actually
+        # needs (watermark holds, failed acks, force-advances) become unfindable
+        # once 30 people are asking. The same detail is in Phoenix, structured and
+        # searchable, which is where it belongs. Eval keeps its own verbose switch
+        # (eval/agent_wrapper.py build_instrumented_agent) for debugging runs.
+        verbose=False,
     )
     return agent
