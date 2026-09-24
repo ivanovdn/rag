@@ -54,7 +54,11 @@ def test_openai_like_disables_thinking(monkeypatch):
     assert llm.is_function_calling_model is True
     # Proves the timeout fix landed: OpenAILike has no `request_timeout`
     # field and silently drops it, leaving the SDK's 60s default.
-    assert llm.timeout == float(settings.active_request_timeout)
+    # Bind first: `settings` is never a bare name inside an assert line in
+    # this file, since pytest's assertion introspection would repr the
+    # whole Settings object (hf_token et al.) into the failure message.
+    request_timeout = float(settings.active_request_timeout)
+    assert llm.timeout == request_timeout
 
 
 def test_get_llm_builds_a_fresh_client_per_call(monkeypatch):
@@ -135,12 +139,22 @@ def test_the_agent_run_is_bounded_by_agent_timeout():
     from rag.agent import build_agent
 
     wf = build_agent()
-    assert wf._timeout == float(settings.agent_timeout)
+    # Bind first, same reason as elsewhere in this file: `settings` must
+    # never appear bare inside an assert line (pytest would repr the whole
+    # Settings object, including live secrets, on failure).
+    agent_timeout = float(settings.agent_timeout)
+    assert wf._timeout == agent_timeout
 
 
 def test_the_dead_agent_settings_are_gone():
     """agent_max_iterations could never be wired: neither FunctionAgent nor
     ReActAgent has such a field. escalation_ticket_prefix had exactly one
     consumer, the deleted escalate tool."""
-    assert not hasattr(settings, "agent_max_iterations")
-    assert not hasattr(settings, "escalation_ticket_prefix")
+    # Bind first: `settings` as a bare hasattr() argument gets reprd by
+    # pytest's assertion introspection on failure, dumping the whole
+    # Settings object (hf_token is its first field, and -vv disables the
+    # truncation that would otherwise hide it).
+    has_iterations = hasattr(settings, "agent_max_iterations")
+    has_prefix = hasattr(settings, "escalation_ticket_prefix")
+    assert not has_iterations
+    assert not has_prefix
