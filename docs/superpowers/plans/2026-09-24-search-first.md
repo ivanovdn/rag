@@ -414,7 +414,18 @@ NO_MATCH = "NO_RELEVANT_POLICY_FOUND"
 UNAVAILABLE = "POLICY_SEARCH_UNAVAILABLE"
 ```
 
-Replace every literal occurrence of those two strings in this file with the constants — the five `return "NO_RELEVANT_POLICY_FOUND"` sites, the two `return "POLICY_SEARCH_UNAVAILABLE"` sites, and the one inside `format_sources`. Leave the docstring prose alone.
+Replace every **string literal** occurrence of those two sentinels in this file with the constants. Do not work from a count — Task 1 added a return site, so grep for each literal and convert them all. Two shapes exist:
+
+- plain returns → `return NO_MATCH` / `return UNAVAILABLE`
+- the one inside `format_sources`, which embeds the sentinel in a larger string and therefore becomes an f-string:
+
+```python
+        return f"=== RETRIEVED POLICY SOURCES ===\n\n{NO_MATCH}"
+```
+
+Leave the English docstring prose ("Returns "NO_RELEVANT_POLICY_FOUND" if no policies match.") alone — it is documentation, not a value.
+
+Verify with `grep -n 'NO_RELEVANT_POLICY_FOUND\|POLICY_SEARCH_UNAVAILABLE' rag/tools/search_policies.py`: the only remaining literals must be the two constant definitions and the docstring line.
 
 - [ ] **Step 4: Create the module**
 
