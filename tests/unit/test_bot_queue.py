@@ -95,7 +95,11 @@ def test_rating_is_handled_inline_and_not_enqueued(monkeypatch, qbot):
 def test_worker_drains_job_and_clears_inflight(monkeypatch, qbot):
     monkeypatch.setattr(bot.settings, "router_enabled", False)
     monkeypatch.setattr(bot, "_run_rag",
-                        lambda q: {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}})
+                        lambda q: {
+                            "answer": "See AUP.",
+                            "citations": [{"doc_title": "AUP", "quote": "See AUP."}],
+                            "escalation": {"needed": False},
+                        })
     now = datetime.now(timezone.utc)
     qbot._handle_inbound("chat1", "Can I install software?", "Ann", "m1", now)
 
@@ -117,7 +121,11 @@ def test_worker_survives_an_exception_and_never_leaks_its_text(monkeypatch, qbot
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError(secret)
-        return {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}}
+        return {
+            "answer": "See AUP.",
+            "citations": [{"doc_title": "AUP", "quote": "See AUP."}],
+            "escalation": {"needed": False},
+        }
 
     monkeypatch.setattr(bot, "_run_rag", _rag)
     now = datetime.now(timezone.utc)
@@ -140,8 +148,16 @@ def test_undelivered_answer_is_logged_and_the_worker_moves_on(monkeypatch, qbot,
     """A reply POST that failed even after retries must not leave the user in silence."""
     monkeypatch.setattr(bot.settings, "router_enabled", False)
     answers = iter([
-        {"answer": "UNDELIVERABLE", "citations": [], "escalation": {"needed": False}},
-        {"answer": "second answer", "citations": [], "escalation": {"needed": False}},
+        {
+            "answer": "UNDELIVERABLE",
+            "citations": [{"doc_title": "AUP", "quote": "UNDELIVERABLE"}],
+            "escalation": {"needed": False},
+        },
+        {
+            "answer": "second answer",
+            "citations": [{"doc_title": "AUP", "quote": "second answer"}],
+            "escalation": {"needed": False},
+        },
     ])
     monkeypatch.setattr(bot, "_run_rag", lambda q: next(answers))
 

@@ -225,7 +225,11 @@ def test_outcome_attribute_set_on_answered_path(monkeypatch, request_span_tracer
     monkeypatch.setattr(
         bot_mod,
         "_run_rag",
-        lambda q: {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}},
+        lambda q: {
+            "answer": "See AUP.",
+            "citations": [{"doc_title": "AUP", "quote": "See AUP."}],
+            "escalation": {"needed": False},
+        },
     )
 
     teams_bot._answer("chat1", "Can I install software?")

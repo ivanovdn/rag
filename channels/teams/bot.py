@@ -741,14 +741,35 @@ class TeamsBot:
                     print("[worker] Unavailable notice sent")
                 return bool(sent)
 
-            # Render response
+            # Grounding backstop. CLAUDE.md: "Agent must never answer without
+            # citing a retrieved chunk." Two ways that was violated before, both
+            # reproduced: a failed parse falls back to escalation.needed=False
+            # with the raw model text as `answer`, and an answer with no
+            # citations rendered as bare prose. Both are escalations, and both
+            # get their own outcome so they stay countable in Phoenix instead of
+            # hiding inside "answered".
             escalation = result.get("escalation", {})
-            if escalation.get("needed"):
+            if not result.get("parse_success", True):
+                span.set_attribute("compliance_request.outcome", "escalated_parse_failure")
+                # A FIXED reason, never result["answer"] or raw_response: the
+                # renderer does not HTML-escape, so model output must not be
+                # interpolated into a message.
+                html = render_escalation(
+                    text,
+                    {"escalation": {"reason": "The answer could not be read in the expected format."}},
+                )
+            elif escalation.get("needed"):
                 span.set_attribute("compliance_request.outcome", "escalated")
                 html = render_escalation(text, result)
-            elif result.get("answer"):
+            elif result.get("answer") and result.get("citations"):
                 span.set_attribute("compliance_request.outcome", "answered")
                 html = render_answer(result)
+            elif result.get("answer"):
+                span.set_attribute("compliance_request.outcome", "escalated_ungrounded")
+                html = render_escalation(
+                    text,
+                    {"escalation": {"reason": "No policy source could be cited for this question."}},
+                )
             else:
                 span.set_attribute("compliance_request.outcome", "error")
                 html = render_error(text, "No answer returned from the pipeline.")

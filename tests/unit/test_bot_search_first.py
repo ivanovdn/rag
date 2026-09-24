@@ -86,3 +86,100 @@ def test_the_sources_reach_the_agent(monkeypatch):
 
     assert seen["msg"].startswith("Can I install software?")
     assert "[Source 1] AUP" in seen["msg"]
+
+
+# --- the grounding backstop -------------------------------------------------
+#
+# CLAUDE.md: "Agent must never answer without citing a retrieved chunk."
+# Two ways that was violated in production, both demonstrated:
+#   - a failed parse falls back to escalation.needed=False with the raw model
+#     text as `answer`, so bot.py renders it and logs outcome="answered"
+#   - an answer with zero citations renders as bare prose
+
+def _sent(monkeypatch, tmp_path, result):
+    """Run _answer with _run_rag stubbed; return (html, outcome)."""
+    import contextlib
+
+    import rag.observability as obs
+
+    # Hermetic: never read or write the developer's real bot_state.json / bot.pid.
+    monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
+    monkeypatch.setattr(bot, "PID_FILE", tmp_path / "bot.pid")
+
+    b = bot.TeamsBot(token_refresher=object())
+    captured = {}
+    monkeypatch.setattr(bot, "_run_rag", lambda q: result)
+    monkeypatch.setattr(bot.settings, "router_enabled", False)
+    monkeypatch.setattr(
+        b, "_send_message",
+        lambda chat_id, text, content_type="html", retry=False: captured.setdefault("html", text) or True,
+    )
+
+    class _Span:
+        def __init__(self):
+            self.attrs = {}
+
+        def set_attribute(self, k, v):
+            self.attrs[k] = v
+
+    span = _Span()
+
+    class _Tracer:
+        @contextlib.contextmanager
+        def start_as_current_span(self, name, **kwargs):
+            yield span
+
+    # _answer imports get_tracer INSIDE the function (the observability-first rule),
+    # so the module attribute is what the call resolves — patch it, not bot's.
+    monkeypatch.setattr(obs, "get_tracer", lambda: _Tracer())
+
+    b._answer("chat1", "Can I install software?", "Ann")
+    return captured.get("html", ""), span.attrs.get("compliance_request.outcome")
+
+
+def test_a_failed_parse_is_escalated_not_answered(monkeypatch, tmp_path):
+    html, outcome = _sent(monkeypatch, tmp_path, {
+        "answer": "ESCALATED: Ticket #ESC-2026-0001. They will respond within 2 business days.",
+        "citations": [],
+        "escalation": {"needed": False, "reason": ""},
+        "parse_success": False,
+    })
+
+    assert outcome == "escalated_parse_failure"
+    assert "ESC-2026-0001" not in html
+
+
+def test_the_parse_failure_reason_never_carries_model_text(monkeypatch, tmp_path):
+    """The renderer does not HTML-escape. Putting the raw response into `reason`
+    would interpolate arbitrary model output straight into a Teams message."""
+    html, _ = _sent(monkeypatch, tmp_path, {
+        "answer": "<script>alert(1)</script> and <b>markup</b>",
+        "citations": [],
+        "escalation": {"needed": False, "reason": ""},
+        "parse_success": False,
+    })
+
+    assert "<script>" not in html
+
+
+def test_an_answer_without_citations_is_escalated(monkeypatch, tmp_path):
+    html, outcome = _sent(monkeypatch, tmp_path, {
+        "answer": "You should ask IT before installing anything.",
+        "citations": [],
+        "escalation": {"needed": False, "reason": ""},
+        "parse_success": True,
+    })
+
+    assert outcome == "escalated_ungrounded"
+    assert "You should ask IT" not in html
+
+
+def test_a_cited_answer_is_still_answered(monkeypatch, tmp_path):
+    _, outcome = _sent(monkeypatch, tmp_path, {
+        "answer": "According to the AUP ...",
+        "citations": [{"doc_title": "AUP", "section": "Use", "clause": "", "clause_number": "4.7", "quote": "q"}],
+        "escalation": {"needed": False, "reason": ""},
+        "parse_success": True,
+    })
+
+    assert outcome == "answered"

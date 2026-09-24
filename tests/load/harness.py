@@ -312,7 +312,17 @@ def make_rag_stub(gate, record, errors):
             raise AssertionError("cycle gate never opened")
         token = question.split()[0]
         record.append(token)
-        return {"answer": f"{ANSWER_PREFIX}{token}", "citations": [], "escalation": {"needed": False}}
+        # A citation is required now: bot.py's grounding backstop (Task 6) escalates
+        # any answer with no citations instead of rendering it, so an uncited stub
+        # would never reach the html the assertions below scan for ANSWER_PREFIX.
+        # doc_title (not quote) carries the token: render_answer emits it as
+        # "<b>...{doc_title}</b>" with no character between the token and the "<",
+        # which is what answered_tokens()'s ANSWER_PREFIX(\S+?)</ regex requires.
+        return {
+            "answer": f"{ANSWER_PREFIX}{token}",
+            "citations": [{"doc_title": f"{ANSWER_PREFIX}{token}", "quote": "load-test citation"}],
+            "escalation": {"needed": False},
+        }
     return _rag
 
 

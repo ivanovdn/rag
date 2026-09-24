@@ -59,7 +59,11 @@ def test_in_scope_runs_rag_and_prompts_rating(monkeypatch, teams_bot):
     monkeypatch.setattr(bot.settings, "router_enabled", True)
     _force(monkeypatch, Category.IN_SCOPE)
     monkeypatch.setattr(bot, "_run_rag",
-                        lambda q: {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}})
+                        lambda q: {
+                            "answer": "See AUP.",
+                            "citations": [{"doc_title": "AUP", "quote": "See AUP."}],
+                            "escalation": {"needed": False},
+                        })
     teams_bot._answer("chat1", "Can I install software?")
     assert "chat1" in bot._pending_ratings  # rating prompt stored
     # Combined reply send: answer and rating prompt are one Graph call, not two.

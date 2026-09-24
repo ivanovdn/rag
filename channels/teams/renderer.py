@@ -77,8 +77,11 @@ def render_answer(result: dict) -> str:
     answer = result.get("answer", "")
 
     if not citations:
-        # Fallback to prose answer when there are no structured citations
-        return f"<p>{answer}</p>"
+        # Second line of defence. The bot escalates an uncited answer before it
+        # gets here (grounding backstop in bot.py), so reaching this point means
+        # that guard was bypassed. Returning the prose would violate CLAUDE.md's
+        # "never answer without citing a retrieved chunk".
+        raise ValueError("render_answer called with no citations")
 
     parts = []
     if len(citations) > 1:
