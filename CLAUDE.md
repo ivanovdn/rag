@@ -39,19 +39,21 @@ rag/
   response.py        # parse_agent_response() — JSON parser for agent output
   router.py          # pre-retrieval classify_message() + resolve() (greeting/in_scope/out_of_scope/unintelligible)
   resilience.py      # is_transient() + retry_transient() — classify/retry transient backend failures
-  observability.py   # Phoenix init + tracer + record_infra_unavailable() + record_classification()
+  observability.py   # Phoenix init + get_tracer() + record_infra_unavailable() + record_classification()
+                     #   one trace per question: compliance_request (root, question+outcome) wraps the
+                     #   router, the agent, and EMBEDDING/RETRIEVER/RERANKER spans on the retrieval leaves
   tools/             # search_policies (call FIRST), get_section, escalate_to_compliance
                      #   (clarify.py exists but is NOT imported/used)
 channels/teams/      # bot.py (poll→queue→1 worker; RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
 eval/                # evaluators.py, agent_wrapper.py, run_experiment.py
 scripts/             # ingest_all, test_query, run_eval, make_dataset, start_*.sh
-tests/               # unit/ (pure-logic) + docs/ (corpus parsing) + live/ (live-LLM accuracy); docs+live auto-skip; see SETUP.md Testing
+tests/               # unit/ (pure-logic) + load/ (offline 30-chat poll-loop soak) + docs/ (corpus parsing) + live/ (live-LLM accuracy); docs+live auto-skip; see SETUP.md Testing
 # stubs / not implemented: notification/ db/ frontend/ (empty React scaffold), notebooks/ (gitignored)
 ```
 
 **Search flow:** `embed_query → vector_search (RERANKER_CANDIDATES) → [BM25 RRF] → [rerank → top RERANKER_TOP_N] → format_sources()` with `[Source N]` headers. The 3 agent tools: `search_policies` (search+rerank+format, always first), `get_section` (full section by doc_id+section_name), `escalate_to_compliance`.
 
-**Message flow (Teams):** the poll thread runs `_handle_inbound` (commands, ratings, an immediate `ACK_HTML`) and enqueues onto `_work_q`; **exactly one** worker thread runs `_answer` (router + RAG + reply), so detection never blocks on the ~16s pipeline. `_ensure_worker()` restarts the worker if it dies. The persisted `last_check` is held behind in-flight messages so a restart re-delivers unanswered questions — at-least-once, bounded by the `TEAMS_MAX_STATE_AGE_MINUTES` clamp.
+**Message flow (Teams):** the poll thread runs `_handle_inbound` (commands, ratings, an immediate `ACK_HTML`) and enqueues onto `_work_q`; **exactly one** worker thread runs `_answer` (router + RAG + reply), so detection never blocks on the ~16s pipeline. `_ensure_worker()` restarts the worker if it dies. The persisted `last_check` is held behind in-flight messages so a restart re-delivers unanswered questions — at-least-once, bounded by the `TEAMS_MAX_STATE_AGE_MINUTES` clamp. The answer and its rating prompt go out as **one** Graph send (`<hr>`-joined), so rating capture can only be armed for a user who actually saw the prompt. On SIGTERM the bot drains the in-flight answer (`TEAMS_SHUTDOWN_GRACE_SECONDS`), saves state and exits 0 instead of being SIGKILLed — see the gotcha row for the two graces that must stay ordered.
 
 **Input classification (router):** before retrieval, `_answer` (when `ROUTER_ENABLED`) runs one temperature-0 LLM call (`rag/router.py` `classify_message`) tagging the message `greeting | in_scope | out_of_scope | unintelligible`. Only `in_scope` reaches the RAG pipeline; greeting→`WELCOME_HTML`, out_of_scope→`render_out_of_scope()`, unintelligible→`render_unintelligible()` (no search, no rating). **Safe-default invariant:** confidence `< ROUTER_CONFIDENCE_FLOOR`, or ANY classifier failure/unparseable output → `in_scope` (it can never refuse a real question). Logged to Phoenix via `record_classification` (`router_category/confidence/fallback/message` — full message recorded for audit). Editable tuning surface: `ROUTER_SYSTEM_PROMPT` (prompt+categories) in `rag/router.py`, the two messages in `renderer.py`.
 
@@ -76,6 +78,7 @@ EMBEDDING_QUERY_PREFIX / EMBEDDING_PASSAGE_PREFIX   RERANKER_BACKEND=llama-serve
 BM25_ENABLED (off)                        PHOENIX_ENDPOINT (Docker: http://phoenix:6006/v1/traces)
 TEAMS_TENANT_ID / CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN
 TEAMS_IDLE_POLL_INTERVAL (30s outside business hours) / TEAMS_BUSINESS_HOURS_START_UTC / _END_UTC (07-19 UTC Mon-Fri) / TEAMS_MESSAGES_PAGE_SIZE (5, $top per chat)
+TEAMS_SHUTDOWN_GRACE_SECONDS (12, SIGTERM drain; must stay under the bot service's stop_grace_period — 30s in docker-compose-remote.yml)
 ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFIDENCE_FLOOR (0.6)
 ```
 
@@ -118,5 +121,10 @@ ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFID
 | Qwen3 on `openai-compatible` silently thinks | `get_llm()`'s Ollama branch sets `thinking=False`; the `OpenAILike` branch needs `additional_kwargs={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}`. Measured 34.5s vs 2.2s for one router call — and it still parses, so it degrades quietly. |
 | Caching the LLM client (`lru_cache(get_llm)`, module-level `Ollama`) breaks every other question with `RuntimeError: Event loop is closed` | `_run_rag` uses `asyncio.run()` per request; llama-index's `Ollama` reuses one `httpx.AsyncClient` across loops. Not transient → false content escalation. Build a fresh client per call (guarded by `test_get_llm_builds_a_fresh_client_per_call`), or give the worker a persistent loop first. |
 | `⚠️ Policy service temporarily unavailable` reaches users; log shows repeated `AgentWorkflowStartEvent` cycles ending in `[worker] Unavailable notice sent` | Not a bot bug — retry-then-notice is the resilience layer working as designed. Root cause: a 5-condition Ollama crash — MoE model + constrained decoding (incl. tool-calling) + `think:false` + `num_ctx`≥4352 measured on our box, allocated not tokens used (upstream reports ≥8192) + host flash attention, all five required. Specific to tool-calling requests, not a poisoned runner — plain requests keep working; the apparent self-heal was likely our own diagnostic `curl` resetting `keep_alive`. Confirm with `curl http://172.20.0.22:11434/api/ps`. Upstream: ollama/ollama#17434 (open). Mechanism/matrix/options considered: `docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md`. |
+
+| Embedding takes ~1.6s per query and Qdrant is 13ms | `/api/embed` was sent without `keep_alive`, so the embedding model fell back to Ollama's **5-minute** default while the chat model held 30m — evicted between questions, so every query paid a reload. Measured 1,589ms vs **27ms** warm. Questions arrive sporadically, so the slow path was the common path. Pass `keep_alive` on every Ollama call, not just the chat one. |
+| Manual OTel spans come out as their own disconnected root traces | OpenInference's llama-index instrumentor uses `start_span`, never `start_as_current_span`, and never `attach`es — it threads parentage through its own handler chain, so the ambient context inside a tool is **empty**. Fix is to open one span in `_answer` and attach it (`compliance_request`); everything then nests under it. `run_in_executor` also drops `contextvars` — `search_policies_tool` passes an `async_fn` using `asyncio.to_thread` for that. Both are needed; neither alone works. |
+| A deploy re-delivers a question that was already answered | Two graces must stay ordered: `TEAMS_SHUTDOWN_GRACE_SECONDS` (12) **under** the bot service's `stop_grace_period` (30s). Python resumes an interrupted syscall after running a signal handler (PEP 475), so a SIGTERM inside a Graph call waits up to `TEAMS_API_TIMEOUT` before the loop notices — budget for that too. A cold answer (~16s) still exceeds the drain and times out safely: the message stays in flight and is re-delivered. |
+| Changing `last_check` logic | It fails in **two opposite directions** — advancing too eagerly loses questions permanently (`_should_process_message` also `_mark_processed`es them), holding too long duplicates answers to everyone. Fixing one is how you create the other, and the persistence path (`_save_state`) is part of any in-memory guard. Five defects so far; `tests/load/` exists to catch the sixth. Mutation-test guards here rather than reading them. |
 
 **Not yet implemented:** email escalation. (Tier-A pytest suite exists under `tests/`; Tier-B/C and CI still pending.)
