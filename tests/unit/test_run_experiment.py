@@ -38,3 +38,24 @@ def test_an_unavailable_retrieval_short_circuits_without_a_content_escalation(mo
     assert result["escalation"]["needed"] is False
     assert result["agent_metadata"]["escalated"] is False
     assert result["agent_metadata"]["num_searches"] == 1
+
+
+def test_a_no_match_search_escalates_without_building_the_agent(monkeypatch, no_agent):
+    """Sibling of the unavailable test above, same reasoning: patches
+    search_policies, not prefetch, so this fails if either half of the chain
+    breaks: prefetch's classification of the NO_MATCH sentinel, or e2e_task's
+    handling of a "no_match" PrefetchResult. Without this branch, an
+    out-of-corpus question would fall through to compose_agent_input(question,
+    "") with an agent actually built and run on an empty, markerless prompt.
+    """
+    monkeypatch.setattr(sp, "search_policies", lambda q, *a, **k: sp.NO_MATCH)
+
+    task = make_agent_task()
+    result = task({"question": "anything"})
+
+    assert result["status"] == "no_match"
+    assert result["escalation"]["needed"] is True
+    # Fixed text, not model-derived — no agent ran, so nothing else could have
+    # produced this string.
+    assert result["escalation"]["reason"] == "No relevant policy was found for this question."
+    assert result["agent_metadata"]["num_searches"] == 1
