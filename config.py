@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -116,11 +117,72 @@ class Settings(BaseSettings):
     teams_client_secret: str = ""
     teams_refresh_token: str = ""
     teams_poll_interval: int = 5
+    teams_idle_poll_interval: int = 30        # outside business hours / weekends
+    teams_business_hours_start_utc: int = 7   # fast polling from this UTC hour (inclusive), Mon-Fri...
+    teams_business_hours_end_utc: int = 19    # ...until this UTC hour (exclusive)
+    teams_messages_page_size: int = 5         # $top on the per-chat message fetch (Graph default: 20)
     teams_api_timeout: int = 10
     teams_initial_lookback_minutes: int = 5
     teams_max_state_age_minutes: int = 60   # clamp last_check older than this on startup (anti-backlog-flood)
     teams_max_consecutive_errors: int = 5
+    # A TRIGGER threshold, not a hard cap (branch review Fix B): crossing it makes
+    # _cleanup_processed_messages fire, and that removes only 20% of the current
+    # size — see its comment in bot.py. Resident size can run to roughly 5x this
+    # value, worse during a hold, when cleanup is gated (Ruling H) to fire at most
+    # once per teams_max_state_age_minutes instead of every cycle. Tune expecting
+    # "~5x this number" of memory/file size, not "this number".
     teams_max_processed_messages: int = 1000
+
+    @model_validator(mode="after")
+    def _validate_business_hours(self) -> "Settings":
+        """Warn (never crash) on a business-hours window that silently misbehaves.
+
+        TeamsBot._current_poll_interval compares these as plain ints against
+        datetime.hour (0-23); it never raises on a bad value, it just quietly
+        always returns one interval — start == end is an always-empty window
+        (always idle), and anything outside 0-23 (e.g. END=24, meant as
+        "midnight") doesn't behave the way that value implies.
+        """
+        start = self.teams_business_hours_start_utc
+        end = self.teams_business_hours_end_utc
+        if not (0 <= start <= 23) or not (0 <= end <= 23):
+            print(
+                f"WARNING: TEAMS_BUSINESS_HOURS_START_UTC/_END_UTC must be 0-23 "
+                f"(got start={start}, end={end}); hour comparisons will not behave as expected."
+            )
+        elif start == end:
+            print(
+                f"WARNING: TEAMS_BUSINESS_HOURS_START_UTC == TEAMS_BUSINESS_HOURS_END_UTC "
+                f"({start}); that window is always empty, so polling will always use the "
+                "idle interval, never the fast one."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_hold_bound(self) -> "Settings":
+        """Warn (never crash) if the runtime watermark hold could never release.
+
+        TeamsBot's force-advance (Ruling G, targeted per Ruling M) advances
+        last_check to `now - teams_initial_lookback_minutes` once a hold has
+        lasted longer than teams_max_state_age_minutes. That only guarantees
+        forward progress while the lookback is strictly smaller than the
+        bound — at or above it, a quiet cycle's force-advance can fail to
+        move last_check at all (or by a margin too small to matter), so the
+        hold never actually ends and the duplicate-answer path it exists to
+        prevent (R-1) reopens. A realistic way to reach this: raising
+        TEAMS_INITIAL_LOOKBACK_MINUTES after an incident without also raising
+        TEAMS_MAX_STATE_AGE_MINUTES.
+        """
+        lookback = self.teams_initial_lookback_minutes
+        bound = self.teams_max_state_age_minutes
+        if lookback >= bound:
+            print(
+                f"WARNING: TEAMS_INITIAL_LOOKBACK_MINUTES ({lookback}) >= "
+                f"TEAMS_MAX_STATE_AGE_MINUTES ({bound}); the runtime watermark hold "
+                "may never release, which can reopen the duplicate-answer path it "
+                "exists to prevent."
+            )
+        return self
 
     # Observability (Phoenix)
     phoenix_enabled: bool = True

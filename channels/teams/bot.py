@@ -32,6 +32,35 @@ GRAPH_API = "https://graph.microsoft.com/v1.0"
 STATE_FILE = Path("channels/teams/data/bot_state.json")
 PID_FILE = Path("channels/teams/data/bot.pid")
 
+# Graph pages /me/chats at 20 per page by default; 50 is the documented maximum.
+# Fewer pages per cycle — and _get_all_pages follows @odata.nextLink for the rest.
+_CHATS_PAGE_SIZE = 50
+# Hard caps on backward/forward pagination. Both guard against the same class of
+# failure: a page fetch that never terminates (a cyclic or self-referential
+# @odata.nextLink) would spin the poll thread forever without ever raising, so
+# consecutive_errors never trips and the bot goes silently dead while still
+# "running". Bounding every pagination loop means the worst case is a loud log
+# line and an incomplete cycle, never a hang.
+_CHATS_MAX_PAGES = 20      # /me/chats: bounds a cyclic/self-referential nextLink
+_MESSAGES_MAX_PAGES = 10   # per-chat messages: bounds how far back a burst pages
+
+# Branch review Fix D: this reach constant sets a ceiling on outage recovery,
+# not just burst handling. Once an outage runs longer than roughly
+# _MESSAGES_MAX_PAGES x teams_messages_page_size messages of traffic in a
+# chat, that chat can no longer page back far enough to reach the frozen
+# last_check once it recovers — so it stays "incomplete" AFTER the underlying
+# failure has cleared, and the hold runs all the way to Ruling G's
+# force-advance (teams_max_state_age_minutes) regardless. That makes a
+# full-length hold the NORMAL outcome of a long outage, not a worst case —
+# which is what makes the resident-size growth in Fix B/C's comments
+# (measured: 1723 ids / 136 KB for one full hold at 30 users) an expected
+# operating point, not an anomaly to chase.
+
+# Branch review Fix C: _load_state logs (never truncates) above this multiple
+# of teams_max_processed_messages — see _load_state for why truncation itself
+# would be the bug.
+_ABNORMAL_PROCESSED_MESSAGES_MULTIPLIER = 10
+
 _VALID_RATINGS = {"-1", "0", "1", "2"}
 
 # Bounded retry for transient Graph failures (timeouts, connection errors, 5xx).
@@ -121,6 +150,15 @@ class TeamsBot:
         state = self._load_state()
         self.last_check = state["last_check"]
         self.processed_messages = state["processed_messages"]
+        # Wall-clock time the current last_check hold began; None when not held.
+        # process_new_messages sets this the first cycle any fetch comes back
+        # incomplete, and clears it the moment last_check next advances (normally
+        # or by the force-advance below). Mirrors _load_state's startup staleness
+        # clamp, but enforced continuously at runtime: an unbounded hold lets
+        # _cleanup_processed_messages evict ids the frozen watermark still needs,
+        # and Ruling B's own back-paging then re-fetches and re-answers them — see
+        # process_new_messages for the bounded force-advance that prevents it.
+        self._hold_since: datetime | None = None
         # EXACTLY ONE worker consumes this queue. Do not raise the worker count.
         # rag/tools/search_policies.py keeps _retrieval_unavailable and
         # _last_search_results as module globals, reset before an agent run and
@@ -156,6 +194,26 @@ class TeamsBot:
             last_check = datetime.fromisoformat(data["last_check"])
             # dict, not set: insertion order is what makes eviction genuinely oldest-first.
             processed = dict.fromkeys(data.get("processed_messages", []))
+            # Branch review Fix C: visibility only, never a cap here. _load_state
+            # used to inherit a size bound for free, because the writer
+            # (_save_state) capped the file on every save — it no longer does
+            # (Fix 2 removed that slice; _cleanup_processed_messages, gated on
+            # fully_synced, is the only eviction site left). Truncating on load
+            # would drop ids that are still newer than last_check — exactly the
+            # duplicate-answer bug this branch spent four rounds eliminating —
+            # so this only logs. A full-length hold is the NORMAL outcome of a
+            # long outage (see Fix D, next to _MESSAGES_MAX_PAGES), so treat the
+            # warning below as "go look", not "something is broken".
+            print(f"Loaded {len(processed)} processed message id(s) from {STATE_FILE}")
+            abnormal_threshold = _ABNORMAL_PROCESSED_MESSAGES_MULTIPLIER * settings.teams_max_processed_messages
+            if len(processed) > abnormal_threshold:
+                print(
+                    f"WARNING: {len(processed)} processed message ids loaded from "
+                    f"{STATE_FILE} — more than {_ABNORMAL_PROCESSED_MESSAGES_MULTIPLIER}x "
+                    f"teams_max_processed_messages ({settings.teams_max_processed_messages}); "
+                    "worth checking for a chat stuck in a long hold. Visibility only — "
+                    "nothing here truncates it."
+                )
             # Clamp a stale last_check so a long-stopped bot can't treat the whole
             # backlog as new and answer it all into the channel. Normal restarts
             # (downtime < teams_max_state_age_minutes) still resume from last_check.
@@ -185,13 +243,32 @@ class TeamsBot:
         # outage the rewound watermark is discarded by the clamp, and these ids were
         # deliberately left out of processed_messages, so in-flight questions are lost
         # rather than re-delivered. That is the anti-backlog-flood trade, not a bug.
-        watermark = min(pending_times) - timedelta(milliseconds=1) if pending_times else self.last_check
+        #
+        # Branch review Fix 1: must never persist AHEAD of self.last_check. In the
+        # healthy case in-flight times are always <= last_check (a message is only
+        # ever in-flight because it was just accepted as newer-than-last_check, and
+        # last_check itself only ever advances to cover it in the same cycle), so
+        # min(pending) - 1ms already sits behind last_check and this floor changes
+        # nothing there — see test_saved_watermark_is_held_before_the_oldest_inflight_message
+        # and test_saved_watermark_is_last_check_when_nothing_inflight, unchanged, for that.
+        # But while last_check is HELD (frozen behind an unreadable chat), a healthy
+        # chat can keep producing in-flight messages far NEWER than the freeze point;
+        # without the floor, min(pending) - 1ms then runs ahead of the hold — reproduced
+        # as a 28-minute jump — and a restart loads that jumped watermark and marks
+        # everything the hold was protecting as old_message, permanently. self._hold_since
+        # is not itself persisted, but that is fine: _load_state's own staleness clamp
+        # (same teams_max_state_age_minutes) bounds a crash-looping restart the same way.
+        watermark = self.last_check
+        if pending_times:
+            watermark = min(watermark, min(pending_times) - timedelta(milliseconds=1))
 
-        # processed_messages is insertion-ordered, so this slice really is "the newest N".
-        ids = [
-            mid for mid in list(self.processed_messages)[-settings.teams_max_processed_messages:]
-            if mid not in pending_ids
-        ]
+        # Branch review Fix 2: no slice here. _cleanup_processed_messages (gated on
+        # fully_synced in process_new_messages) is the ONLY place eviction happens —
+        # this used to apply its own identical [-teams_max_processed_messages:] slice
+        # on every save, held or not, silently dropping ids while the in-memory
+        # cleanup was correctly blocked. Persist the set as-is; only in-flight ids
+        # are still held back, same as always.
+        ids = [mid for mid in self.processed_messages if mid not in pending_ids]
         # Atomic: this file is the sole carrier of the crash-recovery guarantee, and
         # a plain open("w") truncates first — a SIGKILL mid-dump would leave truncated
         # JSON, _load_state would fall back to its default, and every in-flight question
@@ -319,6 +396,114 @@ class TeamsBot:
         url = f"{GRAPH_API}/me/chats/{chat_id}/messages"
         payload = {"body": {"contentType": content_type, "content": text}}
         return self._api_request(url, method="POST", json_data=payload, retry=retry)
+
+    def _get_all_pages(self, url):
+        """GET a Graph collection, following @odata.nextLink until exhausted.
+
+        Graph pages every collection. Reading only the first page of /me/chats
+        silently stops polling chats past the first 20 — invisible at 5 users,
+        a dropped-user bug at 30.
+
+        Returns (items, complete). `complete` is False when a page fetch failed,
+        the page cap (_CHATS_MAX_PAGES) was hit, or a @odata.nextLink was revisited
+        (a cyclic or self-referential link would otherwise spin this loop, and
+        therefore the poll thread, forever). Running out of @odata.nextLink is the
+        only normal, complete termination.
+
+        The caller must not treat an incomplete result as the full chat list: see
+        process_new_messages, which holds last_check when this returns incomplete
+        so chats behind the gap are retried next cycle instead of being marked
+        "already seen" and lost for good.
+        """
+        items = []
+        seen_urls = set()
+        pages = 0
+        while url:
+            if pages >= _CHATS_MAX_PAGES:
+                print(
+                    f"WARNING: /me/chats pagination hit the {_CHATS_MAX_PAGES}-page cap; "
+                    "treating the chat list as incomplete this cycle"
+                )
+                return items, False
+            if url in seen_urls:
+                print(
+                    "WARNING: @odata.nextLink on /me/chats repeated a URL already "
+                    "fetched this cycle (cyclic or self-referential link?); stopping "
+                    "pagination and treating the chat list as incomplete this cycle"
+                )
+                return items, False
+            seen_urls.add(url)
+            pages += 1
+            data = self._api_request(url)
+            if not data:
+                return items, False
+            items.extend(data.get("value", []))
+            url = data.get("@odata.nextLink")
+        return items, True
+
+    def _get_chat_messages(self, chat_id):
+        """Fetch one chat's new messages, paging backward until the window covers last_check.
+
+        A fixed $top page only returns the newest N messages. That is enough in
+        the steady state — a quiet chat's newest teams_messages_page_size messages
+        already reach back past last_check — but two things make a burst of more
+        than N messages in one chat ordinary rather than exotic: the idle interval
+        is up to teams_idle_poll_interval seconds, and the bot itself posts 3
+        replies (ack, answer, rating prompt) into the same chat per question. A
+        fixed small page then silently drops the oldest messages in the burst, and
+        also breaks restart re-delivery: a message correctly held in-flight and
+        rewound in the persisted watermark becomes unfetchable once enough newer
+        messages push it off the single page.
+
+        So: follow @odata.nextLink, accumulating pages, until the oldest message
+        retrieved so far is at or before self.last_check — at that point the
+        window provably covers everything the watermark claims is unprocessed.
+        Capped at _MESSAGES_MAX_PAGES; a short chat history that runs out of
+        @odata.nextLink first is a normal, complete result, not a failure.
+
+        Returns (messages, complete). `complete` is False when the page cap was
+        hit, or a page fetch failed, before the window reached last_check — the
+        caller must not let this chat's absence of older messages advance the
+        global last_check watermark this cycle (same reasoning as _get_all_pages).
+        """
+        messages = []
+        oldest_seen = None
+        url = (
+            f"{GRAPH_API}/me/chats/{chat_id}/messages"
+            f"?$top={settings.teams_messages_page_size}"
+        )
+        for _ in range(_MESSAGES_MAX_PAGES):
+            data = self._api_request(url)
+            if not data:
+                print(
+                    f"WARNING: message fetch failed for chat {chat_id}; treating this "
+                    "chat as incomplete this cycle so the watermark is not advanced "
+                    "past unread messages"
+                )
+                return messages, False
+            page = data.get("value", []) or []
+            messages.extend(page)
+            for message in page:
+                stamp = (message or {}).get("createdDateTime")
+                if not stamp:
+                    continue
+                try:
+                    created = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if oldest_seen is None or created < oldest_seen:
+                    oldest_seen = created
+            if oldest_seen is not None and oldest_seen <= self.last_check:
+                return messages, True
+            url = data.get("@odata.nextLink")
+            if not url:
+                return messages, True  # short history; ran out of pages normally
+        print(
+            f"WARNING: message paging for chat {chat_id} hit the {_MESSAGES_MAX_PAGES}-page "
+            f"cap without reaching last_check ({self.last_check.isoformat()}); treating this "
+            "chat as incomplete this cycle so the watermark is not advanced past unread messages"
+        )
+        return messages, False
 
     # ------------------------------------------------------------------
     # Message processing
@@ -561,18 +746,70 @@ class TeamsBot:
         self.processed_messages[message_key] = None
 
     def _cleanup_processed_messages(self):
+        # Branch review Fix B: teams_max_processed_messages is a TRIGGER here,
+        # not a cap — crossing it fires this, and this removes only 20% of the
+        # current size (remove_count below), so resident size can run well past
+        # the configured number (roughly 5x it in practice). Worse during a
+        # hold: this only runs when fully_synced (Ruling H), i.e. at most once
+        # per teams_max_state_age_minutes instead of every cycle. An operator
+        # tuning this number to bound memory should expect "~5x this number",
+        # not "this number" — see the setting's own comment in config.py.
         if len(self.processed_messages) > settings.teams_max_processed_messages:
             remove_count = len(self.processed_messages) // 5
             self.processed_messages = dict.fromkeys(list(self.processed_messages)[remove_count:])
 
+    @staticmethod
+    def _current_poll_interval(now):
+        """Poll fast during the working week, slowly otherwise.
+
+        The bot is a business-hours tool; polling every 5s around the clock
+        spends roughly 70% of its Graph budget on hours nobody is asking.
+        `now` must be timezone-aware UTC. The window is configured in UTC
+        (default 07-19, i.e. 09/10-21/22 Kyiv) so it needs no tz database.
+
+        start/end need not be ordered: start > end (e.g. 22-6) is a window that
+        wraps past midnight, not an empty one — treating it as start <= hour < end
+        would silently degrade to always-idle for any wrapping configuration.
+        """
+        is_weekday = now.weekday() < 5
+        start = settings.teams_business_hours_start_utc
+        end = settings.teams_business_hours_end_utc
+        if start <= end:
+            is_business_hours = start <= now.hour < end
+        else:
+            is_business_hours = now.hour >= start or now.hour < end  # wraps past midnight
+        if is_weekday and is_business_hours:
+            return settings.teams_poll_interval
+        return settings.teams_idle_poll_interval
+
     def process_new_messages(self):
+        """One poll cycle: read the chat list, read each chat's new messages, answer.
+
+        last_check only advances when every fetch this cycle succeeded in full —
+        see the `fully_synced` handling after the main loop below, and R-1 in
+        task-4-rereview.md for why an *unbounded* hold on that watermark is itself
+        a bug (it lets _cleanup_processed_messages evict ids the hold still needs,
+        which then get re-fetched and re-answered by Ruling B's own back-paging).
+        """
         my_user_id = self._get_my_user_id()
         if not my_user_id:
             return
 
-        url = f"{GRAPH_API}/me/chats"
-        chats_data = self._api_request(url)
-        chats = chats_data.get("value", []) if chats_data else []
+        url = f"{GRAPH_API}/me/chats?$top={_CHATS_PAGE_SIZE}"
+        chats, fully_synced = self._get_all_pages(url)
+        # Remembered past this point (fully_synced gets overwritten below) so the
+        # force-advance warning can say WHICH kind of incompleteness this cycle
+        # had — Fix 6: "a chat" undersold it when the chat list itself is what
+        # failed (e.g. a revoked refresh token surfacing as a swallowed 401),
+        # which affects every chat's traffic, not one.
+        chat_list_incomplete = not fully_synced
+        any_chat_incomplete = False
+        if chat_list_incomplete:
+            print(
+                f"WARNING: chat list fetch incomplete ({len(chats)} chat(s) retrieved); "
+                "processing them but holding last_check so the chats behind the gap are "
+                "retried next cycle instead of being marked as already seen"
+            )
 
         newest_message_time = self.last_check
 
@@ -583,9 +820,16 @@ class TeamsBot:
             if not chat_id:
                 continue
 
-            messages_url = f"{GRAPH_API}/me/chats/{chat_id}/messages"
-            messages_data = self._api_request(messages_url)
-            messages = messages_data.get("value", []) if messages_data else []
+            messages, chat_complete = self._get_chat_messages(chat_id)
+            if not chat_complete:
+                # _get_chat_messages logs a WARNING on every path that returns
+                # complete=False (fetch failure or page-cap exhaustion) — see its
+                # docstring; both branches print before returning. This chat's
+                # unread history is not fully in hand, so — same reasoning as the
+                # chat-list case above — the cycle as a whole cannot advance
+                # last_check without risking messages behind the gap.
+                fully_synced = False
+                any_chat_incomplete = True
             # Graph returns newest-first. Answer people in the order they asked:
             # createdDateTime is a fixed-width ISO-8601 UTC string, so it sorts
             # chronologically as text. The watermark logic below is order-agnostic.
@@ -625,9 +869,107 @@ class TeamsBot:
                     created_time=created_time,
                 )
 
-        if newest_message_time > self.last_check:
-            self.last_check = newest_message_time
-        self._cleanup_processed_messages()
+        if fully_synced:
+            self._hold_since = None
+            # Known, pre-existing, out of this branch's scope (branch review
+            # finding 8): newest_message_time is the max across ALL chats, so a
+            # message arriving in chat A after A's own fetch, earlier this same
+            # cycle, is buried if a later-read chat carries something newer —
+            # the identical intra-cycle race Ruling M reasons about for the
+            # force-advance below, just unguarded here. Unchanged since before
+            # this branch; the window is a fraction of one poll cycle. Not
+            # widening this branch's scope to fix it — recorded here so the
+            # asymmetry with the force-advance's ten lines of reasoning reads
+            # as a deliberate choice, not an oversight.
+            if newest_message_time > self.last_check:
+                self.last_check = newest_message_time
+        else:
+            # Bound the hold (Ruling G / R-1) — mirrors _load_state's startup
+            # staleness clamp, applied continuously at runtime instead of only at
+            # startup. Without this, one persistently-unreadable chat freezes
+            # last_check forever: nothing here raises, so run()'s
+            # consecutive_errors guard never trips; every message after the
+            # freeze point stays permanently "new" by timestamp
+            # (_should_process_message); and _cleanup_processed_messages evicts
+            # the oldest ids with no regard for the freeze, so Ruling B's own
+            # back-paging then re-fetches and re-answers them — the exact
+            # "bot spams old answers" incident this project already fixed once
+            # for the restart path. A bounded, logged, one-time skip is strictly
+            # better than an unbounded stream of duplicate answers to everyone
+            # else — but "whatever is stuck behind an unreadable chat" undersells
+            # it (branch review Fix 6): this same path fires when the CHAT LIST
+            # itself is unreadable (e.g. a revoked refresh token surfacing as a
+            # swallowed 401, since _api_request never raises on one), in which
+            # case it is not one chat's traffic that gets skipped but everyone's,
+            # for up to teams_max_state_age_minutes. Either way nothing raises,
+            # so run()'s consecutive_errors guard never trips and the process
+            # looks healthy throughout — the WARNING below, which now says which
+            # of the two happened, is the only signal.
+            now = datetime.now(timezone.utc)
+            if self._hold_since is None:
+                self._hold_since = now
+            held_for = now - self._hold_since
+            if held_for > timedelta(minutes=settings.teams_max_state_age_minutes):
+                # Target now - teams_initial_lookback_minutes, not now itself
+                # (Ruling M): advancing all the way to now would silently bury
+                # any message that arrives in a HEALTHY chat between that
+                # chat's fetch earlier in this cycle and this point, later in
+                # the same cycle — narrow, but exactly the silent loss this fix
+                # exists to eliminate. _load_state's startup clamp — the
+                # precedent this whole force-advance mirrors — makes the same
+                # choice for the same reason: it resets to now - lookback, not
+                # to now, deliberately leaving a small re-read window rather
+                # than a hard cut at the instant of recovery. Re-reading that
+                # window cannot create a duplicate: Ruling H has been blocking
+                # eviction for the whole hold, so every id a healthy chat
+                # already produced in that window is still in
+                # processed_messages, and _should_process_message rejects it
+                # by key before it ever reaches the timestamp check.
+                forced_watermark = max(
+                    newest_message_time,
+                    now - timedelta(minutes=settings.teams_initial_lookback_minutes),
+                )
+                # Fix 6: say which kind of incompleteness this is. "A chat" reads
+                # as one user's traffic; "the chat list itself" is everyone's.
+                if chat_list_incomplete:
+                    scope = (
+                        "the chat list itself was unreadable this cycle, so every "
+                        "chat's traffic (not just one) may be affected"
+                    )
+                elif any_chat_incomplete:
+                    scope = "one or more individual chats were unreadable this cycle"
+                else:
+                    # Defensive: fully_synced is False, so one of the two flags
+                    # above should always be set. Should not be reachable.
+                    scope = "an unrecognized incompleteness"
+                print(
+                    f"WARNING: last_check held for {held_for} (exceeds "
+                    f"{settings.teams_max_state_age_minutes} min) because {scope}; "
+                    f"force-advancing to {forced_watermark.isoformat()} anyway. "
+                    "Messages in the affected chat(s) may be permanently skipped."
+                )
+                self.last_check = forced_watermark
+                # The hold is over: treat this cycle as synced from here on (the
+                # cleanup gate below may run), and — this is what un-latches a
+                # chat that by itself holds the freeze once far enough behind
+                # (R-1's "self-latching" case) — a still-unreadable chat starts a
+                # brand new hold timer against the now-current watermark rather
+                # than perpetuating this one. It also re-bounds Ruling B's
+                # back-paging reach (R-3): reach only grows with how long the
+                # hold has run, and the hold is now capped.
+                fully_synced = True
+                self._hold_since = None
+
+        # Ruling H: never evict while the watermark is held. An evicted id is
+        # precisely what becomes re-answerable once its chat's back-paging (Ruling
+        # B) reaches far enough to refetch it — eviction and an active hold must
+        # never overlap. Safe to run immediately after a forced advance above:
+        # the hold (if any) has just ended for this cycle. _cleanup_processed_messages
+        # is the ONLY place eviction happens: _save_state (branch review Fix 2) no
+        # longer applies its own slice, so there is nothing else to gate — a second,
+        # ungated eviction site is exactly how this comment went false once already.
+        if fully_synced:
+            self._cleanup_processed_messages()
         self._save_state()
 
     # ------------------------------------------------------------------
@@ -642,7 +984,11 @@ class TeamsBot:
             print("Starting Compliance Teams Bot...")
             print("=" * 50)
             print(f"LLM: {settings.llm_model} ({settings.active_ollama_url})")
-            print(f"Polling every {settings.teams_poll_interval}s")
+            print(
+                f"Polling every {settings.teams_poll_interval}s "
+                f"({settings.teams_business_hours_start_utc:02d}-{settings.teams_business_hours_end_utc:02d} UTC Mon-Fri), "
+                f"{settings.teams_idle_poll_interval}s otherwise"
+            )
             print("Workers: 1 (single-threaded by design — see _work_q comment)")
             print("=" * 50)
             print("\nWaiting for messages...\n")
@@ -654,7 +1000,7 @@ class TeamsBot:
                     self._ensure_worker()  # restarts the worker if it ever died
                     self.process_new_messages()
                     consecutive_errors = 0
-                    time.sleep(settings.teams_poll_interval)
+                    time.sleep(self._current_poll_interval(datetime.now(timezone.utc)))
                 except KeyboardInterrupt:
                     print("\n\nBot stopped by user")
                     break

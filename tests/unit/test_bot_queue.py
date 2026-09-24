@@ -197,6 +197,49 @@ def test_saved_watermark_is_last_check_when_nothing_inflight(qbot, tmp_path, mon
     assert datetime.fromisoformat(saved["last_check"]) == now
 
 
+def test_saved_watermark_never_advances_past_a_held_last_check(qbot, tmp_path, monkeypatch):
+    """Branch review Fix 1: while last_check is HELD (frozen behind an unreadable
+    chat), a healthy chat can keep producing in-flight messages far NEWER than the
+    freeze point. The old formula (min(pending) - 1ms, no floor against last_check)
+    then persisted a watermark AHEAD of the hold -- reproduced in the review as a
+    28-minute jump. A restart loading that jumped watermark permanently marks
+    everything the hold was protecting as old_message. min(self.last_check, ...)
+    must keep the persisted value pinned behind the freeze regardless of how much
+    newer the in-flight message is."""
+    monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
+    frozen = datetime.now(timezone.utc) - timedelta(minutes=30)
+    much_newer_inflight = datetime.now(timezone.utc)  # a healthy chat, well after the freeze
+    qbot.last_check = frozen
+    qbot.processed_messages = dict.fromkeys(["m1"])
+    qbot._inflight = {"m1": much_newer_inflight}
+
+    qbot._save_state()
+    saved = json.loads((tmp_path / "bot_state.json").read_text())
+
+    assert datetime.fromisoformat(saved["last_check"]) == frozen
+
+
+def test_save_state_never_evicts_on_its_own(qbot, tmp_path, monkeypatch):
+    """Branch review Fix 2: _save_state used to apply its own, identical
+    [-teams_max_processed_messages:] slice on every call, regardless of whether
+    the watermark was held -- a second, ungated eviction site alongside the
+    correctly-gated _cleanup_processed_messages, and one that made the "Ruling H:
+    never evict while the watermark is held" comment false. Reproduced in the
+    review as 5 ids silently dropped from the persisted file while held.
+    _save_state must never evict at all now -- only the gated
+    _cleanup_processed_messages may -- regardless of whether this specific call
+    happens during a hold."""
+    monkeypatch.setattr(bot, "STATE_FILE", tmp_path / "bot_state.json")
+    monkeypatch.setattr(bot.settings, "teams_max_processed_messages", 10)
+    qbot.processed_messages = dict.fromkeys([f"k{i}" for i in range(15)])  # over the cap
+    qbot._inflight = {}
+
+    qbot._save_state()
+    saved = json.loads((tmp_path / "bot_state.json").read_text())
+
+    assert len(saved["processed_messages"]) == 15
+
+
 def test_ensure_worker_is_idempotent_while_alive(qbot):
     """The headline invariant: exactly one worker, never more."""
     qbot._ensure_worker()
@@ -233,7 +276,9 @@ def test_messages_are_enqueued_oldest_first(qbot, monkeypatch):
                 "createdDateTime": stamp, "body": {"content": f"question {n}"}}
 
     def _api(url, method="GET", json_data=None, retry=False):
-        if url.endswith("/me/chats"):
+        # Match on the chat-list call without assuming its exact query string:
+        # it now carries "$top=..." (Task 4) and may gain "$expand=..." (Task 5).
+        if "/messages" not in url:
             return {"value": [{"id": "chat1"}]}
         return {"value": [_msg(3), _msg(1), _msg(2)]}  # newest-first, as Graph returns
 

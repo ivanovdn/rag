@@ -2,7 +2,7 @@
 
 Internal Compliance Q&A bot using **Agentic RAG** (LlamaIndex `AgentWorkflow`, multi-tool). Answers employee questions **strictly from approved internal policy DOCX files**; if an answer can't be grounded in policy, it escalates to Compliance with full context.
 
-**Channels:** Microsoft Teams only (polls Graph `/me/chats` every 5s, imports RAG directly — no HTTP). The bot is the sole entry point; there is no HTTP API.
+**Channels:** Microsoft Teams only (polls Graph `/me/chats` every 5s in business hours / 30s otherwise — configurable via `TEAMS_POLL_INTERVAL`/`TEAMS_IDLE_POLL_INTERVAL`/`TEAMS_BUSINESS_HOURS_START_UTC`/`_END_UTC`, UTC Mon-Fri window; imports RAG directly — no HTTP). The bot is the sole entry point; there is no HTTP API.
 **Deployment:** runs in Docker on a remote **Linux** host (`docker-compose-remote.yml`). All models + Qdrant live on an **NVIDIA Spark** box (`172.20.0.22`); the bot connects out to them. Local dev (everything on localhost) is still supported via env toggles.
 
 ## Commands
@@ -75,6 +75,7 @@ EMBEDDING_SOURCE=huggingface|ollama       EMBEDDING_MODEL / QDRANT_VECTOR_DIM mu
 EMBEDDING_QUERY_PREFIX / EMBEDDING_PASSAGE_PREFIX   RERANKER_BACKEND=llama-server|vllm
 BM25_ENABLED (off)                        PHOENIX_ENDPOINT (Docker: http://phoenix:6006/v1/traces)
 TEAMS_TENANT_ID / CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN
+TEAMS_IDLE_POLL_INTERVAL (30s outside business hours) / TEAMS_BUSINESS_HOURS_START_UTC / _END_UTC (07-19 UTC Mon-Fri) / TEAMS_MESSAGES_PAGE_SIZE (5, $top per chat)
 ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFIDENCE_FLOOR (0.6)
 ```
 
