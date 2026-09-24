@@ -24,12 +24,19 @@ class Settings(BaseSettings):
     # then pays a reload (measured 3.8s-51.7s on the shared host). Not
     # unbounded: the box is shared with other projects.
     ollama_keep_alive: str = "30m"
-    # Allocated Ollama context window (num_ctx). 4096 is the ONLY value the
-    # upstream MoE+CUDA crash matrix proved safe — see
-    # docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md. This is a
-    # crash-avoidance value, not a performance knob: do not raise it without
-    # re-measuring against that spec.
-    ollama_num_ctx: int = 4096
+    # Allocated Ollama context window (num_ctx). Back to 8192 on 2026-09-24:
+    # the Spark admin set OLLAMA_FLASH_ATTENTION=0, which removes one of the
+    # five conditions the MoE+CUDA fault requires, and 4352/6144/8192 were
+    # re-measured against the live host as passing where each had previously
+    # been a deterministic CUDA 500. 4096 was always tight — the largest real
+    # request measured 3,544 tokens combined, leaving ~550 of headroom.
+    # THIS SETTING REMAINS THE ESCAPE HATCH. Flash attention lives on a host
+    # this project does not own; if another team re-enables it during an
+    # upgrade the crash returns with no notice, and the symptom is
+    # "⚠️ Policy service temporarily unavailable" reaching users. Recovery is
+    # OLLAMA_NUM_CTX=4096 in .env plus a restart — no code change, no deploy.
+    # See docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md.
+    ollama_num_ctx: int = 8192
 
     # LLM backend
     llm_backend: str = "ollama"  # "ollama" or "openai-compatible"

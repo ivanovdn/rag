@@ -20,24 +20,36 @@ def test_ollama_keep_alive_default_is_longer_than_ollama_default():
 
 def test_ollama_llm_gets_num_ctx_from_settings(monkeypatch):
     monkeypatch.setattr(settings, "llm_backend", "ollama")
-    # Distinctive value: neither the old hardcoded 8192 nor the 4096
-    # default, so this can only pass if num_ctx truly flows from settings.
+    # Distinctive value matching no default this setting has ever had, so
+    # this can only pass if num_ctx truly flows from settings — that is what
+    # makes OLLAMA_NUM_CTX a .env-only escape hatch if the MoE+CUDA fault
+    # ever returns (see the setting's comment in config.py).
     monkeypatch.setattr(settings, "ollama_num_ctx", 12345)
     llm = get_llm()
     assert llm.additional_kwargs["num_ctx"] == 12345
 
 
-def test_ollama_num_ctx_default_is_below_crash_threshold():
-    # num_ctx >= 8192 is one of five conditions for the reproducible
-    # MoE+CUDA crash documented in
-    # docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md. The
-    # upstream crash matrix proved only 4096 safe; this guard fails the
-    # suite if the default is ever raised back past that boundary.
-    # Bind to a local first (not `assert settings.ollama_num_ctx < 8192`
-    # directly) so a failure's pytest introspection never prints the
-    # Settings repr, which carries live secrets (hf_token, smtp_password, …).
-    value = settings.ollama_num_ctx
-    assert value < 8192
+def test_num_predict_and_the_largest_real_prompt_fit_inside_num_ctx():
+    # Replaces test_ollama_num_ctx_default_is_below_crash_threshold, which
+    # asserted num_ctx < 8192. That guard existed because num_ctx >= 4352 was
+    # one of five conditions for the MoE+CUDA crash; the Spark admin set
+    # OLLAMA_FLASH_ATTENTION=0 on 2026-09-24, removing a different one of the
+    # five, and 4352/6144/8192 were then re-measured against the live host as
+    # passing where each had previously been a deterministic CUDA 500. The
+    # ceiling is gone, so the old assertion is obsolete rather than relaxed.
+    #
+    # What still matters is sizing: num_predict is the completion cap, and it
+    # has to coexist with the prompt inside num_ctx or answers get silently
+    # truncated mid-JSON. 3,140 tokens is the largest prompt measured over 83
+    # Phoenix LLM spans. This fails if someone raises num_predict or lowers
+    # num_ctx until they can no longer both fit.
+    #
+    # Bind to locals first so a failure's pytest introspection never prints
+    # the Settings repr, which carries live secrets (hf_token, smtp_password…).
+    largest_observed_prompt = 3140
+    num_ctx = settings.ollama_num_ctx
+    num_predict = get_llm().additional_kwargs["num_predict"]
+    assert num_predict + largest_observed_prompt <= num_ctx
 
 
 def test_openai_like_disables_thinking(monkeypatch):

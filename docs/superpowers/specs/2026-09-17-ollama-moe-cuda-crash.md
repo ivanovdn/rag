@@ -139,3 +139,51 @@ This resolves what earlier drafts of this document left open: the cause is a hos
 ---
 
 **See also:** `CLAUDE.md` → Gotchas / Lessons Learned (short version, log signature); `docs/superpowers/specs/2026-09-16-scaling-audit.md` (host contention, MoE model profile, the `keep_alive`/eviction backdrop this incident sits on).
+
+---
+
+## 9. Resolved 2026-09-24 — flash attention disabled on the host
+
+The Spark admin set `OLLAMA_FLASH_ATTENTION=0`. That removes the fifth of the five
+conditions, so the `num_ctx` ceiling this spec was written to work around no longer
+applies. `num_ctx` is back to **8192** and `num_predict` to **4096** — the values
+that ran for months before the incident.
+
+**Re-measured against the live host before changing anything**, through the same
+tool-calling path that produced the fault (MoE model, `think:false`, a tool schema,
+temperature 0):
+
+| `num_ctx` | before (§4 sweep) | 2026-09-24 |
+|---|---|---|
+| 4096 | OK | OK (1.2s) |
+| 4352 | **FAIL — CUDA 500** | OK (6.8s) |
+| 6144 | **FAIL — CUDA 500** | OK (6.5s) |
+| 8192 | **FAIL — CUDA 500** | OK (6.4s) |
+| 8192 + `num_predict` 4096 | **FAIL — CUDA 500** | OK, **5 consecutive runs** |
+
+Every value that previously failed deterministically now passes. The fault was
+never intermittent, so this is conclusive rather than suggestive.
+
+**Why restore rather than stay at 4096.** 4096 was always tight, and §6 recorded
+that as the cost of taking it: the largest real request measured 3,544 tokens
+combined (3,140 prompt + 617 completion over 83 Phoenix spans), leaving ~550 tokens
+of headroom, and a worst-case prompt left ~230 for an answer whose observed maximum
+is 617. 8192 restores roughly 2.3x headroom over the largest request we have ever
+actually served.
+
+**Residual risk — unchanged, and now the only one that matters.** Flash attention is
+set on a host this project does not own (see `spark-shared-not-owned`). Another team
+re-enabling it during an upgrade brings the crash back with no notice, and the
+user-visible symptom is "⚠️ Policy service temporarily unavailable". Recovery needs
+no code change and no deploy: set `OLLAMA_NUM_CTX=4096` in `.env` and restart. That
+is why the value stays a setting rather than becoming a constant again, and why
+`test_ollama_llm_gets_num_ctx_from_settings` guards that it really flows from config.
+
+The guard test `test_ollama_num_ctx_default_is_below_crash_threshold` is retired —
+its premise is gone. It is replaced by
+`test_num_predict_and_the_largest_real_prompt_fit_inside_num_ctx`, which guards the
+sizing invariant that outlives the crash: the completion cap and the largest real
+prompt must both fit inside `num_ctx`, or answers truncate mid-JSON.
+
+Upstream ollama/ollama#17434 remains open; nothing here fixes the Ollama bug, it
+only stops us meeting one of its preconditions.

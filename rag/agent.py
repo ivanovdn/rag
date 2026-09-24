@@ -194,13 +194,19 @@ def get_llm(model: str | None = None):
             temperature=settings.llm_temperature,
             thinking=False,
             keep_alive=settings.ollama_keep_alive,
-            # num_ctx: settings.ollama_num_ctx (4096) is the only value the
-            # upstream crash matrix proved safe against the MoE+CUDA fault —
-            # see docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md.
-            # num_predict=1024 is ~66% headroom over the observed max
-            # completion (617 tokens, Phoenix spans) and, unlike the old
-            # 4096, actually fits alongside the prompt in that same window.
-            additional_kwargs={"num_predict": 1024, "num_ctx": settings.ollama_num_ctx},
+            # Both restored to their pre-crash values on 2026-09-24, after the
+            # Spark admin set OLLAMA_FLASH_ATTENTION=0 — that removes the fifth
+            # of the five conditions the MoE+CUDA fault needs, so the num_ctx
+            # ceiling is gone. Re-measured against the live host before changing
+            # this, not assumed: 4352/6144/8192 (each previously a deterministic
+            # CUDA 500 through the tool-calling path) all returned 200, and the
+            # 8192/4096 pair passed five consecutive runs.
+            # num_predict=4096 fits alongside the largest observed prompt
+            # (3,140 tokens) inside num_ctx 8192; observed max completion is 617.
+            # See docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md for
+            # the matrix and for the residual risk — flash attention is set on a
+            # host this project does not own.
+            additional_kwargs={"num_predict": 4096, "num_ctx": settings.ollama_num_ctx},
         )
 
 
