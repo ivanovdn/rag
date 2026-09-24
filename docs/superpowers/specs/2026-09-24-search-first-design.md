@@ -42,11 +42,32 @@ check for citations, and `parse_success` is read only by `eval/` and tests — n
 `bot.py`. `channels/teams/renderer.py:79-80` then renders a citation-less answer as bare
 prose. This directly violates the grounding constraint.
 
+**4. The relevance floor is dead in production.** `rag/tools/search_policies.py:81`
+applies `min_confidence_score` **only when the reranker is off**, and production runs
+`RERANKER_ENABLED=true`:
+
+```python
+if not settings.reranker_enabled and raw[0].score < settings.min_confidence_score:
+    return "NO_RELEVANT_POLICY_FOUND"
+```
+
+So the sentinel requires Qdrant to return literally zero rows — which will not happen
+against a populated collection. Retrieval always returns `reranker_top_n` sources however
+irrelevant they are (the uncovered-question probe got six "No Retaliation" clauses and no
+sentinel), and the only thing standing between that and a user is the model's judgment.
+
+Meanwhile `rerank_score` — documented at `rag/reranker.py:122` as a **0.0-1.0 relevance
+probability**, captured into `_last_search_results`, and already emitted to Phoenix as
+`reranker.top_score` (`rag/reranker.py:145`) — is computed for every question and used for
+nothing.
+
 ## Goal
 
 - Retrieval is unconditional and happens in code, not by model choice.
 - Fixed per-request overhead drops from 1,883 to 572 tokens.
 - No answer reaches a user without a citation and a successful parse.
+- "Retrieval found nothing relevant" becomes a number decided in code, not a judgement
+  the model is trusted to make.
 
 ---
 
@@ -151,6 +172,22 @@ nominal: at the largest observed source payload the answer budget rises from 956
 2,267. Observed max completion is 617 tokens, so nothing is truncating and raising the cap
 would be speculative. 2048 would also fit (3,896 < 4,096) if truncation is ever observed.
 
+**D8 — The relevance floor is wired to `rerank_score`.** After reranking,
+`results[0]["rerank_score"] < settings.reranker_min_score` returns
+`NO_RELEVANT_POLICY_FOUND`. This is what makes escalation layer 1 real; without it that
+layer almost never fires.
+
+A **new** setting, not a reuse of `min_confidence_score`: cosine similarity and a reranker
+relevance probability are different scales, and one knob for both would be a latent bug.
+`min_confidence_score` keeps its existing reranker-off meaning.
+
+**The default ships as `0.0` (floor off), and choosing the real value is a task in the
+plan, not a guess in this spec.** `reranker.top_score` is already in Phoenix, so the
+threshold is read off the VM's production traces — split by whether the model escalated —
+before the branch merges. Guessing is specifically unsafe here: CLAUDE.md already records
+a "reranker scores compressed" failure mode, so the score distribution in this deployment
+must be looked at, not assumed.
+
 ---
 
 ## Components
@@ -173,6 +210,23 @@ compose_agent_input(question, sources) -> str
 
 Shared by `bot.py` and `eval/agent_wrapper.py` so eval cannot drift from production —
 today it builds its own three-tool agent while importing production's `SYSTEM_PROMPT`.
+
+### `rag/tools/search_policies.py` — relevance floor
+
+After Step 2 (rerank), before Step 3:
+
+```
+if reranker_enabled and results and reranker_min_score > 0:
+    if results[0]["rerank_score"] < settings.reranker_min_score:
+        -> return NO_RELEVANT_POLICY_FOUND
+```
+
+Deliberately different from the other sentinel paths: `_last_search_results` is **kept
+populated** on the floor path rather than cleared. Retrieval did return candidates, and
+both the tier-1 retrieval evaluators and Phoenix diagnostics need to see what was found
+and how it scored in order to tune the threshold. Record a span attribute
+(`retrieval.floor_rejected`, with the top score) so rejections are countable in production.
+Do not "fix" this into matching the other paths.
 
 ### `rag/agent.py`
 
@@ -238,6 +292,10 @@ them.
 
 ### `config.py` + `.env.example`
 
+**New:** `reranker_min_score: float = 0.0` (D8), with a comment stating that 0.0 means
+off and that the live value is measured from `reranker.top_score`, not guessed. Added to
+`.env.example`.
+
 `agent_max_iterations` and `agent_timeout` are consumed by nothing. `FunctionAgent` has no
 iteration knob, so `agent_max_iterations` cannot be wired as written — **delete it**.
 `agent_timeout` **is** wirable (`from_tools_or_functions(timeout=)`) and today nothing
@@ -266,6 +324,8 @@ gotchas row for the FunctionAgent/ReActAgent distinction and the satisfaction be
 1. **Deterministic (code, no LLM).** `prefetch` returns `no_match` → escalate. Today
    CLAUDE.md requires this (*"If `search_policies` returns `NO_RELEVANT_POLICY_FOUND` →
    escalate"*) but it is a prompt instruction the model may ignore. It becomes a guarantee.
+   **This layer is only meaningful once D8's floor is on** — with the floor at 0.0 the
+   sentinel fires about as rarely as it does today.
 2. **Model judgment.** Sources returned but none answer the question → the model sets
    `escalation.needed = true` with a reason. Unchanged from production, and demonstrated
    working tool-free.
@@ -297,7 +357,18 @@ gotchas row for the FunctionAgent/ReActAgent distinction and the satisfaction be
   written during the `num_ctx` episode and lost in the revert.)
 - `renderer.render_answer` is never reached with empty citations.
 
-**Live eval — the merge gate.** `e2e-test-v1` and `chatbot-test-v1`, old prompt vs new,
+- Floor: a top `rerank_score` below the threshold returns the sentinel; at or above it
+  returns sources; `reranker_min_score = 0.0` disables the check entirely; the floor path
+  leaves `_last_search_results` populated (mutation-test this — clearing it is the obvious
+  wrong "cleanup").
+
+**Live eval — the merge gate. Runs on the VM, not locally**, against production infra
+(remote Ollama, remote Qdrant, vLLM reranker **on**). Local runs cannot substitute: every
+probe behind this spec ran with the reranker down, so no local `rerank_score` exists and
+the floor cannot be tuned here. Dataset upload and the eval runs happen on the VM's
+Phoenix.
+
+`e2e-test-v1` and `chatbot-test-v1`, old prompt vs new,
 pass/fail on **citation accuracy** (`citation_doc_accuracy`, `citation_section_accuracy`,
 `citation_clause_accuracy`). Token savings alone do not justify a merge.
 
@@ -317,6 +388,17 @@ the rating flow, and Phoenix span structure.
 - **Replacing `AgentWorkflow` with a direct `llm.achat`.** With zero tools the workflow is
   machinery around one LLM call, but the instrumentation, retry path and response handling
   all key off `agent.run()`. Revisit once eval confirms tool-free.
+- **Rephrase-and-retry on a rejected search.** With D8 the pipeline can finally *tell*
+  that retrieval failed, which makes "rewrite the query and search again" implementable —
+  in code, off the floor signal, with no reliance on the model choosing to re-search.
+  Deliberately not built here, pending two measurements:
+  (a) on `retrieval-test-v1`, do the cases that miss actually *hit* after rephrasing? If
+  the hit rate is already high this buys little;
+  (b) what share of production questions does the floor reject at the chosen threshold?
+  It is also the dangerous direction — a second search that surfaces something
+  tangentially related converts a *correct* escalation into a weakly-grounded answer, and
+  for a compliance bot escalating is the safe failure. It doubles latency on the worst
+  path. Build it only against evidence, with the retry bounded to exactly one.
 - **Durable escalation records** (option C) — parked; this spec only fixes where they
   would hook in.
 - **Raising `num_ctx`** — see D6.
@@ -330,3 +412,5 @@ the rating flow, and Phoenix span structure.
 | Tool-free removes any recovery from bad retrieval | Escalation layers 1-3; eval decides |
 | Deleting tools breaks comparability with past eval runs | Expected; new baseline recorded at merge |
 | Backstop turns marginal answers into escalations | Escalation is the safe direction for a compliance bot; rate is measurable in Phoenix |
+| Floor set too high → answerable questions escalate | Ships at 0.0 (off); threshold chosen from VM Phoenix data, and `retrieval.floor_rejected` makes the rate visible before and after |
+| Floor set too low → no effect, layer 1 stays dead | Same measurement; an ineffective floor is visible as a zero rejection rate |
