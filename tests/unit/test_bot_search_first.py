@@ -55,6 +55,38 @@ def test_an_unavailable_retrieval_short_circuits_end_to_end(monkeypatch, no_agen
     assert "Unavailable (retrieval)" in capsys.readouterr().out
 
 
+def test_a_non_transient_retrieval_error_escalates_without_an_llm_call(monkeypatch, no_agent, capsys):
+    """FIX (final branch review): prefetch() used to be called before _run_rag's
+    try/except, so a non-transient retrieval error (a real bug, not backend
+    flakiness) propagated straight out of _run_rag, past _answer's
+    compliance_request span (which never got an "outcome" attribute — invisible
+    in the Phoenix outcome breakdown) and into _worker_loop's catch-all, which
+    sends a generic "something went wrong" reply instead of the escalation the
+    spec promises for non-transient failures.
+
+    search_policies only raises when is_transient(exc) is False — a transient
+    one is caught internally and turned into sp.UNAVAILABLE, never raised (see
+    rag/tools/search_policies.py) — so any exception reaching prefetch() is
+    non-transient by construction. Same shape check as
+    test_an_unavailable_retrieval_short_circuits_end_to_end above: patch
+    search_policies itself, drive the real bot._run_rag -> real prefetch, and
+    assert on the composed result, not on a stubbed prefetch.
+    """
+    def _boom(q, *a, **k):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(sp, "search_policies", _boom)
+
+    result = bot._run_rag("anything")
+
+    assert result == {
+        "answer": "",
+        "citations": [],
+        "escalation": {"needed": True, "reason": "boom"},
+    }
+    assert "RAG pipeline error (retrieval)" in capsys.readouterr().out
+
+
 def test_a_no_match_search_escalates_without_an_llm_call(monkeypatch, no_agent):
     """CLAUDE.md requires this ('If search_policies returns NO_RELEVANT_POLICY_FOUND
     → escalate'). It used to be a prompt instruction the model could ignore; here

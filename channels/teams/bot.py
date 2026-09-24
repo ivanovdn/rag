@@ -109,7 +109,32 @@ def _run_rag(question: str) -> dict:
     from rag.observability import record_infra_unavailable
     from rag.search_first import compose_agent_input, prefetch
 
-    pre = prefetch(question)
+    try:
+        pre = prefetch(question)
+    except Exception as e:
+        # search_policies already intercepts transient failures itself and
+        # returns a status instead of raising (embed_query/search_vectors are
+        # wrapped in retry_transient + is_transient inside
+        # rag/tools/search_policies.py, which re-raises only when
+        # is_transient(exc) is False) — so anything that escapes prefetch() here
+        # is non-transient by construction, the same class the LLM branch below
+        # already escalates. Without this try/except the exception propagated
+        # straight out of _run_rag and past _answer's compliance_request span,
+        # which never got an "outcome" attribute — invisible in the Phoenix
+        # outcome breakdown — before landing in _worker_loop's catch-all, which
+        # sends a generic "something went wrong" reply instead of the
+        # escalation the spec promises. Truncated like the transient branch's
+        # log message below: an exception string can be arbitrarily long, and
+        # render_escalation interpolates `reason` into HTML unescaped.
+        print(f"RAG pipeline error (retrieval): {e}")
+        msg = str(e)
+        if len(msg) > 200:
+            msg = msg[:200] + "..."
+        return {
+            "answer": "",
+            "citations": [],
+            "escalation": {"needed": True, "reason": msg},
+        }
     if pre.status == "unavailable":
         return {"status": "unavailable"}
     if pre.status == "no_match":
