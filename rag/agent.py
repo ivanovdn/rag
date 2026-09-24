@@ -169,6 +169,14 @@ def get_llm(model: str | None = None):
             temperature=settings.llm_temperature,
             thinking=False,
             keep_alive=settings.ollama_keep_alive,
+            # context_window: pass the same pinned value so llama-index's
+            # Ollama.get_context_window() has a value != -1 and never calls
+            # self.client.show(model) — that call would otherwise hit
+            # settings.active_ollama_url (172.20.0.22 in production) on
+            # every build_agent(), including from tests. Does NOT change
+            # num_ctx itself; still the one value the crash matrix proved
+            # safe (see below).
+            context_window=settings.ollama_num_ctx,
             # num_ctx: settings.ollama_num_ctx (4096) is the only value the
             # upstream crash matrix proved safe against the MoE+CUDA fault —
             # see docs/superpowers/specs/2026-09-17-ollama-moe-cuda-crash.md.
