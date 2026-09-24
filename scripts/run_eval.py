@@ -305,6 +305,7 @@ async def run_e2e_eval(dataset_path: Path, tag: str) -> dict:
     citation_correct_count = 0
     fact_coverages = []
     latencies = []
+    unavailable_count = 0
 
     logger.info(f"Running e2e eval: {len(test_cases)} cases")
 
@@ -313,14 +314,27 @@ async def run_e2e_eval(dataset_path: Path, tag: str) -> dict:
             span.set_attribute("eval.test_id", tc["id"])
             span.set_attribute("eval.question", tc["question"])
 
+            # Timer starts before prefetch: retrieval used to run INSIDE
+            # agent.run, so avg_latency_seconds included it. It still must,
+            # now that retrieval happens in front of the agent instead of
+            # inside it — otherwise the metric quietly narrows to
+            # agent-only time and a comparison against an older run reads as
+            # a speedup that never happened.
+            start = time.time()
             pre = prefetch(tc["question"])
-            if pre.status != "ok":
-                logger.info(f"  [{tc['id']}] SKIPPED ({pre.status}); no sources retrieved")
+            if pre.status == "unavailable":
+                unavailable_count += 1
+                logger.info(f"  [{tc['id']}] UNAVAILABLE; retrieval backend down, case dropped")
                 continue
 
-            agent = build_agent()
-            start = time.time()
-            answer = await run_agent_query(agent, compose_agent_input(tc["question"], pre.sources))
+            # "no_match" is a real outcome — retrieval ran and correctly found
+            # nothing relevant. Score it as a no-answer, like production does
+            # (_run_rag short-circuits the same way), instead of dropping it.
+            if pre.status == "no_match":
+                answer = "No relevant policy was found for this question."
+            else:
+                agent = build_agent()
+                answer = await run_agent_query(agent, compose_agent_input(tc["question"], pre.sources))
             latency = time.time() - start
             latencies.append(latency)
 
@@ -371,11 +385,13 @@ async def run_e2e_eval(dataset_path: Path, tag: str) -> dict:
             )
 
     n = len(test_cases)
+    n_scored = n - unavailable_count
     metrics = {
-        "citation_accuracy": citation_correct_count / n if n else 0,
-        "fact_coverage": sum(fact_coverages) / n if n else 0,
-        "avg_latency_seconds": sum(latencies) / n if n else 0,
+        "citation_accuracy": citation_correct_count / n_scored if n_scored else 0,
+        "fact_coverage": sum(fact_coverages) / n_scored if n_scored else 0,
+        "avg_latency_seconds": sum(latencies) / n_scored if n_scored else 0,
         "total_cases": n,
+        "unavailable_cases": unavailable_count,
     }
 
     output = {
@@ -393,6 +409,7 @@ async def run_e2e_eval(dataset_path: Path, tag: str) -> dict:
     path = save_results(output, "e2e", tag)
 
     print("\n=== End-to-End Evaluation Results ===")
+    print(f"  Unavailable:       {unavailable_count}/{n} (dropped, not scored)")
     print(f"  Citation Accuracy: {metrics['citation_accuracy']:.1%}")
     print(f"  Fact Coverage:     {metrics['fact_coverage']:.1%}")
     print(f"  Avg Latency:       {metrics['avg_latency_seconds']:.1f}s")
@@ -416,6 +433,7 @@ async def run_escalation_eval(dataset_path: Path, tag: str) -> dict:
     results = []
     correct_escalations = 0
     false_answers = 0
+    unavailable_count = 0
 
     escalation_markers = [
         "escalat",
@@ -436,15 +454,23 @@ async def run_escalation_eval(dataset_path: Path, tag: str) -> dict:
             span.set_attribute("eval.question", tc["question"])
 
             pre = prefetch(tc["question"])
-            if pre.status != "ok":
-                logger.info(f"  [{tc['id']}] SKIPPED ({pre.status}); no sources retrieved")
+            if pre.status == "unavailable":
+                unavailable_count += 1
+                logger.info(f"  [{tc['id']}] UNAVAILABLE; retrieval backend down, case dropped")
                 continue
 
-            agent = build_agent()
-            answer = await run_agent_query(agent, compose_agent_input(tc["question"], pre.sources))
-            answer_lower = answer.lower()
+            # "no_match" IS the escalation outcome here — retrieval ran and
+            # correctly found nothing relevant, which is exactly what this
+            # tier exists to measure. Score it against should_escalate like
+            # any other case, without ever building or calling the agent.
+            if pre.status == "no_match":
+                answer = "No relevant policy was found for this question."
+                was_escalated = True
+            else:
+                agent = build_agent()
+                answer = await run_agent_query(agent, compose_agent_input(tc["question"], pre.sources))
+                was_escalated = any(m in answer.lower() for m in escalation_markers)
 
-            was_escalated = any(m in answer_lower for m in escalation_markers)
             correctly_escalated = was_escalated == tc.get("should_escalate", True)
             false_answer = not was_escalated and tc.get("should_escalate", True)
 
@@ -474,10 +500,12 @@ async def run_escalation_eval(dataset_path: Path, tag: str) -> dict:
             logger.info(f"  [{tc['id']}] {status} ({ok}) - {tc.get('category', '')}")
 
     n = len(test_cases)
+    n_scored = n - unavailable_count
     metrics = {
-        "correct_escalation_rate": correct_escalations / n if n else 0,
-        "false_answer_rate": false_answers / n if n else 0,
+        "correct_escalation_rate": correct_escalations / n_scored if n_scored else 0,
+        "false_answer_rate": false_answers / n_scored if n_scored else 0,
         "total_cases": n,
+        "unavailable_cases": unavailable_count,
         "correct_escalations": correct_escalations,
         "false_answers": false_answers,
     }
@@ -497,10 +525,11 @@ async def run_escalation_eval(dataset_path: Path, tag: str) -> dict:
     path = save_results(output, "escalation", tag)
 
     print("\n=== Escalation Evaluation Results ===")
+    print(f"  Unavailable:             {unavailable_count}/{n} (dropped, not scored)")
     print(
-        f"  Correct Escalation Rate: {metrics['correct_escalation_rate']:.1%} ({correct_escalations}/{n})"
+        f"  Correct Escalation Rate: {metrics['correct_escalation_rate']:.1%} ({correct_escalations}/{n_scored})"
     )
-    print(f"  False Answer Rate:       {metrics['false_answer_rate']:.1%} ({false_answers}/{n})")
+    print(f"  False Answer Rate:       {metrics['false_answer_rate']:.1%} ({false_answers}/{n_scored})")
     print(f"  Results saved to:        {path}")
 
     return output
@@ -522,6 +551,7 @@ async def run_chatbot_eval(dataset_path: Path, tag: str) -> dict:
     citation_correct_count = 0
     fact_coverages = []
     latencies = []
+    unavailable_count = 0
 
     logger.info(f"Running chatbot eval: {len(test_cases)} cases")
 
@@ -530,14 +560,21 @@ async def run_chatbot_eval(dataset_path: Path, tag: str) -> dict:
             span.set_attribute("eval.test_id", tc["id"])
             span.set_attribute("eval.question", tc["question"])
 
+            # Timer starts before prefetch — see run_e2e_eval for why: it must
+            # span the whole path a user waits on, not just the agent call.
+            start = time.time()
             pre = prefetch(tc["question"])
-            if pre.status != "ok":
-                logger.info(f"  [{tc['id']}] SKIPPED ({pre.status}); no sources retrieved")
+            if pre.status == "unavailable":
+                unavailable_count += 1
+                logger.info(f"  [{tc['id']}] UNAVAILABLE; retrieval backend down, case dropped")
                 continue
 
-            agent = build_agent()
-            start = time.time()
-            answer = await run_agent_query(agent, compose_agent_input(tc["question"], pre.sources))
+            # "no_match" is a real outcome — see run_e2e_eval.
+            if pre.status == "no_match":
+                answer = "No relevant policy was found for this question."
+            else:
+                agent = build_agent()
+                answer = await run_agent_query(agent, compose_agent_input(tc["question"], pre.sources))
             latency = time.time() - start
             latencies.append(latency)
 
@@ -587,11 +624,13 @@ async def run_chatbot_eval(dataset_path: Path, tag: str) -> dict:
             )
 
     n = len(test_cases)
+    n_scored = n - unavailable_count
     metrics = {
-        "citation_accuracy": citation_correct_count / n if n else 0,
-        "fact_coverage": sum(fact_coverages) / n if n else 0,
-        "avg_latency_seconds": sum(latencies) / n if n else 0,
+        "citation_accuracy": citation_correct_count / n_scored if n_scored else 0,
+        "fact_coverage": sum(fact_coverages) / n_scored if n_scored else 0,
+        "avg_latency_seconds": sum(latencies) / n_scored if n_scored else 0,
         "total_cases": n,
+        "unavailable_cases": unavailable_count,
     }
 
     output = {
@@ -609,6 +648,7 @@ async def run_chatbot_eval(dataset_path: Path, tag: str) -> dict:
     path = save_results(output, "chatbot", tag)
 
     print("\n=== Chatbot Evaluation Results ===")
+    print(f"  Unavailable:       {unavailable_count}/{n} (dropped, not scored)")
     print(f"  Citation Accuracy: {metrics['citation_accuracy']:.1%}")
     print(f"  Fact Coverage:     {metrics['fact_coverage']:.1%}")
     print(f"  Avg Latency:       {metrics['avg_latency_seconds']:.1f}s")
