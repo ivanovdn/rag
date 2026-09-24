@@ -131,6 +131,52 @@ def make_agent_task(verbose: bool = False):
         clear_log()
 
         pre = prefetch_logged(question)
+        tool_calls = list(get_log())
+        search_queries = [c["query"] for c in tool_calls if c["tool"] == "search_policies"]
+
+        def _agent_metadata(escalation):
+            # Escalation is read from the JSON field (or synthesized below on a
+            # short-circuit), which is the only escalation path production has
+            # ever had — the tool that used to be counted here was never called.
+            return {
+                "search_queries": search_queries,
+                "num_searches": len(search_queries),
+                "escalated": bool(escalation.get("needed")),
+                "escalation_reason": escalation.get("reason") or None,
+            }
+
+        # Mirrors channels/teams/bot.py::_run_rag's branch shape exactly, so the
+        # two cannot drift: an infra failure never reaches the agent and never
+        # reads as a content escalation, and a no-match escalates on the same
+        # fixed reason text without spending an LLM call to reach it.
+        if pre.status == "unavailable":
+            escalation = {"needed": False, "reason": ""}
+            return {
+                "status": "unavailable",
+                "answer": "",
+                "citations": [],
+                "escalation": escalation,
+                "parse_success": False,
+                "raw_response": "",
+                "search_results": [],
+                "agent_metadata": _agent_metadata(escalation),
+            }
+
+        if pre.status == "no_match":
+            escalation = {
+                "needed": True,
+                "reason": "No relevant policy was found for this question.",
+            }
+            return {
+                "status": "no_match",
+                "answer": "",
+                "citations": [],
+                "escalation": escalation,
+                "parse_success": True,
+                "raw_response": "",
+                "search_results": [],
+                "agent_metadata": _agent_metadata(escalation),
+            }
 
         loop = asyncio.get_event_loop()
         response = loop.run_until_complete(
@@ -138,12 +184,10 @@ def make_agent_task(verbose: bool = False):
         )
 
         parsed = parse_agent_response(str(response))
-        tool_calls = list(get_log())
 
-        agent_search_results, search_queries = [], []
+        agent_search_results = []
         for call in tool_calls:
             if call["tool"] == "search_policies":
-                search_queries.append(call["query"])
                 agent_search_results.extend(call["results"])
 
         seen = set()
@@ -154,24 +198,15 @@ def make_agent_task(verbose: bool = False):
                 seen.add(key)
                 unique_results.append(r)
 
-        escalated = bool(parsed["escalation"].get("needed"))
-
         return {
+            "status": "ok",
             "answer": parsed["answer"],
             "citations": parsed["citations"],
             "escalation": parsed["escalation"],
             "parse_success": parsed["parse_success"],
             "raw_response": parsed["raw_response"],
             "search_results": unique_results,
-            "agent_metadata": {
-                "search_queries": search_queries,
-                "num_searches": len(search_queries),
-                # Escalation is read from the JSON field, which is the only
-                # escalation path there has ever been in production — the tool
-                # that used to be counted here was never called.
-                "escalated": escalated,
-                "escalation_reason": parsed["escalation"].get("reason") or None,
-            },
+            "agent_metadata": _agent_metadata(parsed["escalation"]),
         }
     return e2e_task
 
@@ -264,7 +299,7 @@ def main():
                      "reranker": reranker_info,
                      "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
-                     "agent_type": "react", "top_k": top_k, "tier": args.tier,
+                     "agent_type": "function-agent-toolfree", "top_k": top_k, "tier": args.tier,
                      "structured_output": True}
 
     print(f"  Evaluators:  {[e.__name__ for e in evaluators]}")
