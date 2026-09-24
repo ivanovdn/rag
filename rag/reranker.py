@@ -14,13 +14,56 @@ suffix) is required for both vLLM modes — without it, score discrimination col
 Falls back to original ranking if server is unavailable — never blocks the pipeline.
 """
 
+import json
 import logging
 
 import httpx
+from openinference.semconv.trace import (
+    DocumentAttributes,
+    OpenInferenceSpanKindValues,
+    RerankerAttributes,
+    SpanAttributes,
+)
 
 from config import settings
+from rag.observability import get_tracer
 
 logger = logging.getLogger(__name__)
+
+# Mirrors rag/vector_store.py's constant of the same purpose: settings.reranker_top_n
+# (6) documents land on this span, each posted individually over HTTP by a
+# SimpleSpanProcessor — truncate document content so a debugging aid doesn't become
+# real payload weight per request.
+_DOCUMENT_CONTENT_MAX_CHARS = 1000
+
+
+def _document_span_attributes(results: list[dict]) -> dict:
+    """Flatten reranked result dicts into OpenInference retrieval.documents.{i}.* attrs.
+
+    Must never raise: this is purely a tracing side-channel, so every field is read
+    with `.get()` — a missing/partial key (e.g. on the fallback-to-original-order
+    path, which carries no `rerank_score`) must not break the pipeline. Identifying
+    fields go into DOCUMENT_METADATA as a JSON string, since those (doc_title/
+    section/clause_number) are what a person scanning a trace actually reads.
+    """
+    attributes: dict = {}
+    for i, r in enumerate(results):
+        prefix = f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.{i}."
+        attributes[prefix + DocumentAttributes.DOCUMENT_ID] = str(r.get("doc_id", ""))
+        attributes[prefix + DocumentAttributes.DOCUMENT_CONTENT] = str(
+            r.get("text", "")
+        )[:_DOCUMENT_CONTENT_MAX_CHARS]
+        attributes[prefix + DocumentAttributes.DOCUMENT_SCORE] = float(
+            r.get("rerank_score", 0.0) or 0.0
+        )
+        attributes[prefix + DocumentAttributes.DOCUMENT_METADATA] = json.dumps(
+            {
+                "doc_title": r.get("doc_title", ""),
+                "section": r.get("section", ""),
+                "clause_number": r.get("clause_number", ""),
+            }
+        )
+    return attributes
 
 
 _VLLM_SYSTEM = (
@@ -79,10 +122,40 @@ def rerank(
         - "rerank_score": float (0.0–1.0 relevance probability)
         - "original_rank": int (position before reranking, 1-indexed)
     """
+    tracer = get_tracer()
+    with tracer.start_as_current_span(
+        "rerank",
+        attributes={
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.RERANKER.value,
+            RerankerAttributes.RERANKER_QUERY: query,
+            RerankerAttributes.RERANKER_MODEL_NAME: settings.reranker_model,
+            "reranker.backend": settings.reranker_backend,
+            "reranker.candidates_in": len(results),
+            # Set here so the success path is explicitly False and the attribute is
+            # always present to filter on. _rerank_impl flips it when it degrades.
+            "reranker.fallback": False,
+        },
+    ) as span:
+        output = _rerank_impl(query, results, top_n, span)
+        span.set_attribute("reranker.results_out", len(output))
+        # Only on the reranked path: fallback results carry no rerank_score, and
+        # defaulting to 0.0 there would read as "the reranker scored everything
+        # terribly" rather than "the reranker never ran".
+        if output and "rerank_score" in output[0]:
+            span.set_attribute("reranker.top_score", output[0]["rerank_score"])
+        span.set_attributes(_document_span_attributes(output))
+        return output
+
+
+def _rerank_impl(
+    query: str, results: list[dict], top_n: int | None, span
+) -> list[dict]:
+    """Original rerank logic, factored out so `rerank` can bracket it with a span."""
     if not results:
         return results
 
     n = top_n or settings.reranker_top_n
+    span.set_attribute(RerankerAttributes.RERANKER_TOP_K, n)
     formatted_query = _build_query(query)
     documents = _build_documents([r.get("text", "") for r in results])
 
@@ -116,15 +189,34 @@ def rerank(
 
         return reranked
 
+    # Each of these degrades silently by design — the pipeline must never block on
+    # the reranker. Silent for the USER is right; silent in Phoenix is not. Without
+    # these attributes the span reports OK while results are actually unranked, so a
+    # reranker outage looks like a healthy trace and only shows up as a stdout
+    # warning nobody is watching.
     except httpx.ConnectError:
         logger.warning(f"Reranker unavailable at {settings.reranker_url} — using original ranking")
+        _record_fallback(span, "connect_error")
         return results[:n]
     except httpx.TimeoutException:
         logger.warning("Reranker timed out — using original ranking")
+        _record_fallback(span, "timeout")
         return results[:n]
     except Exception as e:
         logger.warning(f"Reranker error: {e} — using original ranking")
+        _record_fallback(span, type(e).__name__)
         return results[:n]
+
+
+def _record_fallback(span, reason: str) -> None:
+    """Mark the rerank span as degraded-but-successful.
+
+    Deliberately not span.set_status(ERROR): the request succeeded and the user got
+    an answer, so failing the span would misreport the pipeline. Filter on
+    reranker.fallback to find these.
+    """
+    span.set_attribute("reranker.fallback", True)
+    span.set_attribute("reranker.fallback_reason", reason)
 
 
 def _call_rerank(query: str, documents: list[str], top_n: int) -> list[tuple[int, float]]:

@@ -9,6 +9,28 @@ services:
       - PHOENIX_ENDPOINT=http://phoenix:6006/v1/traces
     volumes:
       - ./channels/teams/data:/app/channels/teams/data
+    # INVARIANT: this must stay GREATER than TEAMS_SHUTDOWN_GRACE_SECONDS
+    # (config.py: teams_shutdown_grace_seconds, default 8s), with headroom.
+    # On SIGTERM the bot drains its in-flight answer for up to that many seconds,
+    # then saves bot_state.json and exits; Docker SIGKILLs when this period runs
+    # out. If the kill lands first, the deploy is a hard crash again and a just-
+    # answered question is re-delivered as a duplicate on the next start — and
+    # nothing fails loudly when that happens. Made explicit rather than relying on
+    # Docker's 10s default, which left the two graces coupled invisibly across two
+    # files. Change one, change the other.
+    #
+    # 30s, not 15s, and the headroom is deliberate. Python runs a signal handler
+    # but then RESUMES the interrupted syscall (PEP 475), so a SIGTERM landing
+    # inside a Graph call waits for that call to return — up to TEAMS_API_TIMEOUT
+    # (10s) — before the poll loop even notices the shutdown. Worst case is that
+    # stall plus the full 12s drain plus the state write, which overruns 15s and
+    # gets SIGKILLed: precisely the hard crash this setting exists to prevent.
+    # Graph timeouts are not hypothetical here; three were observed in one week
+    # at five chats, and the request budget grows with headcount.
+    # This costs nothing in the normal case — an idle bot takes the stop sentinel
+    # and exits in well under a second. It only spends the headroom when there is
+    # real work to finish.
+    stop_grace_period: 30s
     depends_on:
       phoenix:
         condition: service_healthy

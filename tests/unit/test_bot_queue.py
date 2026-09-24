@@ -290,19 +290,22 @@ def test_messages_are_enqueued_oldest_first(qbot, monkeypatch):
     assert queued == ["question 1", "question 2", "question 3"]
 
 
-def test_pending_rating_is_not_armed_when_the_prompt_failed_to_send(monkeypatch, qbot):
-    """Otherwise the user's next message silently becomes a rating if it reads as a digit."""
+def test_pending_rating_is_not_armed_when_the_combined_send_fails(monkeypatch, qbot):
+    """Answer and rating prompt are now one Graph send (Combined reply send): if it
+    fails, neither reached the user, and rating capture must not arm — otherwise the
+    user's next message would silently become a rating if it reads as a digit."""
     monkeypatch.setattr(bot.settings, "router_enabled", False)
     monkeypatch.setattr(bot, "_run_rag",
                         lambda q: {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}})
 
     def _send(chat_id, text, content_type="html", retry=False):
         qbot._sent.append(text)
-        return None if "Was this helpful" in text else True  # the prompt fails
+        return None  # the one combined send fails
 
     monkeypatch.setattr(qbot, "_send_message", _send)
 
-    assert qbot._answer("chat1", "Can I install software?") is True  # the answer landed
+    assert qbot._answer("chat1", "Can I install software?") is False  # nothing was delivered
+    assert len(qbot._sent) == 1  # still one attempt, not a fallback second call
     assert "chat1" not in bot._pending_ratings
 
 

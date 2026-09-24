@@ -527,7 +527,17 @@ All settings live in `.env`. See `config.py` for full schema. Notable groups:
 
 ## Testing
 
-Tier-A unit tests (pure logic, no services) plus an auto-skipping corpus layer.
+Tier-A unit tests (pure logic, no services), an offline poll-loop soak under
+`tests/load/`, plus an auto-skipping corpus layer.
+
+`tests/load/` drives the real `process_new_messages` against a fake Graph (30
+chats, paging, injected timeouts and cyclic `@odata.nextLink`) on a simulated
+clock, so a 65-minute watermark hold runs in milliseconds. It never touches
+Microsoft Graph, the Spark box, the real `bot_state.json` or the refresh token
+— a fixture makes `requests`/`httpx` raise, so that isolation is proven rather
+than assumed. It runs in the default suite (~0.3s) and asserts the invariants
+that matter: no message answered twice, none lost, `last_check` monotonic,
+exactly one worker thread.
 
 ```bash
 pip install -r requirements-dev.txt

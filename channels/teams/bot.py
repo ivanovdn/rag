@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import queue
+import signal
 import sys
 import threading
 import time
@@ -62,6 +63,12 @@ _MESSAGES_MAX_PAGES = 10   # per-chat messages: bounds how far back a burst page
 _ABNORMAL_PROCESSED_MESSAGES_MULTIPLIER = 10
 
 _VALID_RATINGS = {"-1", "0", "1", "2"}
+
+# Shutdown sentinel for _work_q. A unique object rather than None so a malformed
+# job can never be mistaken for it: the only producer is _graceful_shutdown, and
+# its job is to unblock a worker parked in the blocking _work_q.get() so the
+# thread can exit instead of being killed mid-answer.
+_WORKER_STOP = object()
 
 # Bounded retry for transient Graph failures (timeouts, connection errors, 5xx).
 # Deliberately short and deliberately local: rag.resilience is for the model/vector
@@ -176,6 +183,10 @@ class TeamsBot:
         # Only the poll thread calls it today — this keeps the one-worker invariant
         # true in code rather than by convention.
         self._worker_lock = threading.Lock()
+        # Set by the SIGTERM handler (see _install_signal_handler). Read by the
+        # poll loop, waited on between cycles, and checked by the worker before it
+        # starts anything new.
+        self._shutdown = threading.Event()
 
     # ------------------------------------------------------------------
     # State persistence
@@ -583,7 +594,18 @@ class TeamsBot:
     def _worker_loop(self):
         """The single consumer. See the __init__ comment before adding a second."""
         while True:
-            chat_id, text, sender_name, message_key = self._work_q.get()
+            job = self._work_q.get()
+            # Stop before STARTING new work: either the shutdown sentinel (which is
+            # what unblocks an idle get()), or the shutdown event, since the ~16s a
+            # fresh question needs is no longer available. Either way the unstarted
+            # job is still in _inflight, so _save_state keeps its id out of
+            # processed_messages and holds the watermark behind it — the next start
+            # re-delivers it. An answer already in progress is NOT abandoned here;
+            # _graceful_shutdown waits for it, up to the grace.
+            if job is _WORKER_STOP or self._shutdown.is_set():
+                self._work_q.task_done()
+                return
+            chat_id, text, sender_name, message_key = job
             try:
                 if not self._answer(chat_id, text, sender_name=sender_name):
                     # The answer was produced but the reply POST failed even after
@@ -624,63 +646,114 @@ class TeamsBot:
 
     def _answer(self, chat_id, text, sender_name="Unknown"):
         """Worker thread: route, run RAG, reply. Never called from the poll loop."""
-        # Pre-retrieval classification: only in-scope questions reach policy search.
-        if settings.router_enabled:
-            from rag.router import classify_message, resolve, Category  # deferred: observability-first
-            from rag.observability import record_classification
+        # Deferred import: init_observability() (start_teams_bot.py) must run before
+        # LlamaIndex loads, so this module never imports anything observability-adjacent
+        # at module level — same reasoning as the deferred imports below and in _run_rag.
+        from rag.observability import get_tracer
+        from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
-            decision = classify_message(text)
-            category = resolve(decision, settings.router_confidence_floor)
-            record_classification(
-                category.value,
-                decision.confidence,
-                fallback=(category != decision.category or decision.fallback),
-                message=text,
-            )
+        tracer = get_tracer()
+        # One root span for the whole request, opened before the router call and made
+        # "current" (start_as_current_span attaches it) so every span started
+        # underneath it — the router's own classification span, and, via _run_rag,
+        # the agent run and its retrieval leaves (embed_query/search_vectors/rerank) —
+        # nests under it instead of each becoming its own disconnected trace. Without
+        # the attach, OpenInference's llama-index instrumentor finds no current span
+        # and opens its own root, no matter how deep the call stack goes.
+        with tracer.start_as_current_span(
+            "compliance_request",
+            attributes={
+                SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
+                # Full message text recorded deliberately, matching record_classification's
+                # audit convention for this compliance bot. Never chat id or sender name —
+                # those identify a person and the span does not need them.
+                "compliance_request.question": text,
+            },
+        ) as span:
+            # Pre-retrieval classification: only in-scope questions reach policy search.
+            if settings.router_enabled:
+                from rag.router import classify_message, resolve, Category  # deferred: observability-first
+                from rag.observability import record_classification
 
-            # These three report their send like every other path out of _answer, so a
-            # failed delivery reaches the worker's ERROR log instead of being silent.
-            # No retry though: no GPU work is lost and the user can just say hello again.
-            if category == Category.GREETING:
-                return bool(self._send_message(chat_id, WELCOME_HTML))
-            if category == Category.OUT_OF_SCOPE:
-                return bool(self._send_message(chat_id, render_out_of_scope()))
-            if category == Category.UNINTELLIGIBLE:
-                return bool(self._send_message(chat_id, render_unintelligible()))
-            # Category.IN_SCOPE falls through to the RAG pipeline below.
+                decision = classify_message(text)
+                category = resolve(decision, settings.router_confidence_floor)
+                record_classification(
+                    category.value,
+                    decision.confidence,
+                    fallback=(category != decision.category or decision.fallback),
+                    message=text,
+                )
 
-        result = _run_rag(text)
+                # These three report their send like every other path out of _answer, so a
+                # failed delivery reaches the worker's ERROR log instead of being silent.
+                # No retry though: no GPU work is lost and the user can just say hello again.
+                # They log their SUCCESS too, naming the category: only the failure was
+                # ever logged (by _worker_loop), so a working greeting — the most common
+                # first message during onboarding — was indistinguishable in the log from
+                # a dropped one. Same "[worker] ... sent" shape as the two below.
+                if category == Category.GREETING:
+                    span.set_attribute("compliance_request.outcome", "greeting")
+                    sent = self._send_message(chat_id, WELCOME_HTML)
+                    if sent:
+                        print("[worker] Greeting reply sent")
+                    return bool(sent)
+                if category == Category.OUT_OF_SCOPE:
+                    span.set_attribute("compliance_request.outcome", "out_of_scope")
+                    sent = self._send_message(chat_id, render_out_of_scope())
+                    if sent:
+                        print("[worker] Out-of-scope reply sent")
+                    return bool(sent)
+                if category == Category.UNINTELLIGIBLE:
+                    span.set_attribute("compliance_request.outcome", "unintelligible")
+                    sent = self._send_message(chat_id, render_unintelligible())
+                    if sent:
+                        print("[worker] Unintelligible reply sent")
+                    return bool(sent)
+                # Category.IN_SCOPE falls through to the RAG pipeline below.
 
-        # Transient backend failure — not an answer, not an escalation; no rating prompt.
-        if result.get("status") == "unavailable":
-            sent = self._send_message(chat_id, render_unavailable(), retry=True)
+            result = _run_rag(text)
+
+            # Transient backend failure — not an answer, not an escalation; no rating prompt.
+            if result.get("status") == "unavailable":
+                span.set_attribute("compliance_request.outcome", "unavailable")
+                sent = self._send_message(chat_id, render_unavailable(), retry=True)
+                if sent:
+                    print("[worker] Unavailable notice sent")
+                return bool(sent)
+
+            # Render response
+            escalation = result.get("escalation", {})
+            if escalation.get("needed"):
+                span.set_attribute("compliance_request.outcome", "escalated")
+                html = render_escalation(text, result)
+            elif result.get("answer"):
+                span.set_attribute("compliance_request.outcome", "answered")
+                html = render_answer(result)
+            else:
+                span.set_attribute("compliance_request.outcome", "error")
+                html = render_error(text, "No answer returned from the pipeline.")
+
+            # Answer and rating prompt as one Graph send, not two: RATING_PROMPT_HTML is
+            # a self-contained <p><i>...</i></p> block and <hr> is Teams-allowed (CLAUDE.md's
+            # rendering gotcha), so they concatenate cleanly. With one worker thread
+            # serialising every question, the second round-trip (~490ms measured) was pure
+            # queue wait for the next question — halving Graph round-trips here removes it.
+            # Worth retrying: the pipeline already spent ~16s producing this.
+            sent = self._send_message(chat_id, html + "<hr>" + RATING_PROMPT_HTML, retry=True)
             if sent:
-                print("[worker] Unavailable notice sent")
-            return bool(sent)
-
-        # Render response
-        escalation = result.get("escalation", {})
-        if escalation.get("needed"):
-            html = render_escalation(text, result)
-        elif result.get("answer"):
-            html = render_answer(result)
-        else:
-            html = render_error(text, "No answer returned from the pipeline.")
-
-        # Worth retrying: the pipeline already spent ~16s producing this.
-        sent = self._send_message(chat_id, html, retry=True)
-        if sent:
-            print("[worker] Reply sent")
-            # Only arm rating capture if the prompt actually reached the user. Otherwise
-            # their next message silently becomes a rating whenever it reads as -1/0/1/2.
-            if self._send_message(chat_id, RATING_PROMPT_HTML):
+                print("[worker] Reply sent")
+                # Arm rating capture only if the combined send succeeded. This is now
+                # structural rather than a second check: the answer and the prompt are
+                # one message, so they always arrive together or not at all — it is no
+                # longer possible for the user to see the answer but not the prompt (or
+                # vice versa) and have their next message silently become a rating.
                 _pending_ratings[chat_id] = {
                     "question": text,
                     "answer": result.get("answer", ""),
                     "citations": result.get("citations", []),
                     "user": sender_name,
                 }
-        return bool(sent)
+            return bool(sent)
 
     def _get_my_user_id(self):
         if self._my_user_id:
@@ -874,13 +947,13 @@ class TeamsBot:
             # Known, pre-existing, out of this branch's scope (branch review
             # finding 8): newest_message_time is the max across ALL chats, so a
             # message arriving in chat A after A's own fetch, earlier this same
-            # cycle, is buried if a later-read chat carries something newer —
-            # the identical intra-cycle race Ruling M reasons about for the
-            # force-advance below, just unguarded here. Unchanged since before
-            # this branch; the window is a fraction of one poll cycle. Not
-            # widening this branch's scope to fix it — recorded here so the
-            # asymmetry with the force-advance's ten lines of reasoning reads
-            # as a deliberate choice, not an oversight.
+            # cycle, is buried if a later-read chat carries something newer.
+            # The window is a fraction of one poll cycle, and unchanged since
+            # before this branch. The force-advance below now accepts this exact
+            # same race deliberately (Ruling M's lookback window was what used
+            # to guard against it there, and it was reverted — see the ABANDONED
+            # note), so the two paths are consistent: both prefer a sub-cycle
+            # burial to a rewound watermark.
             if newest_message_time > self.last_check:
                 self.last_check = newest_message_time
         else:
@@ -910,25 +983,42 @@ class TeamsBot:
                 self._hold_since = now
             held_for = now - self._hold_since
             if held_for > timedelta(minutes=settings.teams_max_state_age_minutes):
-                # Target now - teams_initial_lookback_minutes, not now itself
-                # (Ruling M): advancing all the way to now would silently bury
-                # any message that arrives in a HEALTHY chat between that
-                # chat's fetch earlier in this cycle and this point, later in
-                # the same cycle — narrow, but exactly the silent loss this fix
-                # exists to eliminate. _load_state's startup clamp — the
-                # precedent this whole force-advance mirrors — makes the same
-                # choice for the same reason: it resets to now - lookback, not
-                # to now, deliberately leaving a small re-read window rather
-                # than a hard cut at the instant of recovery. Re-reading that
-                # window cannot create a duplicate: Ruling H has been blocking
-                # eviction for the whole hold, so every id a healthy chat
-                # already produced in that window is still in
-                # processed_messages, and _should_process_message rejects it
-                # by key before it ever reaches the timestamp check.
-                forced_watermark = max(
-                    newest_message_time,
-                    now - timedelta(minutes=settings.teams_initial_lookback_minutes),
-                )
+                # Target `now`. The max() is only a guard against a clock that
+                # has stepped backwards: newest_message_time starts at
+                # self.last_check and only ever grows, so this can never move
+                # the watermark backwards. What targeting `now` buys is an
+                # invariant rather than an argument — after a force-advance,
+                # nothing still in processed_messages is newer than last_check,
+                # so the eviction below cannot drop an id that a later fetch
+                # would then re-accept. No counterexample can exist.
+                #
+                # ABANDONED — DO NOT REINSTATE: this targeted
+                # `now - teams_initial_lookback_minutes` (Ruling M), to avoid
+                # burying a message that lands in a HEALTHY chat between that
+                # chat's own fetch earlier in this cycle and this point, later
+                # in the same cycle. That window is real, but paying for it
+                # with a rewound watermark opened a far worse hole, because
+                # `fully_synced = True` below un-gates
+                # _cleanup_processed_messages IN THIS SAME CYCLE: the ids it
+                # evicts are exactly the ones sitting inside the re-opened
+                # window, so the next cycle re-fetches, re-acks and re-answers
+                # them. Measured by tests/load: 435 ids, 87 evicted, 87
+                # duplicate answers — and 208 duplicates at the default
+                # teams_max_processed_messages=1000. The comment that used to
+                # sit here claimed that re-read "cannot create a duplicate"
+                # because Ruling H blocks eviction throughout the hold. Ruling
+                # H does — but the force-advance ENDS the hold, and eviction
+                # runs before the window is ever re-read. Regression test:
+                # tests/load/test_teams_load.py
+                #   ::test_force_advance_does_not_re_answer_the_lookback_window
+                #
+                # The cost of `now` is Ruling M's window back: a message
+                # arriving in a healthy chat during the second or two between
+                # its own fetch and this point is buried. That happens at most
+                # once per teams_max_state_age_minutes, inside a state that
+                # already logs "may be permanently skipped" — set against
+                # 87-208 duplicate answers, it is not close.
+                forced_watermark = max(newest_message_time, now)
                 # Fix 6: say which kind of incompleteness this is. "A chat" reads
                 # as one user's traffic; "the chat list itself" is everyone's.
                 if chat_list_incomplete:
@@ -963,8 +1053,13 @@ class TeamsBot:
         # Ruling H: never evict while the watermark is held. An evicted id is
         # precisely what becomes re-answerable once its chat's back-paging (Ruling
         # B) reaches far enough to refetch it — eviction and an active hold must
-        # never overlap. Safe to run immediately after a forced advance above:
-        # the hold (if any) has just ended for this cycle. _cleanup_processed_messages
+        # never overlap. Safe to run immediately after a forced advance above,
+        # but ONLY because that advance now targets `now`: an evicted id is
+        # re-answerable exactly when its message is newer than last_check, and
+        # after a force-advance to `now` no such id is left in the set. This
+        # pairing is load-bearing — rewinding the forced watermark by even a few
+        # minutes makes this same line a duplicate-answer machine (see the
+        # ABANDONED note above). _cleanup_processed_messages
         # is the ONLY place eviction happens: _save_state (branch review Fix 2) no
         # longer applies its own slice, so there is nothing else to gate — a second,
         # ungated eviction site is exactly how this comment went false once already.
@@ -976,7 +1071,95 @@ class TeamsBot:
     # Main loop
     # ------------------------------------------------------------------
 
+    def _install_signal_handler(self):
+        """Stop cleanly on SIGTERM — what `docker compose restart/stop` sends first.
+
+        With no handler nothing acts on it: Docker waits out its stop grace (now
+        pinned to 30s in docker-compose-remote.yml, above teams_shutdown_grace_seconds;
+        it used to be Docker's 10s default) for an exit that never comes, then
+        SIGKILLs — so every deploy is a hard crash. That
+        costs real duplicate answers, because an answered id only becomes durable at
+        the next _save_state, up to one poll cycle after the reply was sent; a kill
+        inside that window leaves the persisted state saying "never processed" and
+        the next start re-delivers an already-answered question.
+
+        SIGINT is deliberately left alone: run()'s KeyboardInterrupt branch already
+        handles local Ctrl-C. Returns True if the handler was installed.
+        """
+        def _request_shutdown(signum, frame):
+            # Signal-handler context: set the flag and get out. No printing (print
+            # takes a lock the interrupted frame may already hold) and no state
+            # work — the main thread does all of that once its wait wakes.
+            self._shutdown.set()
+
+        try:
+            signal.signal(signal.SIGTERM, _request_shutdown)
+            return True
+        except ValueError as e:
+            # signal.signal only works on the main thread of the main interpreter.
+            # An embedded or threaded host must still get a running bot, just
+            # without the graceful path — log it and carry on rather than refusing
+            # to start.
+            print(
+                f"WARNING: could not install the SIGTERM handler ({e}); shutdown will "
+                "not be graceful (the process will be killed after the stop grace)"
+            )
+            return False
+
+    def _wait_for_next_poll(self, seconds):
+        """Wait between poll cycles, but wake immediately on shutdown.
+
+        MUST stay an Event.wait and never go back to time.sleep(): a SIGTERM
+        arriving during the idle interval (teams_idle_poll_interval, 30s) would then
+        sit out the whole interval and be SIGKILLed before ever reaching the drain,
+        so the handler would be installed and do nothing. Returns True if shutdown
+        woke it, False on timeout — same contract as Event.wait.
+        """
+        return self._shutdown.wait(seconds)
+
+    def _graceful_shutdown(self, reason):
+        """Stop accepting work, drain the in-flight answer, persist state.
+
+        `reason` names the exit that asked for this ("SIGTERM", the error limit) —
+        an operator reading a container log needs to know which one stopped the bot.
+
+        Bounded by teams_shutdown_grace_seconds, which sits under Docker's stop
+        grace so this finishes before SIGKILL. The bound is safe by construction:
+        whatever does not finish in time is still in _inflight, so _save_state
+        leaves its id out of processed_messages AND holds the watermark behind it —
+        the next start re-delivers it. A timed-out drain therefore costs a re-asked
+        question, never a lost one, and never a duplicate answer.
+
+        The caller releases the PID lock (run()'s existing finally).
+        """
+        grace = settings.teams_shutdown_grace_seconds
+        print(f"\nShutdown requested ({reason}); draining the worker (grace {grace}s)...")
+        started = time.monotonic()
+        # Unblock a worker parked in _work_q.get(); a busy one finishes the answer
+        # it is on and then stops before taking another (see _worker_loop).
+        self._work_q.put(_WORKER_STOP)
+        worker = self._worker
+        if worker is not None:
+            worker.join(grace)
+        elapsed = time.monotonic() - started
+        if worker is None or not worker.is_alive():
+            print(f"Worker drained in {elapsed:.1f}s")
+        else:
+            print(
+                f"WARNING: worker still busy after {elapsed:.1f}s (grace {grace}s); "
+                "stopping without it — its message stays in flight and is re-delivered "
+                "on the next start"
+            )
+        with self._inflight_lock:
+            still_inflight = len(self._inflight)
+        self._save_state()
+        print(
+            f"State saved to {STATE_FILE} ({still_inflight} message(s) left in flight, "
+            "held for re-delivery on the next start)"
+        )
+
     def run(self):
+        graceful = self._install_signal_handler()
         self._acquire_pid_lock()
         try:
             # Inside the try: a failure to start the worker must still release the PID lock.
@@ -990,18 +1173,31 @@ class TeamsBot:
                 f"{settings.teams_idle_poll_interval}s otherwise"
             )
             print("Workers: 1 (single-threaded by design — see _work_q comment)")
+            if graceful:
+                print(
+                    f"Shutdown: graceful on SIGTERM "
+                    f"(drain grace {settings.teams_shutdown_grace_seconds}s)"
+                )
             print("=" * 50)
             print("\nWaiting for messages...\n")
 
             consecutive_errors = 0
+            # Names the exit in the shutdown log; the error limit overwrites it below.
+            stop_reason = "SIGTERM"
 
-            while True:
+            while not self._shutdown.is_set():
                 try:
                     self._ensure_worker()  # restarts the worker if it ever died
                     self.process_new_messages()
                     consecutive_errors = 0
-                    time.sleep(self._current_poll_interval(datetime.now(timezone.utc)))
+                    self._wait_for_next_poll(self._current_poll_interval(datetime.now(timezone.utc)))
                 except KeyboardInterrupt:
+                    # The ONE exit that does not drain. Ctrl-C is an operator asking
+                    # to stop NOW, and making local dev wait up to
+                    # teams_shutdown_grace_seconds for an answer nobody is waiting on
+                    # is a bad trade. Nothing is lost that was not already covered:
+                    # the in-flight id stays out of the persisted state either way,
+                    # so the next start re-delivers it.
                     print("\n\nBot stopped by user")
                     break
                 except Exception as e:
@@ -1009,9 +1205,26 @@ class TeamsBot:
                     print(f"Error in main loop ({consecutive_errors}/{settings.teams_max_consecutive_errors}): {e}")
                     if consecutive_errors >= settings.teams_max_consecutive_errors:
                         print("Too many consecutive errors, stopping bot")
+                        # Drain like SIGTERM: this is a controlled decision to stop,
+                        # not a crash. Every failure counted here comes from the POLL
+                        # loop (Graph unreachable), which says nothing about the
+                        # worker — its answer may well complete and reach the user.
+                        # Abandoning it would make them wait for a restart to get an
+                        # answer the bot had already produced. Setting the event also
+                        # stops the worker picking up new work while we drain.
+                        stop_reason = "too many consecutive errors"
+                        self._shutdown.set()
                         break
                     error_sleep = min(settings.teams_poll_interval * (2 ** consecutive_errors), 60)
                     print(f"Retrying in {error_sleep}s...")
-                    time.sleep(error_sleep)
+                    # Interruptible for the same reason as the poll wait above, and
+                    # more so: this backoff runs to 60s, six times Docker's stop grace.
+                    self._wait_for_next_poll(error_sleep)
+
+            # Both controlled exits drain — SIGTERM and the error limit, which sets
+            # the event on its way out. KeyboardInterrupt does not, and that is the
+            # one deliberate asymmetry: see its branch above for why.
+            if self._shutdown.is_set():
+                self._graceful_shutdown(stop_reason)
         finally:
             self._release_pid_lock()

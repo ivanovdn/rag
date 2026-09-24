@@ -504,15 +504,28 @@ def test_force_advance_lets_cleanup_run_the_same_cycle(monkeypatch, pbot):
     assert len(pbot.processed_messages) < 15
 
 
-def test_force_advance_does_not_bury_a_message_within_the_lookback_window(monkeypatch, pbot):
-    """Ruling M: advancing all the way to `now` (round 2's implementation) is
-    effectively silent loss of anything that arrives in a HEALTHY chat between
-    that chat's fetch earlier in the cycle and this point, later in the same
-    cycle — narrow, but exactly the failure mode this whole fix exists to
-    eliminate. The force-advance must instead leave the same small re-read
-    buffer _load_state's startup clamp already leaves: now -
-    teams_initial_lookback_minutes, not now. A message inside that buffer must
-    still read as new, not "old_message", on the very next fetch."""
+def test_force_advance_targets_now_and_leaves_no_re_read_window(monkeypatch, pbot):
+    """The force-advance must land on `now`, not behind it.
+
+    This replaces an earlier test that asserted the opposite. Ruling M had the
+    force-advance target `now - teams_initial_lookback_minutes`, to avoid
+    burying a message that lands in a HEALTHY chat between that chat's own fetch
+    earlier in the cycle and the force-advance later in it. That window is real,
+    but it was paid for with a rewound watermark -- and `fully_synced = True`
+    un-gates _cleanup_processed_messages in the SAME cycle, so the ids evicted
+    there are exactly the ones inside the re-opened window. The load harness
+    measured the result: 87 of 435 ids evicted, 87 questions answered twice
+    (208 at the default teams_max_processed_messages). See
+    tests/load/test_teams_load.py::test_force_advance_does_not_re_answer_the_lookback_window.
+
+    Targeting `now` turns the safety of that eviction from an argument into an
+    invariant: nothing left in processed_messages can be newer than last_check,
+    so no evicted id can be re-accepted by a later fetch. If you are here
+    because you spotted Ruling M's narrow mid-cycle hole and want the window
+    back -- that is the trade, and it was made deliberately: one buried message
+    per teams_max_state_age_minutes at worst, inside a state that already logs
+    "may be permanently skipped", against 87-208 duplicate answers.
+    """
     monkeypatch.setattr(bot.settings, "teams_max_state_age_minutes", 60)
     monkeypatch.setattr(bot.settings, "teams_initial_lookback_minutes", 5)
     monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
@@ -526,43 +539,47 @@ def test_force_advance_does_not_bury_a_message_within_the_lookback_window(monkey
 
     monkeypatch.setattr(pbot, "_api_request", fake_api)
 
+    before = datetime.now(timezone.utc)
     pbot.process_new_messages()
+    after = datetime.now(timezone.utc)
 
-    # A message from 2 minutes ago is comfortably inside the 5-minute lookback
-    # buffer, so it must land strictly after the force-advanced watermark...
+    # The watermark is `now`, not a lookback behind it. Bracketed rather than
+    # compared to a single timestamp, because `now` is read inside the call.
+    assert before <= pbot.last_check <= after
+    # A message from 2 minutes ago is therefore already behind the watermark,
+    # and reads as old on the next fetch -- no re-read window is left open.
     recent = datetime.now(timezone.utc) - timedelta(minutes=2)
-    assert pbot.last_check < recent
-    # ...which is what keeps the next fetch from silently burying it as old.
     should_process, reason = pbot._should_process_message(
         {"id": "healthy1", "messageType": "message",
          "from": {"user": {"id": "someone"}},
          "createdDateTime": recent.isoformat().replace("+00:00", "Z")},
         my_user_id="me", chat_id="healthy",
     )
-    assert should_process is True, reason
+    assert should_process is False and reason == "old_message"
 
 
-def test_force_advance_lookback_window_does_not_duplicate_already_processed(monkeypatch, pbot):
-    """The flip side of the test above, per the controller's explicit request to
-    confirm this by measurement rather than argument: re-opening a small window
-    behind `now` must not let an ALREADY-answered message become re-answerable.
-    Ruling H has been blocking eviction for the whole hold, so a healthy chat's
-    normal traffic during that hold is still in processed_messages when the
-    force-advance runs — _should_process_message must reject it by id before
-    the (now earlier) timestamp check ever runs."""
+def test_force_advance_leaves_nothing_processed_newer_than_the_watermark(monkeypatch, pbot):
+    """The invariant that makes the eviction below the force-advance safe.
+
+    This is the load harness's finding reduced to its essence, and it replaces a
+    test that asserted dedup could rely on the id set surviving eviction. It
+    cannot: _cleanup_processed_messages runs in this very cycle and may drop any
+    id at all. So the watermark alone must be enough -- every message already
+    marked processed must ALSO be behind last_check once the force-advance has
+    run, so that even a fully emptied processed_messages could not produce a
+    duplicate answer.
+    """
     monkeypatch.setattr(bot.settings, "teams_max_state_age_minutes", 60)
     monkeypatch.setattr(bot.settings, "teams_initial_lookback_minutes", 5)
     monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
     monkeypatch.setattr(pbot, "_send_message", lambda *a, **k: True)
     pbot._hold_since = datetime.now(timezone.utc) - timedelta(minutes=61)
 
-    # A message from 2 minutes ago -- inside the lookback window the force
-    # advance leaves open -- that a healthy chat already had answered earlier
-    # in the hold (eviction never ran, per Ruling H, so its id is still here).
+    # A message a healthy chat had answered two minutes ago, during the hold.
     recent = datetime.now(timezone.utc) - timedelta(minutes=2)
     already_answered = {"id": "m1", "messageType": "message",
-                         "from": {"user": {"id": "someone"}},
-                         "createdDateTime": recent.isoformat().replace("+00:00", "Z")}
+                        "from": {"user": {"id": "someone"}},
+                        "createdDateTime": recent.isoformat().replace("+00:00", "Z")}
     pbot._mark_processed(bot._message_key("healthy", "m1"))
 
     def fake_api(url, method="GET", json_data=None, retry=False):
@@ -574,11 +591,12 @@ def test_force_advance_lookback_window_does_not_duplicate_already_processed(monk
 
     pbot.process_new_messages()
 
-    # last_check now sits behind "recent" (the whole point of Ruling M)...
-    assert pbot.last_check < recent
-    # ...but the id check must still catch it first, so it is not re-answered.
-    should_process, reason = pbot._should_process_message(already_answered, my_user_id="me", chat_id="healthy")
-    assert should_process is False and reason == "already_processed"
+    assert pbot.last_check > recent, "the force-advance left an already-answered message ahead of the watermark"
+    # Simulate the worst case eviction could ever produce: the id is gone.
+    pbot.processed_messages.clear()
+    should_process, reason = pbot._should_process_message(
+        already_answered, my_user_id="me", chat_id="healthy")
+    assert should_process is False and reason == "old_message"
 
 
 def test_hold_does_not_force_advance_before_the_threshold(monkeypatch, pbot):

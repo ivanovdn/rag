@@ -125,6 +125,25 @@ class Settings(BaseSettings):
     teams_initial_lookback_minutes: int = 5
     teams_max_state_age_minutes: int = 60   # clamp last_check older than this on startup (anti-backlog-flood)
     teams_max_consecutive_errors: int = 5
+    # Bounds the drain in TeamsBot._graceful_shutdown. It must stay BELOW the
+    # container's stop grace — docker-compose-remote.yml pins the bot service's
+    # stop_grace_period to 30s for exactly this reason, and says so — so the bot
+    # finishes draining, saves state and exits on its own rather than being
+    # SIGKILLed, which is the hard crash this whole path exists to avoid. Raising
+    # this past that grace silently gives the behaviour back, and nothing fails
+    # loudly when it does: change both together.
+    #
+    # 12, not 8: measured on the VM 2026-09-23, a warm answer takes ~6.9s end to
+    # end, so an 8s drain left 1.1s of margin and timed out on its very first
+    # production restart. 12s clears a warm answer comfortably while still
+    # leaving room under the 30s container grace to save state and exit. A COLD
+    # answer (~15.9s, first question after a deploy) still exceeds this and will
+    # time out — that is accepted, not overlooked: the drain is best-effort, and
+    # a message it abandons stays in _inflight, so _save_state keeps its id out
+    # of the persisted set and holds the watermark behind it, and the next start
+    # re-delivers it. Timing out costs one wasted GPU run and a few seconds of
+    # delay, never a lost or duplicated answer.
+    teams_shutdown_grace_seconds: int = 12
     # A TRIGGER threshold, not a hard cap (branch review Fix B): crossing it makes
     # _cleanup_processed_messages fire, and that removes only 20% of the current
     # size — see its comment in bot.py. Resident size can run to roughly 5x this
@@ -160,27 +179,32 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_hold_bound(self) -> "Settings":
-        """Warn (never crash) if the runtime watermark hold could never release.
+        """Warn (never crash) if the startup clamp would undo its own purpose.
 
-        TeamsBot's force-advance (Ruling G, targeted per Ruling M) advances
-        last_check to `now - teams_initial_lookback_minutes` once a hold has
-        lasted longer than teams_max_state_age_minutes. That only guarantees
-        forward progress while the lookback is strictly smaller than the
-        bound — at or above it, a quiet cycle's force-advance can fail to
-        move last_check at all (or by a margin too small to matter), so the
-        hold never actually ends and the duplicate-answer path it exists to
-        prevent (R-1) reopens. A realistic way to reach this: raising
-        TEAMS_INITIAL_LOOKBACK_MINUTES after an incident without also raising
-        TEAMS_MAX_STATE_AGE_MINUTES.
+        _load_state clamps a stale last_check — one older than
+        teams_max_state_age_minutes — back to `now - teams_initial_lookback_minutes`,
+        so a long-stopped bot cannot answer the whole backlog into the channel.
+        That only works while the lookback is strictly smaller than the bound.
+        At or above it the clamp re-opens a window at least as wide as the age
+        it just rejected as too stale, so the very messages the clamp exists to
+        suppress are handed straight back as new. A realistic way to reach this:
+        raising TEAMS_INITIAL_LOOKBACK_MINUTES after an incident without also
+        raising TEAMS_MAX_STATE_AGE_MINUTES.
+
+        Note this used to justify itself by the runtime force-advance, which
+        targeted `now - lookback` under Ruling M. It no longer does: that target
+        is now plain `now` (see process_new_messages), so the force-advance
+        always clears the hold whatever this setting says. The startup clamp is
+        the only reason left to warn — but it is reason enough.
         """
         lookback = self.teams_initial_lookback_minutes
         bound = self.teams_max_state_age_minutes
         if lookback >= bound:
             print(
                 f"WARNING: TEAMS_INITIAL_LOOKBACK_MINUTES ({lookback}) >= "
-                f"TEAMS_MAX_STATE_AGE_MINUTES ({bound}); the runtime watermark hold "
-                "may never release, which can reopen the duplicate-answer path it "
-                "exists to prevent."
+                f"TEAMS_MAX_STATE_AGE_MINUTES ({bound}); the startup clamp would "
+                "re-open a window at least as old as the staleness it rejects, so a "
+                "long-stopped bot can still answer the backlog it exists to suppress."
             )
         return self
 
