@@ -28,6 +28,7 @@ from pathlib import Path
 
 from config import settings
 from rag.observability import get_tracer
+from rag.search_first import compose_agent_input, prefetch
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
@@ -88,9 +89,9 @@ def fact_coverage(expected, actual: str) -> float:
     return similarity(expected, actual)
 
 
-async def run_agent_query(agent, query: str) -> str:
-    """Run a query through the agent and return the response string."""
-    response = await agent.run(query)
+async def run_agent_query(agent, agent_input: str) -> str:
+    """Run a (question + retrieved sources) input through the agent and return the response string."""
+    response = await agent.run(user_msg=agent_input)
     return str(response)
 
 
@@ -299,7 +300,6 @@ async def run_e2e_eval(dataset_path: Path, tag: str) -> dict:
     tracer = get_tracer()
     data = load_dataset(dataset_path)
     test_cases = data["test_cases"]
-    agent = build_agent()
 
     results = []
     citation_correct_count = 0
@@ -313,8 +313,14 @@ async def run_e2e_eval(dataset_path: Path, tag: str) -> dict:
             span.set_attribute("eval.test_id", tc["id"])
             span.set_attribute("eval.question", tc["question"])
 
+            pre = prefetch(tc["question"])
+            if pre.status != "ok":
+                logger.info(f"  [{tc['id']}] SKIPPED ({pre.status}); no sources retrieved")
+                continue
+
+            agent = build_agent()
             start = time.time()
-            answer = await run_agent_query(agent, tc["question"])
+            answer = await run_agent_query(agent, compose_agent_input(tc["question"], pre.sources))
             latency = time.time() - start
             latencies.append(latency)
 
@@ -406,7 +412,6 @@ async def run_escalation_eval(dataset_path: Path, tag: str) -> dict:
     tracer = get_tracer()
     data = load_dataset(dataset_path)
     test_cases = data["test_cases"]
-    agent = build_agent()
 
     results = []
     correct_escalations = 0
@@ -430,7 +435,13 @@ async def run_escalation_eval(dataset_path: Path, tag: str) -> dict:
             span.set_attribute("eval.test_id", tc["id"])
             span.set_attribute("eval.question", tc["question"])
 
-            answer = await run_agent_query(agent, tc["question"])
+            pre = prefetch(tc["question"])
+            if pre.status != "ok":
+                logger.info(f"  [{tc['id']}] SKIPPED ({pre.status}); no sources retrieved")
+                continue
+
+            agent = build_agent()
+            answer = await run_agent_query(agent, compose_agent_input(tc["question"], pre.sources))
             answer_lower = answer.lower()
 
             was_escalated = any(m in answer_lower for m in escalation_markers)
@@ -506,7 +517,6 @@ async def run_chatbot_eval(dataset_path: Path, tag: str) -> dict:
     tracer = get_tracer()
     data = load_dataset(dataset_path)
     test_cases = data["test_cases"]
-    agent = build_agent()
 
     results = []
     citation_correct_count = 0
@@ -520,8 +530,14 @@ async def run_chatbot_eval(dataset_path: Path, tag: str) -> dict:
             span.set_attribute("eval.test_id", tc["id"])
             span.set_attribute("eval.question", tc["question"])
 
+            pre = prefetch(tc["question"])
+            if pre.status != "ok":
+                logger.info(f"  [{tc['id']}] SKIPPED ({pre.status}); no sources retrieved")
+                continue
+
+            agent = build_agent()
             start = time.time()
-            answer = await run_agent_query(agent, tc["question"])
+            answer = await run_agent_query(agent, compose_agent_input(tc["question"], pre.sources))
             latency = time.time() - start
             latencies.append(latency)
 
