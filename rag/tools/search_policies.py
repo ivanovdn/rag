@@ -8,6 +8,9 @@ from rag.observability import record_floor_rejection
 _last_search_results: list[dict] = []
 _retrieval_unavailable: bool = False
 
+NO_MATCH = "NO_RELEVANT_POLICY_FOUND"
+UNAVAILABLE = "POLICY_SEARCH_UNAVAILABLE"
+
 
 def search_policies(query: str, top_k: int = 6) -> str:
     """
@@ -36,7 +39,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
         raw = hybrid_search(query=query, top_k=retrieve_k)
         if not raw:
             _last_search_results = []
-            return "NO_RELEVANT_POLICY_FOUND"
+            return NO_MATCH
 
         results = [
             {
@@ -64,7 +67,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
                 _last_search_results = []
                 _retrieval_unavailable = True
                 record_infra_unavailable("embeddings", type(exc).__name__, len(RETRY_BACKOFFS))
-                return "POLICY_SEARCH_UNAVAILABLE"
+                return UNAVAILABLE
             raise
 
         try:
@@ -74,17 +77,17 @@ def search_policies(query: str, top_k: int = 6) -> str:
                 _last_search_results = []
                 _retrieval_unavailable = True
                 record_infra_unavailable("qdrant", type(exc).__name__, len(RETRY_BACKOFFS))
-                return "POLICY_SEARCH_UNAVAILABLE"
+                return UNAVAILABLE
             raise
 
         if not raw:
             _last_search_results = []
-            return "NO_RELEVANT_POLICY_FOUND"
+            return NO_MATCH
 
         # Apply confidence threshold only when reranker is OFF
         if not settings.reranker_enabled and raw[0].score < settings.min_confidence_score:
             _last_search_results = []
-            return "NO_RELEVANT_POLICY_FOUND"
+            return NO_MATCH
 
         results = [
             {
@@ -129,7 +132,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
             record_floor_rejection(top_score, settings.reranker_min_score)
             # _last_search_results deliberately left populated — see
             # test_a_rejected_search_still_reports_what_it_found.
-            return "NO_RELEVANT_POLICY_FOUND"
+            return NO_MATCH
 
     # Step 4: Format for the agent
     return format_sources(results)
@@ -138,7 +141,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
 def format_sources(search_results: list[dict]) -> str:
     """Format search results for the agent. No scores, no doc_id — just policy content."""
     if not search_results:
-        return "=== RETRIEVED POLICY SOURCES ===\n\nNO_RELEVANT_POLICY_FOUND"
+        return f"=== RETRIEVED POLICY SOURCES ===\n\n{NO_MATCH}"
 
     lines = ["=== RETRIEVED POLICY SOURCES ==="]
 
