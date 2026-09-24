@@ -3,6 +3,7 @@ import asyncio
 from llama_index.core.tools import FunctionTool
 
 from config import settings
+from rag.observability import record_floor_rejection
 
 _last_search_results: list[dict] = []
 _retrieval_unavailable: bool = False
@@ -117,6 +118,18 @@ def search_policies(query: str, top_k: int = 6) -> str:
         }
         for r in results
     ]
+
+    # Step 3b: Relevance floor (spec D8).
+    # Guarded on the key being PRESENT, not on its value: the reranker's fallback
+    # path returns results with no rerank_score at all, and defaulting that to 0.0
+    # would reject every question the moment the reranker degraded.
+    if settings.reranker_min_score > 0 and results and "rerank_score" in results[0]:
+        top_score = results[0]["rerank_score"]
+        if top_score < settings.reranker_min_score:
+            record_floor_rejection(top_score, settings.reranker_min_score)
+            # _last_search_results deliberately left populated — see
+            # test_a_rejected_search_still_reports_what_it_found.
+            return "NO_RELEVANT_POLICY_FOUND"
 
     # Step 4: Format for the agent
     return format_sources(results)

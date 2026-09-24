@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     reranker_query_template: str = "<Instruct>: {instruction}\n<Query>: {query}"
     reranker_top_n: int = 6
     reranker_candidates: int = 20
+    # Relevance floor on the reranker's 0.0-1.0 score. 0.0 means OFF.
+    # This is NOT a reuse of min_confidence_score: that one is cosine similarity
+    # on the reranker-off path, this one is a reranker relevance probability, and
+    # one knob for two scales would be a latent bug.
+    # The live value is measured from Phoenix `reranker.top_score` on the VM and
+    # set before merge — never guessed. CLAUDE.md records a "reranker scores
+    # compressed" failure mode, so the distribution has to be looked at.
+    reranker_min_score: float = 0.0
     reranker_instruction: str = "Given an employee compliance question, retrieve the internal policy clause that answers it"
 
     # Hybrid search
