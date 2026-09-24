@@ -59,12 +59,12 @@ class ComplianceAnswer(BaseModel):
 
 # Measured against a live qwen3.6 36B at num_ctx 4096 via /api/chat with
 # num_predict=1, reading prompt_eval_count:
-#   this prompt            540 tokens   (the previous one: 1066)
+#   this prompt            571 tokens   (the previous one: 1066)
 #   tool schemas             0 tokens   (the previous three: 817)
-#   fixed overhead         540 tokens   (previously 1883 — 46% of the window)
+#   fixed overhead         571 tokens   (previously 1883 — 46% of the window)
 # Re-measure both constants below if you edit the prompt; the guard in
 # tests/unit/test_llm_config.py pins them to its character count.
-FIXED_OVERHEAD_TOKENS = 540
+FIXED_OVERHEAD_TOKENS = 571
 # Largest source payload observed in Phoenix (~1257 tokens), rounded up.
 MAX_SOURCE_TOKENS = 1300
 
@@ -94,6 +94,9 @@ Name the document and location, then quote it:
 
 WRONG — advice, and not grounded in a source:
 "You should not install software because it could pose a security risk. The IT team needs to approve all installations first."
+
+WRONG — answered from general knowledge instead of the sources:
+"Based on industry best practices, software installation should be controlled to prevent security vulnerabilities."
 
 == OUTPUT ==
 

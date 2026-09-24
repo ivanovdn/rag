@@ -102,7 +102,7 @@ def test_the_request_budget_fits_in_the_context_window():
     num_ctx = settings.ollama_num_ctx
     num_predict = 1024
 
-    assert len(SYSTEM_PROMPT) == 2169, (
+    assert len(SYSTEM_PROMPT) == 2350, (
         "SYSTEM_PROMPT changed; re-measure FIXED_OVERHEAD_TOKENS with "
         "/api/chat num_predict=1 and update both numbers together"
     )
