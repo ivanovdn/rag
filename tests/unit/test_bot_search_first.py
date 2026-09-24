@@ -9,6 +9,7 @@ import pytest
 
 import channels.teams.bot as bot
 import rag.search_first as sf
+import rag.tools.search_policies as sp
 
 
 @pytest.fixture
@@ -24,6 +25,34 @@ def test_an_unavailable_search_short_circuits_without_an_llm_call(monkeypatch, n
     monkeypatch.setattr(sf, "prefetch", lambda q: sf.PrefetchResult("unavailable"))
 
     assert bot._run_rag("anything") == {"status": "unavailable"}
+
+
+def test_an_unavailable_retrieval_short_circuits_end_to_end(monkeypatch, no_agent, capsys):
+    """Replaces tests/unit/test_bot_queue.py::test_run_rag_logs_retrieval_as_the_failing_component,
+    deleted in the same change that added this file. That test's trigger — a tool
+    setting sp._retrieval_unavailable during agent.run() — died along with the tools
+    (Task 4 left zero of them), but what it actually pinned was bot behaviour on an
+    unavailable retrieval end to end, and that seam is still real and still worth
+    guarding.
+
+    Every other unavailable-retrieval test mocks one side of the seam in isolation:
+    this file's own short-circuit test above stubs sf.prefetch wholesale (proves
+    _run_rag's branching, not prefetch's classification), and
+    test_search_first.py's tests call prefetch() directly (proves prefetch's
+    classification and logging, never through _run_rag). None of them drives the
+    real bot._run_rag() -> the real rag.search_first.prefetch() -> a faked
+    rag.tools.search_policies.search_policies() and checks the composition — the
+    exact thing the deleted test proved. This one patches search_policies, not
+    prefetch, so it would fail if either half of that chain broke: _run_rag's
+    handling of an "unavailable" PrefetchResult, or prefetch's own classification
+    and log line. Do not delete this again without replacing what it covers.
+    """
+    monkeypatch.setattr(sp, "search_policies", lambda q, *a, **k: sp.UNAVAILABLE)
+
+    result = bot._run_rag("anything")
+
+    assert result == {"status": "unavailable"}
+    assert "Unavailable (retrieval)" in capsys.readouterr().out
 
 
 def test_a_no_match_search_escalates_without_an_llm_call(monkeypatch, no_agent):
