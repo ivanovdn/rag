@@ -173,7 +173,7 @@ class TeamsBot:
         # transient infra failure into a false content escalation, silently.
         # Fix those globals (ToolCallResult.tool_output is per-request) before
         # ever running more than one.
-        self._work_q: "queue.Queue[tuple[str, str, str, str]]" = queue.Queue()
+        self._work_q: "queue.Queue[tuple[str, str, str, str, float]]" = queue.Queue()
         self._worker: threading.Thread | None = None  # started by _ensure_worker() in run()
         # message key -> createdDateTime, for messages accepted but not yet answered.
         self._inflight: dict[str, datetime] = {}
@@ -573,7 +573,11 @@ class TeamsBot:
 
         # Enqueue first: a slow ack POST must not delay the work it acknowledges.
         # In-flight registration stays above both, so a crash anywhere here re-delivers.
-        self._work_q.put((chat_id, text, sender_name, message_key or ""))
+        # monotonic, not wall clock: this is a duration, and it must not be skewed by
+        # an NTP step. The worker turns it into compliance_request.queue_wait_ms — the
+        # only record of what the USER waited. The span itself opens after the dequeue,
+        # so without this a question that sat 35s behind four others still reports ~7s.
+        self._work_q.put((chat_id, text, sender_name, message_key or "", time.monotonic()))
         # Depth right after enqueueing, so it shows how deep this sender landed in the
         # backlog. qsize() is approximate under concurrency — fine for a log line, not
         # worth a lock. Kept immediately adjacent to process_new_messages' "New message
@@ -605,9 +609,10 @@ class TeamsBot:
             if job is _WORKER_STOP or self._shutdown.is_set():
                 self._work_q.task_done()
                 return
-            chat_id, text, sender_name, message_key = job
+            chat_id, text, sender_name, message_key, queued_at = job
             try:
-                if not self._answer(chat_id, text, sender_name=sender_name):
+                if not self._answer(chat_id, text, sender_name=sender_name,
+                                    queued_at=queued_at):
                     # The answer was produced but the reply POST failed even after
                     # retries. Nothing re-sends it — the user has an ack and then
                     # silence — so say so loudly instead of dropping it quietly.
@@ -644,8 +649,13 @@ class TeamsBot:
             self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="rag-worker")
             self._worker.start()
 
-    def _answer(self, chat_id, text, sender_name="Unknown"):
-        """Worker thread: route, run RAG, reply. Never called from the poll loop."""
+    def _answer(self, chat_id, text, sender_name="Unknown", queued_at=None):
+        """Worker thread: route, run RAG, reply. Never called from the poll loop.
+
+        queued_at is the time.monotonic() stamp taken when _handle_inbound enqueued
+        this message; the worker passes it through so the root span can carry the
+        queue wait. Defaults to None so a direct call still works.
+        """
         # Deferred import: init_observability() (start_teams_bot.py) must run before
         # LlamaIndex loads, so this module never imports anything observability-adjacent
         # at module level — same reasoning as the deferred imports below and in _run_rag.
@@ -653,6 +663,12 @@ class TeamsBot:
         from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
         tracer = get_tracer()
+        # What the user actually waited before any work started. This span measures
+        # PROCESSING; with one worker, a burst puts the real cost in the queue instead
+        # — measured in production 2026-09-24, nine questions from three people left
+        # someone at depth 5 waiting ~35s while their span honestly reported ~7s.
+        # Sort traces by this to find who had a bad time; span duration alone hides it.
+        queue_wait_ms = round((time.monotonic() - queued_at) * 1000) if queued_at is not None else 0
         # One root span for the whole request, opened before the router call and made
         # "current" (start_as_current_span attaches it) so every span started
         # underneath it — the router's own classification span, and, via _run_rag,
@@ -668,6 +684,7 @@ class TeamsBot:
                 # audit convention for this compliance bot. Never chat id or sender name —
                 # those identify a person and the span does not need them.
                 "compliance_request.question": text,
+                "compliance_request.queue_wait_ms": queue_wait_ms,
             },
         ) as span:
             # Pre-retrieval classification: only in-scope questions reach policy search.

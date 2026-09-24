@@ -223,3 +223,70 @@ def test_outcome_attribute_set_on_answered_path(monkeypatch, request_span_tracer
 
     span = next(s for s in exporter.get_finished_spans() if s.name == "compliance_request")
     assert span.attributes["compliance_request.outcome"] == "answered"
+
+
+# --- queue wait ----------------------------------------------------------------
+#
+# compliance_request opens AFTER the worker dequeues, so its duration measures
+# processing and says nothing about what the user waited. With one worker, a burst
+# puts the real cost in the queue: measured in production 2026-09-24, nine questions
+# from three people left someone at depth 5 waiting ~35s while their span reported
+# ~7s. _handle_inbound stamps time.monotonic() onto the queue tuple for this.
+
+
+def test_queue_wait_is_recorded_on_the_root_span(monkeypatch, request_span_tracer, teams_bot):
+    _tracer, exporter = request_span_tracer
+    monkeypatch.setattr(bot_mod.settings, "router_enabled", True)
+    monkeypatch.setattr(
+        router_mod,
+        "classify_message",
+        lambda text: RouterDecision(category=Category.GREETING, confidence=0.95),
+    )
+
+    # 2.5s earlier on the monotonic clock: this message sat in the queue that long.
+    queued_at = bot_mod.time.monotonic() - 2.5
+    teams_bot._answer("chat1", "hello", queued_at=queued_at)
+
+    span = next(s for s in exporter.get_finished_spans() if s.name == "compliance_request")
+    wait_ms = span.attributes["compliance_request.queue_wait_ms"]
+    assert 2400 <= wait_ms <= 2700, wait_ms
+
+
+def test_queue_wait_defaults_to_zero_without_a_stamp(monkeypatch, request_span_tracer, teams_bot):
+    """A direct call (tests, or any future non-queued path) must not crash or
+    report a nonsense wait — the attribute is always present so it stays a usable
+    filter in Phoenix."""
+    _tracer, exporter = request_span_tracer
+    monkeypatch.setattr(bot_mod.settings, "router_enabled", True)
+    monkeypatch.setattr(
+        router_mod,
+        "classify_message",
+        lambda text: RouterDecision(category=Category.GREETING, confidence=0.95),
+    )
+
+    teams_bot._answer("chat1", "hello")
+
+    span = next(s for s in exporter.get_finished_spans() if s.name == "compliance_request")
+    assert span.attributes["compliance_request.queue_wait_ms"] == 0
+
+
+def test_the_worker_passes_the_enqueue_stamp_through(monkeypatch, teams_bot):
+    """End to end through the real queue: _handle_inbound stamps, _worker_loop
+    unpacks and forwards. Guards the tuple contract between the two threads —
+    if either side stops agreeing on the shape, queue_wait_ms silently becomes 0."""
+    seen = {}
+
+    def fake_answer(chat_id, text, sender_name="Unknown", queued_at=None):
+        seen["queued_at"] = queued_at
+        return True
+
+    monkeypatch.setattr(teams_bot, "_answer", fake_answer)
+    monkeypatch.setattr(teams_bot, "_send_message", lambda *a, **k: True)
+
+    before = bot_mod.time.monotonic()
+    teams_bot._handle_inbound("chat1", "Can I install software?", "Ann", "chat1:m1", None)
+    teams_bot._ensure_worker()
+    teams_bot._work_q.join()
+
+    assert seen["queued_at"] is not None, "the enqueue stamp never reached _answer"
+    assert before <= seen["queued_at"] <= bot_mod.time.monotonic()

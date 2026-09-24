@@ -171,7 +171,7 @@ def test_the_drain_is_bounded_and_unfinished_work_is_re_delivered(
     started = threading.Event()
     release = threading.Event()
 
-    def _never_finishes(chat_id, text, sender_name="Unknown"):
+    def _never_finishes(chat_id, text, sender_name="Unknown", queued_at=None):
         started.set()
         # Bounded so that an unbounded join() fails this test in ~10s rather than
         # hanging the suite forever.
