@@ -1401,6 +1401,92 @@ ever had."
 
 ---
 
+### Task 7b: The two scripts that also call the agent directly
+
+Found by the Task 4 review, not by the original plan. `scripts/test_query.py` and
+`scripts/run_eval.py` build the agent and pass the raw question, exactly as `_run_rag` used
+to. With a tool-free agent they return an escalation for **every** query — silently, with no
+error and no crash. `scripts/test_query.py` is a documented command in `CLAUDE.md:15`
+("Test a query"), so this would ship as a broken developer entry point.
+
+**Files:**
+- Modify: `scripts/test_query.py:19-20,25,44`
+- Modify: `scripts/run_eval.py:93,297-302,404-409,504-509`
+
+**Interfaces:**
+- Consumes: `rag.search_first.prefetch`, `rag.search_first.compose_agent_input` (Task 2).
+- Produces: nothing other tasks depend on.
+
+- [ ] **Step 1: Find every call site**
+
+```bash
+grep -n "build_agent\|agent.run" scripts/test_query.py scripts/run_eval.py
+```
+
+Every `agent.run(<raw query>)` in those two files is a site to fix. Expect 2 in
+`test_query.py` and 4 in `run_eval.py` (one helper plus three call sites).
+
+- [ ] **Step 2: Wire retrieval in front of each call**
+
+At each site, replace the raw-question call with the same shape `_run_rag` uses. The
+imports go at the **top of each script** — these are standalone scripts with no
+observability-ordering constraint, so the deferred-import exception does not apply:
+
+```python
+from rag.search_first import compose_agent_input, prefetch
+```
+
+and at each call site:
+
+```python
+    pre = prefetch(query)
+    if pre.status != "ok":
+        print(f"[{pre.status}] no sources retrieved for: {query}")
+        return
+    agent = build_agent()
+    response = await agent.run(user_msg=compose_agent_input(query, pre.sources))
+```
+
+Adapt the `return` to each site's control flow — some are inside loops, where `continue` is
+correct instead. Keep each script's existing output format; do not restyle them.
+
+- [ ] **Step 3: Verify both scripts still parse**
+
+```bash
+PYTHONPATH=. python -m py_compile scripts/test_query.py scripts/run_eval.py && echo "compile OK"
+PYTHONPATH=. python -c "import ast,sys
+for f in ('scripts/test_query.py','scripts/run_eval.py'):
+    src=open(f).read()
+    assert 'prefetch' in src, f
+    assert 'compose_agent_input' in src, f
+    print(f, 'wired')"
+```
+
+These scripts need a live LLM, Qdrant and the reranker to actually run, so they are not
+unit-testable here and get no new tests — that is a deliberate scope decision, not an
+oversight. The compile-and-grep check above is the verification.
+
+- [ ] **Step 4: Run the unit suite**
+
+Run: `PYTHONPATH=. python -m pytest tests/unit -q; echo "exit=$?"`
+Expected: unchanged count, exit 0. Neither script is imported by any test.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/test_query.py scripts/run_eval.py
+git commit -m "fix(scripts): retrieve before the agent in test_query and run_eval
+
+Both built the agent and passed the raw question, exactly as _run_rag used to.
+Against a tool-free agent that returns an escalation for every query — silently,
+no error, no crash. test_query.py is a documented CLAUDE.md command, so this
+would have shipped as a broken developer entry point.
+
+Found by the Task 4 review; no task in the original plan covered these files."
+```
+
+---
+
 ### Task 8: Documentation
 
 **Files:**
