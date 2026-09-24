@@ -79,3 +79,36 @@ def test_get_llm_builds_a_fresh_client_per_call(monkeypatch):
     # dead-client-from-a-closed-loop bug. A genuinely fresh client has never
     # made a call, so this must be None.
     assert second._async_client is None
+
+
+def test_the_request_budget_fits_in_the_context_window():
+    """num_ctx is pinned at 4096 by the MoE+CUDA crash matrix, so the budget is
+    fixed and has to be checked, not hoped for.
+
+    Before this work the fixed overhead was 1883 tokens (1066 prompt + 817 of tool
+    schemas) — 46% of the window — and num_predict 1024 exceeded the 956 tokens
+    actually left at the largest observed prompt. The cap was nominal.
+
+    FIXED_OVERHEAD_TOKENS is measured, not derived, so the char assertion below
+    pins it to the prompt it was measured against: editing the prompt without
+    re-measuring fails here instead of silently rotting the constant.
+    """
+    from rag.agent import FIXED_OVERHEAD_TOKENS, MAX_SOURCE_TOKENS, SYSTEM_PROMPT
+
+    num_ctx = settings.ollama_num_ctx
+    num_predict = 1024
+
+    assert len(SYSTEM_PROMPT) == 2169, (
+        "SYSTEM_PROMPT changed; re-measure FIXED_OVERHEAD_TOKENS with "
+        "/api/chat num_predict=1 and update both numbers together"
+    )
+    assert FIXED_OVERHEAD_TOKENS + MAX_SOURCE_TOKENS + num_predict <= num_ctx
+
+
+def test_the_system_prompt_names_no_tools():
+    """The agent is tool-free (spec D2). A prompt that still orders a tool call
+    would make the model attempt one that does not exist."""
+    from rag.agent import SYSTEM_PROMPT
+
+    for tool in ("search_policies", "get_section", "escalate_to_compliance"):
+        assert tool not in SYSTEM_PROMPT
