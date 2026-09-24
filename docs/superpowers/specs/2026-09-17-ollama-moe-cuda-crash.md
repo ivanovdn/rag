@@ -142,48 +142,58 @@ This resolves what earlier drafts of this document left open: the cause is a hos
 
 ---
 
-## 9. Resolved 2026-09-24 — flash attention disabled on the host
+## 9. 2026-09-24 — flash attention disabled, `num_ctx` raised, reverted the same hour
 
-The Spark admin set `OLLAMA_FLASH_ATTENTION=0`. That removes the fifth of the five
-conditions, so the `num_ctx` ceiling this spec was written to work around no longer
-applies. `num_ctx` is back to **8192** and `num_predict` to **4096** — the values
-that ran for months before the incident.
+The Spark admin set `OLLAMA_FLASH_ATTENTION=0`, removing one of the five conditions.
+We raised `num_ctx` back to 8192 and `num_predict` to 4096 (commit a0097a4), and
+**reverted within the hour after the fault reappeared in production**.
 
-**Re-measured against the live host before changing anything**, through the same
-tool-calling path that produced the fault (MoE model, `think:false`, a tool schema,
-temperature 0):
+### What we measured before shipping
 
-| `num_ctx` | before (§4 sweep) | 2026-09-24 |
+Through a hand-rolled `/api/chat` call with a tool schema, `think:false`, temperature 0:
+
+| `num_ctx` | §4 sweep (FA on) | 2026-09-24 (FA off) |
 |---|---|---|
-| 4096 | OK | OK (1.2s) |
-| 4352 | **FAIL — CUDA 500** | OK (6.8s) |
-| 6144 | **FAIL — CUDA 500** | OK (6.5s) |
-| 8192 | **FAIL — CUDA 500** | OK (6.4s) |
-| 8192 + `num_predict` 4096 | **FAIL — CUDA 500** | OK, **5 consecutive runs** |
+| 4352 / 6144 / 8192 | **FAIL — CUDA 500, every time** | OK |
+| 8192 + `num_predict` 4096 | **FAIL** | OK, 5 consecutive |
 
-Every value that previously failed deterministically now passes. The fault was
-never intermittent, so this is conclusive rather than suggestive.
+Eight passes at values that had never once passed. We shipped.
 
-**Why restore rather than stay at 4096.** 4096 was always tight, and §6 recorded
-that as the cost of taking it: the largest real request measured 3,544 tokens
-combined (3,140 prompt + 617 completion over 83 Phoenix spans), leaving ~550 tokens
-of headroom, and a worst-case prompt left ~230 for an answer whose observed maximum
-is 617. 8192 restores roughly 2.3x headroom over the largest request we have ever
-actually served.
+### What happened
 
-**Residual risk — unchanged, and now the only one that matters.** Flash attention is
-set on a host this project does not own (see `spark-shared-not-owned`). Another team
-re-enabling it during an upgrade brings the crash back with no notice, and the
-user-visible symptom is "⚠️ Policy service temporarily unavailable". Recovery needs
-no code change and no deploy: set `OLLAMA_NUM_CTX=4096` in `.env` and restart. That
-is why the value stays a setting rather than becoming a constant again, and why
-`test_ollama_llm_gets_num_ctx_from_settings` guards that it really flows from config.
+Trace `940a8169…`, 09:17:11, the first real question after the deploy:
+`Ollama.chat` (router, no tools) OK in 627ms, then **four** `AgentWorkflow.run`
+attempts, every one `ERROR` on `Ollama.astream_chat` with
+`CUDA error: an illegal memory access was encountered`, then `infra_unavailable`.
+A user saw "⚠️ Policy service temporarily unavailable".
 
-The guard test `test_ollama_num_ctx_default_is_below_crash_threshold` is retired —
-its premise is gone. It is replaced by
-`test_num_predict_and_the_largest_real_prompt_fit_inside_num_ctx`, which guards the
-sizing invariant that outlives the crash: the completion cap and the largest real
-prompt must both fit inside `num_ctx`, or answers truncate mid-JSON.
+Re-probed minutes later: 8192 passed again, including with a production-shaped
+request (~3,000-token system prompt, three tool schemas). So the fault did not
+return permanently — it is now **intermittent**.
 
-Upstream ollama/ollama#17434 remains open; nothing here fixes the Ollama bug, it
-only stops us meeting one of its preconditions.
+### Why the verification was insufficient — the part worth remembering
+
+1. **A pass-based probe cannot distinguish "fixed" from "less frequent".** The old
+   fault was deterministic, so a handful of passes was meaningful evidence. Removing
+   a condition changed the fault's *character*, not just its rate — and against an
+   intermittent fault, N passes prove only that N passes are possible. The right
+   test is duration and volume under real traffic, not a burst of probes.
+2. **The probe was weaker than the measurement it claimed to supersede.** §4's sweep
+   drove the real `AgentWorkflow` path. This one hand-rolled the HTTP request, so it
+   exercised neither the real prompt, nor the three real tool schemas, nor the agent's
+   multi-turn loop — and the production failure occurred on the second agent turn.
+3. **The probes passed no `keep_alive`**, so each reset the model's TTL to Ollama's
+   5-minute default and may have forced reloads between tests — the same artefact
+   §1 already identified as faking a self-heal on 17 September. A probe that perturbs
+   residency is measuring something other than steady state.
+
+### Current position
+
+`num_ctx` 4096, `num_predict` 1024 — the configuration that served production for a
+week with zero CUDA errors. `OLLAMA_FLASH_ATTENTION=0` stays on the host and is
+presumably still worth having; it is simply not sufficient on its own.
+
+Raising `num_ctx` again needs evidence of a different kind: a sustained period of
+real traffic at 8192 on a non-production path, or an upstream fix in
+ollama/ollama#17434 (still open). Eight probe passes is not that evidence, and this
+section exists so nobody repeats the inference.
