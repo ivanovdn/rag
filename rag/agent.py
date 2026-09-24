@@ -34,7 +34,7 @@ class Citation(BaseModel):
 
 class Escalation(BaseModel):
     needed: bool = Field(
-        description="True ONLY if search_policies returned NO_RELEVANT_POLICY_FOUND or the question requires legal interpretation beyond policy text"
+        description="True ONLY if none of the retrieved sources answers the question, or the question requires legal interpretation beyond policy text"
     )
     reason: str = Field(
         default="", description="Why escalation is needed. Empty string if not needed."
