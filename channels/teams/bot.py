@@ -103,17 +103,29 @@ def _run_rag(question: str) -> dict:
     """
     # Deferred imports: init_observability() (start_teams_bot.py) must run before LlamaIndex loads.
     import asyncio
-    import rag.tools.search_policies as sp
     from rag.agent import build_agent
     from rag.response import parse_agent_response
     from rag.resilience import retry_transient, is_transient, RETRY_BACKOFFS
     from rag.observability import record_infra_unavailable
+    from rag.search_first import compose_agent_input, prefetch
 
-    sp._retrieval_unavailable = False
+    pre = prefetch(question)
+    if pre.status == "unavailable":
+        return {"status": "unavailable"}
+    if pre.status == "no_match":
+        return {
+            "answer": "",
+            "citations": [],
+            "escalation": {
+                "needed": True,
+                "reason": "No relevant policy was found for this question.",
+            },
+            "parse_success": True,
+        }
 
     async def _run():
         agent = build_agent()
-        return await agent.run(user_msg=question)
+        return await agent.run(user_msg=compose_agent_input(question, pre.sources))
 
     try:
         response = retry_transient(lambda: asyncio.run(_run()))
@@ -137,15 +149,6 @@ def _run_rag(question: str) -> dict:
             "citations": [],
             "escalation": {"needed": True, "reason": str(e)},
         }
-
-    # Retrieval failed inside the tool (LlamaIndex swallows tool exceptions) →
-    # the flag was set in search_policies; surface the unavailable outcome.
-    # search_policies itself does not print/log — it only emits the Phoenix
-    # infra_unavailable span — so this is the only container-log record that
-    # retrieval (not the LLM) was the failing component.
-    if sp._retrieval_unavailable:
-        print("[worker] Unavailable (retrieval): search_policies flagged the backend unavailable (embeddings/qdrant)")
-        return {"status": "unavailable"}
 
     return parse_agent_response(str(response))
 
