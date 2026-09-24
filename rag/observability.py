@@ -5,7 +5,7 @@ Initializes OpenTelemetry tracing to Phoenix for the entire application.
 Must be called once at startup before any LlamaIndex or Ollama calls.
 
 What gets traced automatically (via LlamaIndex instrumentor):
-- Every agent ReAct iteration (Thought -> Action -> Observation)
+- The agent's one LLM call (FunctionAgent, tool-free — no tool-call loop)
 - The pre-agent retrieval call (search_policies, via rag/search_first.py)
 - Every LLM generation (prompt, response, tokens, latency)
 - Every embedding call
