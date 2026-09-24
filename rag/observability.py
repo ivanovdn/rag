@@ -6,7 +6,7 @@ Must be called once at startup before any LlamaIndex or Ollama calls.
 
 What gets traced automatically (via LlamaIndex instrumentor):
 - Every agent ReAct iteration (Thought -> Action -> Observation)
-- Every tool call (search_policies, get_section, clarify, escalate)
+- The pre-agent retrieval call (search_policies, via rag/search_first.py)
 - Every LLM generation (prompt, response, tokens, latency)
 - Every embedding call
 

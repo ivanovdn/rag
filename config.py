@@ -92,7 +92,6 @@ class Settings(BaseSettings):
     hybrid_bm25_candidates: int = 20
 
     # Agent
-    agent_max_iterations: int = 8
     agent_timeout: int = 120
 
     # Router (pre-retrieval classification)
@@ -110,7 +109,6 @@ class Settings(BaseSettings):
     smtp_user: str = "bot@company.com"
     smtp_password: str = ""
     compliance_team_email: str = "compliance@company.com"
-    escalation_ticket_prefix: str = "ESC"
 
     # API
     api_secret_key: str = "changeme"
@@ -225,7 +223,17 @@ class Settings(BaseSettings):
     eval_dataset_path: str = "eval/datasets"
     eval_confidence_threshold: float = 0.45
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # extra="ignore": the deployed .env (and its untracked restore backup) is not
+    # edited by this change and still carries AGENT_MAX_ITERATIONS/
+    # ESCALATION_TICKET_PREFIX after their fields are deleted below. Without this,
+    # pydantic-settings' default extra="forbid" turns any dead/stale .env key into
+    # a hard ValidationError on import — config.py's module-level `settings =
+    # get_settings()` would crash the whole app, not just this settings lookup.
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
 
 @lru_cache

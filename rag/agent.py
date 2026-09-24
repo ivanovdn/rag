@@ -2,9 +2,6 @@ from llama_index.core.agent.workflow import AgentWorkflow
 from pydantic import BaseModel, Field
 
 from config import settings
-from rag.tools.escalate import escalate_to_compliance_tool
-from rag.tools.get_section import get_section_tool
-from rag.tools.search_policies import search_policies_tool
 
 # ============================================================
 # Response schema
@@ -116,11 +113,18 @@ Reply with valid JSON only. No text before or after it.
 # Agent builder
 # ============================================================
 
-ALL_TOOLS = [
-    search_policies_tool,
-    get_section_tool,
-    escalate_to_compliance_tool,
-]
+# Empty by design (spec D2), not by oversight.
+# Measured: get_section and escalate_to_compliance were never invoked in
+# production. escalate lost to the JSON escalation.needed field — the model must
+# emit it anyway, so the tool call is a wasted round-trip — and get_section lost
+# to satisfaction: once search returns usable sources the model stops, and three
+# controlled probes (explicit order, order moved to the prompt tail, gating
+# condition stripped from its docstring) all failed to force a second retrieval
+# step. search_policies is gone because retrieval now runs in rag/search_first.py
+# before the agent is built.
+# Re-adding a tool costs ~270-410 tokens of schema on every request and puts
+# tool-calling back — one of the five conditions in the MoE+CUDA crash matrix.
+ALL_TOOLS = []
 
 # Qwen3-family models emit reasoning traces by default on vLLM/llama-server.
 # Measured: 294 reasoning tokens and 34.5s to produce a 16-token router
@@ -176,12 +180,19 @@ def get_llm(model: str | None = None):
 
 
 def build_agent() -> AgentWorkflow:
-    """Build a ReAct agent with compliance tools."""
+    """Build the tool-free compliance agent.
+
+    NOT a ReAct agent, despite what this docstring said until 2026-09-24:
+    AgentWorkflow.from_tools_or_functions picks FunctionAgent when
+    llm.metadata.is_function_calling_model is True, and llama-index's Ollama
+    reports True. Production has always used native tool calls, never ReAct text.
+    """
     llm = get_llm()
     agent = AgentWorkflow.from_tools_or_functions(
         tools_or_functions=ALL_TOOLS,
         llm=llm,
         system_prompt=SYSTEM_PROMPT,
+        timeout=float(settings.agent_timeout),
         # Off: verbose=True prints ~20 [tick]/[run_agent_step] lines per question,
         # which buries the bot's own log — the WARNING lines an operator actually
         # needs (watermark holds, failed acks, force-advances) become unfindable

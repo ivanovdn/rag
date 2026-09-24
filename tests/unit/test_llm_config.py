@@ -112,3 +112,35 @@ def test_the_system_prompt_names_no_tools():
 
     for tool in ("search_policies", "get_section", "escalate_to_compliance"):
         assert tool not in SYSTEM_PROMPT
+
+
+def test_the_agent_is_tool_free():
+    """Spec D2. Measured: get_section and escalate_to_compliance were never
+    invoked in production, and three controlled probes could not force a second
+    retrieval step — once search returns usable sources the model stops.
+    search_policies goes too because retrieval now runs before the agent.
+
+    A re-added tool costs ~270-410 tokens of schema on EVERY request, so this
+    guard is about the budget as much as the design.
+    """
+    from rag.agent import ALL_TOOLS
+
+    assert ALL_TOOLS == []
+
+
+def test_the_agent_run_is_bounded_by_agent_timeout():
+    """Nothing bounded an agent run before: agent_timeout was declared, documented
+    in .env.example, and consumed by nothing, so the only limit was the per-call
+    Ollama request_timeout (300s remote) — under a 12s shutdown drain."""
+    from rag.agent import build_agent
+
+    wf = build_agent()
+    assert wf._timeout == float(settings.agent_timeout)
+
+
+def test_the_dead_agent_settings_are_gone():
+    """agent_max_iterations could never be wired: neither FunctionAgent nor
+    ReActAgent has such a field. escalation_ticket_prefix had exactly one
+    consumer, the deleted escalate tool."""
+    assert not hasattr(settings, "agent_max_iterations")
+    assert not hasattr(settings, "escalation_ticket_prefix")
