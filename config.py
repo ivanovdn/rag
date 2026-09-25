@@ -80,10 +80,16 @@ class Settings(BaseSettings):
     # This is NOT a reuse of min_confidence_score: that one is cosine similarity
     # on the reranker-off path, this one is a reranker relevance probability, and
     # one knob for two scales would be a latent bug.
-    # The live value is measured from Phoenix `reranker.top_score` on the VM and
-    # set before merge — never guessed. CLAUDE.md records a "reranker scores
-    # compressed" failure mode, so the distribution has to be looked at.
-    reranker_min_score: float = 0.0
+    # Measured, not guessed (2026-09-25, VM Phoenix, all 38 scored production
+    # requests since retrieval spans landed): escalated requests scored
+    # 0.0170-0.0172 (n=3), answered ones 0.8265-0.9981 (n=27) — no overlap, and
+    # no reranker-fallback rows, so the "reranker scores compressed" failure mode
+    # CLAUDE.md records is not present here. 0.2 sits 11.6x above the highest
+    # escalated score and 4.1x below the lowest answered one. Deliberately far
+    # below the midpoint: the escalated cluster is only n=3 and the 0.8265 low
+    # answer is a single observation, so the margin protecting real questions
+    # matters more than catching marginal ones. Re-measure as the sample grows.
+    reranker_min_score: float = 0.2
     reranker_instruction: str = "Given an employee compliance question, retrieve the internal policy clause that answers it"
 
     # Hybrid search
