@@ -229,7 +229,12 @@ Examples:
 
     client_kwargs = {}
     if args.phoenix_url:
-        client_kwargs["endpoint"] = args.phoenix_url
+        # base_url, not endpoint: phoenix.client.Client takes
+        # (base_url, api_key, headers, http_client). "endpoint" was the old
+        # kwarg and raises TypeError on arize-phoenix >= 13. Never caught
+        # because locally Phoenix is at the default localhost:6006, so this
+        # flag is only reached when running from inside a container.
+        client_kwargs["base_url"] = args.phoenix_url
     client = Client(**client_kwargs)
 
     # --- Handle overwrite ---
