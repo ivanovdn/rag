@@ -232,6 +232,73 @@ def _prompt_meta() -> dict:
     }
 
 
+PROMPT_REGISTRY_NAME = "compliance-system-prompt"
+
+
+def _mirror_prompt_to_registry(client) -> dict:
+    """Mirror SYSTEM_PROMPT into Phoenix's prompt registry and return its version id.
+
+    The registry is a MIRROR, never a source. rag/agent.py stays authoritative:
+    the prompt is this bot's entire safety surface (never answer ungrounded, quote
+    verbatim, escalate when uncertain), and fetching it at runtime would mean a
+    Phoenix outage or a stray Playground edit could silently change how a
+    compliance bot behaves. Nothing reads this back.
+
+    What it buys: the actual text visible beside each experiment, and Phoenix's
+    diff between versions — so when a sweep moves a number you can see what the
+    prompt change was, instead of diffing 2,350 characters by hand.
+
+    Idempotent: versions are tagged with the prompt's sha12, so re-running with an
+    unchanged prompt reuses the existing version instead of piling up duplicates.
+
+    Never raises. An eval run costs real GPU time on a shared host; a registry
+    hiccup must degrade to "no version id in the metadata", not lose the run.
+    """
+    from rag.agent import SYSTEM_PROMPT
+
+    sha = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12]
+    try:
+        existing = client.prompts.get(prompt_identifier=PROMPT_REGISTRY_NAME, tag=sha)
+        return {"system_prompt_version_id": existing.id}
+    except Exception:
+        pass  # not registered yet (or the registry is unreachable) — try to create
+
+    try:
+        from config import settings
+        from phoenix.client.types import PromptVersion
+
+        version = client.prompts.create(
+            name=PROMPT_REGISTRY_NAME,
+            prompt_description=(
+                "Read-only mirror of rag/agent.py SYSTEM_PROMPT. Nothing reads this at "
+                "runtime — editing it here changes nothing. Edit rag/agent.py."
+            ),
+            version=PromptVersion(
+                [{"role": "system", "content": SYSTEM_PROMPT}],
+                model_name=settings.llm_model,
+                model_provider="OLLAMA",
+                # NONE, not MUSTACHE/F_STRING: the prompt embeds a literal JSON
+                # block with { } braces. Any templating format would try to
+                # interpolate them and mangle the output contract.
+                template_format="NONE",
+                description=f"sha12={sha} · {len(SYSTEM_PROMPT)} chars",
+            ),
+        )
+        try:
+            client.prompts.tags.create(
+                prompt_version_id=version.id,
+                name=sha,
+                description="sha12 of rag/agent.py SYSTEM_PROMPT at the time of this run",
+            )
+        except Exception:
+            pass  # the version exists either way; the tag is only for idempotency
+        return {"system_prompt_version_id": version.id}
+    except Exception as exc:
+        print(f"  WARNING: could not mirror the prompt into Phoenix "
+              f"({type(exc).__name__}: {str(exc)[:80]}); the run continues without it")
+        return {}
+
+
 TIER_CONFIG = {
     "tier1": {"default_dataset": "retrieval-test-v1", "description": "Retrieval: hybrid search"},
     "tier2": {"default_dataset": "e2e-test-v1", "description": "E2E: full agent + structured JSON"},
@@ -342,7 +409,7 @@ def main():
                      # exactly (two runs with the same hash used the same prompt,
                      # committed or not); chars and tokens make the context-budget
                      # cost of a prompt change visible in the comparison.
-                     **_prompt_meta(),
+                     **_prompt_meta(), **_mirror_prompt_to_registry(client),
                      "agent_type": "function-agent-toolfree", "top_k": top_k, "tier": args.tier,
                      "structured_output": True}
 
