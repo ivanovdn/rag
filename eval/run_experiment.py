@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import asyncio
 import sys
 from pathlib import Path
@@ -211,6 +212,26 @@ def make_agent_task(verbose: bool = False):
     return e2e_task
 
 
+def _prompt_meta() -> dict:
+    """Identify the exact SYSTEM_PROMPT this run used.
+
+    Imported locally, like every other rag/ import in this module, so importing
+    run_experiment does not drag LlamaIndex in.
+
+    The hash is what makes prompt experiments comparable: two runs with the same
+    sha12 used byte-identical prompts, committed or not. chars and tokens make the
+    context-budget cost of a prompt edit visible alongside its quality effect —
+    the whole point of the audit this branch came out of.
+    """
+    from rag.agent import FIXED_OVERHEAD_TOKENS, SYSTEM_PROMPT
+
+    return {
+        "system_prompt_sha12": hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12],
+        "system_prompt_chars": len(SYSTEM_PROMPT),
+        "fixed_overhead_tokens": FIXED_OVERHEAD_TOKENS,
+    }
+
+
 TIER_CONFIG = {
     "tier1": {"default_dataset": "retrieval-test-v1", "description": "Retrieval: hybrid search"},
     "tier2": {"default_dataset": "e2e-test-v1", "description": "E2E: full agent + structured JSON"},
@@ -316,6 +337,12 @@ def main():
                      "min_confidence_score": settings.min_confidence_score if not settings.reranker_enabled else None,
                      "num_ctx": settings.ollama_num_ctx,
                      "temperature": settings.llm_temperature,
+                     # The prompt is a parameter like any other, and the one most
+                     # likely to be edited between runs. The hash identifies it
+                     # exactly (two runs with the same hash used the same prompt,
+                     # committed or not); chars and tokens make the context-budget
+                     # cost of a prompt change visible in the comparison.
+                     **_prompt_meta(),
                      "agent_type": "function-agent-toolfree", "top_k": top_k, "tier": args.tier,
                      "structured_output": True}
 
