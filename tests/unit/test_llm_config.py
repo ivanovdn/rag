@@ -54,7 +54,11 @@ def test_openai_like_disables_thinking(monkeypatch):
     assert llm.is_function_calling_model is True
     # Proves the timeout fix landed: OpenAILike has no `request_timeout`
     # field and silently drops it, leaving the SDK's 60s default.
-    assert llm.timeout == float(settings.active_request_timeout)
+    # Bind first: `settings` is never a bare name inside an assert line in
+    # this file, since pytest's assertion introspection would repr the
+    # whole Settings object (hf_token et al.) into the failure message.
+    request_timeout = float(settings.active_request_timeout)
+    assert llm.timeout == request_timeout
 
 
 def test_get_llm_builds_a_fresh_client_per_call(monkeypatch):
@@ -79,3 +83,78 @@ def test_get_llm_builds_a_fresh_client_per_call(monkeypatch):
     # dead-client-from-a-closed-loop bug. A genuinely fresh client has never
     # made a call, so this must be None.
     assert second._async_client is None
+
+
+def test_the_request_budget_fits_in_the_context_window():
+    """num_ctx is pinned at 4096 by the MoE+CUDA crash matrix, so the budget is
+    fixed and has to be checked, not hoped for.
+
+    Before this work the fixed overhead was 1883 tokens (1066 prompt + 817 of tool
+    schemas) — 46% of the window — and num_predict 1024 exceeded the 956 tokens
+    actually left at the largest observed prompt. The cap was nominal.
+
+    FIXED_OVERHEAD_TOKENS is measured, not derived, so the char assertion below
+    pins it to the prompt it was measured against: editing the prompt without
+    re-measuring fails here instead of silently rotting the constant.
+    """
+    from rag.agent import FIXED_OVERHEAD_TOKENS, MAX_SOURCE_TOKENS, SYSTEM_PROMPT
+
+    num_ctx = settings.ollama_num_ctx
+    num_predict = 1024
+
+    assert len(SYSTEM_PROMPT) == 2350, (
+        "SYSTEM_PROMPT changed; re-measure FIXED_OVERHEAD_TOKENS with "
+        "/api/chat num_predict=1 and update both numbers together"
+    )
+    assert FIXED_OVERHEAD_TOKENS + MAX_SOURCE_TOKENS + num_predict <= num_ctx
+
+
+def test_the_system_prompt_names_no_tools():
+    """The agent is tool-free (spec D2). A prompt that still orders a tool call
+    would make the model attempt one that does not exist."""
+    from rag.agent import SYSTEM_PROMPT
+
+    for tool in ("search_policies", "get_section", "escalate_to_compliance"):
+        assert tool not in SYSTEM_PROMPT
+
+
+def test_the_agent_is_tool_free():
+    """Spec D2. Measured: get_section and escalate_to_compliance were never
+    invoked in production, and three controlled probes could not force a second
+    retrieval step — once search returns usable sources the model stops.
+    search_policies goes too because retrieval now runs before the agent.
+
+    A re-added tool costs ~270-410 tokens of schema on EVERY request, so this
+    guard is about the budget as much as the design.
+    """
+    from rag.agent import ALL_TOOLS
+
+    assert ALL_TOOLS == []
+
+
+def test_the_agent_run_is_bounded_by_agent_timeout():
+    """Nothing bounded an agent run before: agent_timeout was declared, documented
+    in .env.example, and consumed by nothing, so the only limit was the per-call
+    Ollama request_timeout (300s remote) — under a 12s shutdown drain."""
+    from rag.agent import build_agent
+
+    wf = build_agent()
+    # Bind first, same reason as elsewhere in this file: `settings` must
+    # never appear bare inside an assert line (pytest would repr the whole
+    # Settings object, including live secrets, on failure).
+    agent_timeout = float(settings.agent_timeout)
+    assert wf._timeout == agent_timeout
+
+
+def test_the_dead_agent_settings_are_gone():
+    """agent_max_iterations could never be wired: neither FunctionAgent nor
+    ReActAgent has such a field. escalation_ticket_prefix had exactly one
+    consumer, the deleted escalate tool."""
+    # Bind first: `settings` as a bare hasattr() argument gets reprd by
+    # pytest's assertion introspection on failure, dumping the whole
+    # Settings object (hf_token is its first field, and -vv disables the
+    # truncation that would otherwise hide it).
+    has_iterations = hasattr(settings, "agent_max_iterations")
+    has_prefix = hasattr(settings, "escalation_ticket_prefix")
+    assert not has_iterations
+    assert not has_prefix

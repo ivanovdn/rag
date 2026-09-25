@@ -360,20 +360,6 @@ def agent_search_count(output, expected):
         return {"score": 0.5, "label": f"{n}_searches", "explanation": f"{n} searches — thrashing"}
 
 
-def agent_used_get_section(output, expected):
-    """Did agent call get_section? Optional — 0.5 if skipped, not penalized."""
-    if output is None:
-        return {"score": 0.0, "label": "error", "explanation": "Task returned None"}
-    meta = output.get("agent_metadata", {})
-    n = meta.get("num_section_fetches", 0)
-    fetches = meta.get("section_fetches", [])
-    if n == 0:
-        return {"score": 0.5, "label": "skipped", "explanation": "Skipped get_section (optional)"}
-    all_found = all(f["found"] for f in fetches)
-    return {"score": 1.0 if all_found else 0.5, "label": f"{n}_fetches",
-            "explanation": f"Fetched {n} section(s), all found: {all_found}"}
-
-
 # ============================================================
 # CONFIG EVALUATORS — show settings as columns in Phoenix
 # These return config values as labels, score is always 1.0.
@@ -413,17 +399,26 @@ RETRIEVAL_EVALUATORS = [
     retrieval_section_hit,
 ]
 
+# answer_coverage and the three citation_* evaluators are deliberately NOT in this
+# list (2026-09-25). They still exist above and can be put back by adding them here.
+#
+# answer_coverage is a word-overlap heuristic: it scores an answer by how many
+# significant words of a human-written expected_answer summary appear in it. This
+# system is built to quote policy text VERBATIM rather than paraphrase, so the two
+# strings legitimately diverge — it measured 0.4754 with 32 zeros on a run whose
+# citations were 0.81-0.88. It penalises the intended behaviour.
+#
+# The citation_* three measure what the MODEL cited, which is a different thing from
+# what RETRIEVAL returned (hit/mrr). Their last recorded values, chatbot-test-v1
+# 2026-09-25 on the search-first branch: doc 0.8770, section 0.8443, clause 0.8115.
+# Keep that datum — with these off, a later change to the prompt can degrade citation
+# quality without any evaluator noticing.
 GENERATION_EVALUATORS = [
-    answer_coverage,
-    citation_doc_accuracy,
-    citation_section_accuracy,
-    citation_clause_accuracy,
     json_parse_success,
 ]
 
 AGENT_EVALUATORS = [
     agent_search_count,
-    agent_used_get_section,
 ]
 
 TIER1_EVALUATORS = RETRIEVAL_EVALUATORS

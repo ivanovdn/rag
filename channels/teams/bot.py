@@ -103,17 +103,54 @@ def _run_rag(question: str) -> dict:
     """
     # Deferred imports: init_observability() (start_teams_bot.py) must run before LlamaIndex loads.
     import asyncio
-    import rag.tools.search_policies as sp
     from rag.agent import build_agent
     from rag.response import parse_agent_response
     from rag.resilience import retry_transient, is_transient, RETRY_BACKOFFS
     from rag.observability import record_infra_unavailable
+    from rag.search_first import compose_agent_input, prefetch
 
-    sp._retrieval_unavailable = False
+    try:
+        pre = prefetch(question)
+    except Exception as e:
+        # search_policies already intercepts transient failures itself and
+        # returns a status instead of raising (embed_query/search_vectors are
+        # wrapped in retry_transient + is_transient inside
+        # rag/tools/search_policies.py, which re-raises only when
+        # is_transient(exc) is False) — so anything that escapes prefetch() here
+        # is non-transient by construction, the same class the LLM branch below
+        # already escalates. Without this try/except the exception propagated
+        # straight out of _run_rag and past _answer's compliance_request span,
+        # which never got an "outcome" attribute — invisible in the Phoenix
+        # outcome breakdown — before landing in _worker_loop's catch-all, which
+        # sends a generic "something went wrong" reply instead of the
+        # escalation the spec promises. Truncated like the transient branch's
+        # log message below: an exception string can be arbitrarily long, and
+        # render_escalation interpolates `reason` into HTML unescaped.
+        print(f"RAG pipeline error (retrieval): {e}")
+        msg = str(e)
+        if len(msg) > 200:
+            msg = msg[:200] + "..."
+        return {
+            "answer": "",
+            "citations": [],
+            "escalation": {"needed": True, "reason": msg},
+        }
+    if pre.status == "unavailable":
+        return {"status": "unavailable"}
+    if pre.status == "no_match":
+        return {
+            "answer": "",
+            "citations": [],
+            "escalation": {
+                "needed": True,
+                "reason": "No relevant policy was found for this question.",
+            },
+            "parse_success": True,
+        }
 
     async def _run():
         agent = build_agent()
-        return await agent.run(user_msg=question)
+        return await agent.run(user_msg=compose_agent_input(question, pre.sources))
 
     try:
         response = retry_transient(lambda: asyncio.run(_run()))
@@ -138,15 +175,6 @@ def _run_rag(question: str) -> dict:
             "escalation": {"needed": True, "reason": str(e)},
         }
 
-    # Retrieval failed inside the tool (LlamaIndex swallows tool exceptions) →
-    # the flag was set in search_policies; surface the unavailable outcome.
-    # search_policies itself does not print/log — it only emits the Phoenix
-    # infra_unavailable span — so this is the only container-log record that
-    # retrieval (not the LLM) was the failing component.
-    if sp._retrieval_unavailable:
-        print("[worker] Unavailable (retrieval): search_policies flagged the backend unavailable (embeddings/qdrant)")
-        return {"status": "unavailable"}
-
     return parse_agent_response(str(response))
 
 
@@ -168,9 +196,12 @@ class TeamsBot:
         self._hold_since: datetime | None = None
         # EXACTLY ONE worker consumes this queue. Do not raise the worker count.
         # rag/tools/search_policies.py keeps _retrieval_unavailable and
-        # _last_search_results as module globals, reset before an agent run and
-        # read ~16s later. A second worker interleaves those resets and turns a
-        # transient infra failure into a false content escalation, silently.
+        # _last_search_results as module globals. prefetch() (search-first,
+        # Task 5) resets then reads both itself across one full retrieval call
+        # (see the keep_alive gotcha in CLAUDE.md) — narrower than the old
+        # ~16s agent-run window, not safer: a second worker can still
+        # interleave a reset with another's read and turn a transient infra
+        # failure into a false content escalation, silently.
         # Fix those globals (ToolCallResult.tool_output is per-request) before
         # ever running more than one.
         self._work_q: "queue.Queue[tuple[str, str, str, str, float]]" = queue.Queue()
@@ -738,14 +769,35 @@ class TeamsBot:
                     print("[worker] Unavailable notice sent")
                 return bool(sent)
 
-            # Render response
+            # Grounding backstop. CLAUDE.md: "Agent must never answer without
+            # citing a retrieved chunk." Two ways that was violated before, both
+            # reproduced: a failed parse falls back to escalation.needed=False
+            # with the raw model text as `answer`, and an answer with no
+            # citations rendered as bare prose. Both are escalations, and both
+            # get their own outcome so they stay countable in Phoenix instead of
+            # hiding inside "answered".
             escalation = result.get("escalation", {})
-            if escalation.get("needed"):
+            if not result.get("parse_success", True):
+                span.set_attribute("compliance_request.outcome", "escalated_parse_failure")
+                # A FIXED reason, never result["answer"] or raw_response: the
+                # renderer does not HTML-escape, so model output must not be
+                # interpolated into a message.
+                html = render_escalation(
+                    text,
+                    {"escalation": {"reason": "The answer could not be read in the expected format."}},
+                )
+            elif escalation.get("needed"):
                 span.set_attribute("compliance_request.outcome", "escalated")
                 html = render_escalation(text, result)
-            elif result.get("answer"):
+            elif result.get("answer") and result.get("citations"):
                 span.set_attribute("compliance_request.outcome", "answered")
                 html = render_answer(result)
+            elif result.get("answer"):
+                span.set_attribute("compliance_request.outcome", "escalated_ungrounded")
+                html = render_escalation(
+                    text,
+                    {"escalation": {"reason": "No policy source could be cited for this question."}},
+                )
             else:
                 span.set_attribute("compliance_request.outcome", "error")
                 html = render_error(text, "No answer returned from the pipeline.")

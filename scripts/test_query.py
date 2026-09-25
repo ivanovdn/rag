@@ -13,16 +13,19 @@ from rag.observability import init_observability
 init_observability()  # Must be before any LlamaIndex imports
 
 from rag.agent import build_agent
+from rag.search_first import compose_agent_input, prefetch
 
 
 async def run_query(query: str) -> str:
+    pre = prefetch(query)
+    if pre.status != "ok":
+        return f"[{pre.status}] no sources retrieved for: {query}"
     agent = build_agent()
-    response = await agent.run(query)
+    response = await agent.run(user_msg=compose_agent_input(query, pre.sources))
     return str(response)
 
 
 async def interactive_mode():
-    agent = build_agent()
     print("Compliance Q&A Bot — Interactive Mode")
     print("Type 'quit' or 'exit' to stop.\n")
 
@@ -41,7 +44,12 @@ async def interactive_mode():
             continue
 
         print("Searching policies...\n")
-        response = await agent.run(query)
+        pre = prefetch(query)
+        if pre.status != "ok":
+            print(f"[{pre.status}] no sources retrieved for: {query}\n")
+            continue
+        agent = build_agent()
+        response = await agent.run(user_msg=compose_agent_input(query, pre.sources))
         print(f"Bot: {response}\n")
 
 

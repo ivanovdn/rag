@@ -25,6 +25,7 @@ import rag.observability as observability_mod
 import rag.reranker as reranker_mod
 import rag.response as response_mod
 import rag.router as router_mod
+import rag.search_first as search_first_mod
 import rag.tools.search_policies as search_policies_mod
 import rag.vector_store as vector_store_mod
 from rag.router import Category, RouterDecision
@@ -114,6 +115,10 @@ def test_run_rag_asyncio_hop_shares_root_trace_id(monkeypatch, request_span_trac
     agent it builds. Proves the asyncio hop specifically, independent of the
     to_thread hop covered below."""
     tracer, exporter = request_span_tracer
+    # Retrieval now runs before the agent is even built (rag.search_first.prefetch) —
+    # it must resolve to "ok" or this would reach a real, un-mocked search and never
+    # get as far as build_agent at all.
+    monkeypatch.setattr(search_first_mod, "prefetch", lambda q: search_first_mod.PrefetchResult("ok", "[Source 1] x"))
     monkeypatch.setattr(agent_mod, "build_agent", lambda: _fake_agent_class(tracer))
     monkeypatch.setattr(
         response_mod,
@@ -172,6 +177,10 @@ def test_answer_nests_router_and_agent_spans_under_compliance_request(
         "classify_message",
         lambda text: RouterDecision(category=Category.IN_SCOPE, confidence=0.95),
     )
+    # Retrieval now runs before the agent is even built (rag.search_first.prefetch) —
+    # it must resolve to "ok" or this would reach a real, un-mocked search and never
+    # get as far as build_agent at all.
+    monkeypatch.setattr(search_first_mod, "prefetch", lambda q: search_first_mod.PrefetchResult("ok", "[Source 1] x"))
     monkeypatch.setattr(agent_mod, "build_agent", lambda: _fake_agent_class(tracer))
     monkeypatch.setattr(
         response_mod,
@@ -216,7 +225,11 @@ def test_outcome_attribute_set_on_answered_path(monkeypatch, request_span_tracer
     monkeypatch.setattr(
         bot_mod,
         "_run_rag",
-        lambda q: {"answer": "See AUP.", "citations": [], "escalation": {"needed": False}},
+        lambda q: {
+            "answer": "See AUP.",
+            "citations": [{"doc_title": "AUP", "quote": "See AUP."}],
+            "escalation": {"needed": False},
+        },
     )
 
     teams_bot._answer("chat1", "Can I install software?")

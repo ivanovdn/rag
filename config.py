@@ -76,6 +76,35 @@ class Settings(BaseSettings):
     reranker_query_template: str = "<Instruct>: {instruction}\n<Query>: {query}"
     reranker_top_n: int = 6
     reranker_candidates: int = 20
+    # Relevance floor on the reranker's 0.0-1.0 score. 0.0 means OFF.
+    # This is NOT a reuse of min_confidence_score: that one is cosine similarity
+    # on the reranker-off path, this one is a reranker relevance probability, and
+    # one knob for two scales would be a latent bug.
+    # Relevance floor on the reranker's 0.0-1.0 score. 0.0 means OFF.
+    # NOT a reuse of min_confidence_score: that one is cosine similarity on the
+    # reranker-off path, this is a reranker relevance probability, and one knob
+    # for two scales would be a latent bug.
+    #
+    # Measured 2026-09-25 on chatbot-test-v1, 61 DISTINCT questions through the
+    # real remote stack:
+    #   right document retrieved (n=59): top_score 0.8478 .. 0.9998
+    #   document missed          (n=2) : 0.5519 and 0.9886
+    # So 0.2 sits 4.2x below the lowest score that produced a correct retrieval,
+    # and it fired on NONE of the 61. It is deliberately inert: it exists to catch
+    # obviously-irrelevant questions (an earlier "can I bring penguin into office"
+    # scored 0.017), not to adjudicate borderline ones.
+    #
+    # Do not raise it expecting better precision. One of the two document misses
+    # scored 0.9886 — a high score does not mean the right document was found, so
+    # no threshold separates hits from misses on this corpus. Raising it toward
+    # 0.6-0.7 would make the single 0.5519 case escalate in code instead of by
+    # model judgement (saving one LLM call) at the cost of only ~1.2-1.4x margin
+    # above the lowest correct retrieval. That trade was judged not worth it.
+    #
+    # An earlier version of this comment cited "38 production requests, n=3
+    # escalated / n=27 answered". That was wrong: those 38 requests were 5
+    # distinct questions, one of them repeated 23 times during load testing.
+    reranker_min_score: float = 0.2
     reranker_instruction: str = "Given an employee compliance question, retrieve the internal policy clause that answers it"
 
     # Hybrid search
@@ -84,7 +113,6 @@ class Settings(BaseSettings):
     hybrid_bm25_candidates: int = 20
 
     # Agent
-    agent_max_iterations: int = 8
     agent_timeout: int = 120
 
     # Router (pre-retrieval classification)
@@ -102,7 +130,6 @@ class Settings(BaseSettings):
     smtp_user: str = "bot@company.com"
     smtp_password: str = ""
     compliance_team_email: str = "compliance@company.com"
-    escalation_ticket_prefix: str = "ESC"
 
     # API
     api_secret_key: str = "changeme"
@@ -217,7 +244,17 @@ class Settings(BaseSettings):
     eval_dataset_path: str = "eval/datasets"
     eval_confidence_threshold: float = 0.45
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # extra="ignore": the deployed .env (and its untracked restore backup) is not
+    # edited by this change and still carries AGENT_MAX_ITERATIONS/
+    # ESCALATION_TICKET_PREFIX after their fields are deleted below. Without this,
+    # pydantic-settings' default extra="forbid" turns any dead/stale .env key into
+    # a hard ValidationError on import — config.py's module-level `settings =
+    # get_settings()` would crash the whole app, not just this settings lookup.
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
 
 @lru_cache

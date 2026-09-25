@@ -1,8 +1,14 @@
+import pytest
+
 from channels.teams.renderer import render_answer, render_escalation, render_error
 
 
-def test_render_answer_no_citations_uses_prose():
-    assert render_answer({"answer": "Just prose.", "citations": []}) == "<p>Just prose.</p>"
+def test_render_answer_no_citations_raises():
+    """Superseded the old prose fallback: CLAUDE.md's grounding constraint means
+    an uncited answer must never render. See test_render_answer_refuses_an_uncited_answer
+    for the fuller pin of this contract."""
+    with pytest.raises(ValueError):
+        render_answer({"answer": "Just prose.", "citations": []})
 
 
 def test_render_answer_single_citation_structure():
@@ -78,3 +84,13 @@ def test_render_unintelligible_is_safe_html():
     html = render_unintelligible()
     assert "retype" in html.lower() or "keyboard" in html.lower()
     assert "<div" not in html  # Teams-safe tags only
+
+
+def test_render_answer_refuses_an_uncited_answer():
+    """The old fallback returned the bare prose, violating CLAUDE.md's grounding
+    constraint. Nothing should reach here now — the bot escalates first — so this
+    pins the second line of defence."""
+    from channels.teams.renderer import render_answer
+
+    with pytest.raises(ValueError):
+        render_answer({"answer": "some ungrounded prose", "citations": []})

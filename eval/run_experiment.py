@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import asyncio
 import sys
 from pathlib import Path
@@ -113,26 +114,81 @@ def make_tier1_task(top_k: int):
 
 
 def make_agent_task(verbose: bool = False):
-    from eval.agent_wrapper import build_instrumented_agent, get_log, clear_log, parse_agent_response
+    from eval.agent_wrapper import (
+        build_instrumented_agent,
+        clear_log,
+        compose_agent_input,
+        get_log,
+        parse_agent_response,
+        prefetch_logged,
+    )
 
-    async def _run_fresh_agent(question, verbose):
+    async def _run_fresh_agent(agent_input, verbose):
         agent = build_instrumented_agent(verbose=verbose)
-        return await agent.run(question)
+        return await agent.run(agent_input)
 
     def e2e_task(input):
         question = input["question"]
         clear_log()
 
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(_run_fresh_agent(question, verbose))
-
-        parsed = parse_agent_response(str(result))
+        pre = prefetch_logged(question)
         tool_calls = list(get_log())
+        search_queries = [c["query"] for c in tool_calls if c["tool"] == "search_policies"]
 
-        agent_search_results, search_queries = [], []
+        def _agent_metadata(escalation):
+            # Escalation is read from the JSON field (or synthesized below on a
+            # short-circuit), which is the only escalation path production has
+            # ever had — the tool that used to be counted here was never called.
+            return {
+                "search_queries": search_queries,
+                "num_searches": len(search_queries),
+                "escalated": bool(escalation.get("needed")),
+                "escalation_reason": escalation.get("reason") or None,
+            }
+
+        # Mirrors channels/teams/bot.py::_run_rag's branch shape exactly, so the
+        # two cannot drift: an infra failure never reaches the agent and never
+        # reads as a content escalation, and a no-match escalates on the same
+        # fixed reason text without spending an LLM call to reach it.
+        if pre.status == "unavailable":
+            escalation = {"needed": False, "reason": ""}
+            return {
+                "status": "unavailable",
+                "answer": "",
+                "citations": [],
+                "escalation": escalation,
+                "parse_success": False,
+                "raw_response": "",
+                "search_results": [],
+                "agent_metadata": _agent_metadata(escalation),
+            }
+
+        if pre.status == "no_match":
+            escalation = {
+                "needed": True,
+                "reason": "No relevant policy was found for this question.",
+            }
+            return {
+                "status": "no_match",
+                "answer": "",
+                "citations": [],
+                "escalation": escalation,
+                "parse_success": True,
+                "raw_response": "",
+                "search_results": [],
+                "agent_metadata": _agent_metadata(escalation),
+            }
+
+        loop = asyncio.get_event_loop()
+        response = loop.run_until_complete(
+            _run_fresh_agent(compose_agent_input(question, pre.sources), verbose)
+        )
+
+        parsed = parse_agent_response(str(response))
+
+        agent_search_results = []
         for call in tool_calls:
             if call["tool"] == "search_policies":
-                search_queries.append(call["query"])
                 agent_search_results.extend(call["results"])
 
         seen = set()
@@ -143,29 +199,104 @@ def make_agent_task(verbose: bool = False):
                 seen.add(key)
                 unique_results.append(r)
 
-        section_calls = [c for c in tool_calls if c["tool"] == "get_section"]
-        escalation_calls = [c for c in tool_calls if c["tool"] == "escalate_to_compliance"]
-
         return {
+            "status": "ok",
             "answer": parsed["answer"],
             "citations": parsed["citations"],
             "escalation": parsed["escalation"],
             "parse_success": parsed["parse_success"],
             "raw_response": parsed["raw_response"],
             "search_results": unique_results,
-            "agent_metadata": {
-                "search_queries": search_queries,
-                "num_searches": len(search_queries),
-                "num_section_fetches": len(section_calls),
-                "section_fetches": [
-                    {"doc_id": c["doc_id"], "section": c["section_name"], "found": c["found"]}
-                    for c in section_calls
-                ],
-                "escalated": len(escalation_calls) > 0,
-                "escalation_reason": escalation_calls[0]["reason"] if escalation_calls else None,
-            },
+            "agent_metadata": _agent_metadata(parsed["escalation"]),
         }
     return e2e_task
+
+
+def _prompt_meta() -> dict:
+    """Identify the exact SYSTEM_PROMPT this run used.
+
+    Imported locally, like every other rag/ import in this module, so importing
+    run_experiment does not drag LlamaIndex in.
+
+    The hash is what makes prompt experiments comparable: two runs with the same
+    sha12 used byte-identical prompts, committed or not. chars and tokens make the
+    context-budget cost of a prompt edit visible alongside its quality effect —
+    the whole point of the audit this branch came out of.
+    """
+    from rag.agent import FIXED_OVERHEAD_TOKENS, SYSTEM_PROMPT
+
+    return {
+        "system_prompt_sha12": hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12],
+        "system_prompt_chars": len(SYSTEM_PROMPT),
+        "fixed_overhead_tokens": FIXED_OVERHEAD_TOKENS,
+    }
+
+
+PROMPT_REGISTRY_NAME = "compliance-system-prompt"
+
+
+def _mirror_prompt_to_registry(client) -> dict:
+    """Mirror SYSTEM_PROMPT into Phoenix's prompt registry and return its version id.
+
+    The registry is a MIRROR, never a source. rag/agent.py stays authoritative:
+    the prompt is this bot's entire safety surface (never answer ungrounded, quote
+    verbatim, escalate when uncertain), and fetching it at runtime would mean a
+    Phoenix outage or a stray Playground edit could silently change how a
+    compliance bot behaves. Nothing reads this back.
+
+    What it buys: the actual text visible beside each experiment, and Phoenix's
+    diff between versions — so when a sweep moves a number you can see what the
+    prompt change was, instead of diffing 2,350 characters by hand.
+
+    Idempotent: versions are tagged with the prompt's sha12, so re-running with an
+    unchanged prompt reuses the existing version instead of piling up duplicates.
+
+    Never raises. An eval run costs real GPU time on a shared host; a registry
+    hiccup must degrade to "no version id in the metadata", not lose the run.
+    """
+    from rag.agent import SYSTEM_PROMPT
+
+    sha = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12]
+    try:
+        existing = client.prompts.get(prompt_identifier=PROMPT_REGISTRY_NAME, tag=sha)
+        return {"system_prompt_version_id": existing.id}
+    except Exception:
+        pass  # not registered yet (or the registry is unreachable) — try to create
+
+    try:
+        from config import settings
+        from phoenix.client.types import PromptVersion
+
+        version = client.prompts.create(
+            name=PROMPT_REGISTRY_NAME,
+            prompt_description=(
+                "Read-only mirror of rag/agent.py SYSTEM_PROMPT. Nothing reads this at "
+                "runtime — editing it here changes nothing. Edit rag/agent.py."
+            ),
+            version=PromptVersion(
+                [{"role": "system", "content": SYSTEM_PROMPT}],
+                model_name=settings.llm_model,
+                model_provider="OLLAMA",
+                # NONE, not MUSTACHE/F_STRING: the prompt embeds a literal JSON
+                # block with { } braces. Any templating format would try to
+                # interpolate them and mangle the output contract.
+                template_format="NONE",
+                description=f"sha12={sha} · {len(SYSTEM_PROMPT)} chars",
+            ),
+        )
+        try:
+            client.prompts.tags.create(
+                prompt_version_id=version.id,
+                name=sha,
+                description="sha12 of rag/agent.py SYSTEM_PROMPT at the time of this run",
+            )
+        except Exception:
+            pass  # the version exists either way; the tag is only for idempotency
+        return {"system_prompt_version_id": version.id}
+    except Exception as exc:
+        print(f"  WARNING: could not mirror the prompt into Phoenix "
+              f"({type(exc).__name__}: {str(exc)[:80]}); the run continues without it")
+        return {}
 
 
 TIER_CONFIG = {
@@ -208,7 +339,12 @@ def main():
 
     client_kwargs = {}
     if args.phoenix_url:
-        client_kwargs["endpoint"] = args.phoenix_url
+        # base_url, not endpoint: phoenix.client.Client takes
+        # (base_url, api_key, headers, http_client). "endpoint" was the old
+        # kwarg and raises TypeError on arize-phoenix >= 13. Never caught
+        # because locally Phoenix is at the default localhost:6006, so this
+        # flag is only reached when running from inside a container.
+        client_kwargs["base_url"] = args.phoenix_url
     client = Client(**client_kwargs)
 
     try:
@@ -248,15 +384,33 @@ def main():
         metadata = {**infra_meta, "search_type": search_type, "embedding_model": settings.embedding_model,
                      "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
+                     "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
+                     "min_confidence_score": settings.min_confidence_score if not settings.reranker_enabled else None,
                      "top_k": top_k, "tier": "tier1"}
     else:
         task = make_agent_task(verbose=args.verbose)
         evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
+        # Every knob that changes the result belongs here: an experiment whose
+        # parameters are only recoverable from its NAME cannot be compared against
+        # another six weeks later. reranker_min_score in particular gates retrieval
+        # entirely when it fires, and embedding_model was missing from the agent
+        # tiers although it decides what is retrievable at all.
         metadata = {**infra_meta, "llm": settings.llm_model, "search_type": search_type,
+                     "embedding_model": settings.embedding_model,
                      "reranker": reranker_info,
                      "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
-                     "agent_type": "react", "top_k": top_k, "tier": args.tier,
+                     "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
+                     "min_confidence_score": settings.min_confidence_score if not settings.reranker_enabled else None,
+                     "num_ctx": settings.ollama_num_ctx,
+                     "temperature": settings.llm_temperature,
+                     # The prompt is a parameter like any other, and the one most
+                     # likely to be edited between runs. The hash identifies it
+                     # exactly (two runs with the same hash used the same prompt,
+                     # committed or not); chars and tokens make the context-budget
+                     # cost of a prompt change visible in the comparison.
+                     **_prompt_meta(), **_mirror_prompt_to_registry(client),
+                     "agent_type": "function-agent-toolfree", "top_k": top_k, "tier": args.tier,
                      "structured_output": True}
 
     print(f"  Evaluators:  {[e.__name__ for e in evaluators]}")

@@ -74,11 +74,14 @@ def map_retrieval(test_cases: list[dict]) -> tuple[list, list, list]:
 
     for tc in test_cases:
         inputs.append({"question": tc["question"]})
-        outputs.append({
+        out = {
             "expected_doc": tc.get("expected_doc_id", ""),
             "expected_section": tc.get("expected_section_contains", ""),
             "expected_clause": tc.get("expected_clause", ""),
-        })
+        }
+        if "match_mode" in tc:
+            out["match_mode"] = tc["match_mode"]
+        outputs.append(out)
         metadata.append({"test_id": tc.get("id", ""), "tier": "retrieval"})
 
     return inputs, outputs, metadata
@@ -99,10 +102,19 @@ def map_e2e(test_cases: list[dict]) -> tuple[list, list, list]:
             expected_answer = [expected_answer] if expected_answer else []
 
         inputs.append({"question": tc["question"]})
-        outputs.append({
+        out = {
             "expected_answer": expected_answer,
             "expected_citations": tc.get("expected_citations", []),
-        })
+        }
+        # Carry match_mode through. The evaluators read it off the dataset example's
+        # output (expected.get("match_mode", "all")), so a case that declares
+        # "match_mode": "any" in the JSON but does not get it copied here is silently
+        # scored under "all" — which fails any multi-citation case where only one of
+        # the expected citations is retrievable. Dropped here until 2026-09-25, which
+        # made the documented CLAUDE.md workaround a no-op.
+        if "match_mode" in tc:
+            out["match_mode"] = tc["match_mode"]
+        outputs.append(out)
         metadata.append({"test_id": tc.get("id", ""), "tier": "e2e"})
 
     return inputs, outputs, metadata
@@ -124,10 +136,19 @@ def map_chatbot(test_cases: list[dict]) -> tuple[list, list, list]:
             expected_answer = [expected_answer] if expected_answer else []
 
         inputs.append({"question": tc["question"]})
-        outputs.append({
+        out = {
             "expected_answer": expected_answer,
             "expected_citations": tc.get("expected_citations", []),
-        })
+        }
+        # Carry match_mode through. The evaluators read it off the dataset example's
+        # output (expected.get("match_mode", "all")), so a case that declares
+        # "match_mode": "any" in the JSON but does not get it copied here is silently
+        # scored under "all" — which fails any multi-citation case where only one of
+        # the expected citations is retrievable. Dropped here until 2026-09-25, which
+        # made the documented CLAUDE.md workaround a no-op.
+        if "match_mode" in tc:
+            out["match_mode"] = tc["match_mode"]
+        outputs.append(out)
         metadata.append({"test_id": tc.get("id", ""), "tier": "chatbot"})
 
     return inputs, outputs, metadata
@@ -229,7 +250,12 @@ Examples:
 
     client_kwargs = {}
     if args.phoenix_url:
-        client_kwargs["endpoint"] = args.phoenix_url
+        # base_url, not endpoint: phoenix.client.Client takes
+        # (base_url, api_key, headers, http_client). "endpoint" was the old
+        # kwarg and raises TypeError on arize-phoenix >= 13. Never caught
+        # because locally Phoenix is at the default localhost:6006, so this
+        # flag is only reached when running from inside a container.
+        client_kwargs["base_url"] = args.phoenix_url
     client = Client(**client_kwargs)
 
     # --- Handle overwrite ---

@@ -74,3 +74,21 @@ def test_evaluator_handles_none_output():
     result = hit_evaluator(None, {})
     assert result["score"] == 0.0
     assert result["label"] == "error"
+
+
+def test_the_agent_evaluators_no_longer_reference_deleted_tools():
+    """agent_used_get_section scored 0.5/'skipped' on every run ever — the tool
+    was never called. It is deleted along with the tool."""
+    import eval.evaluators as ev
+
+    assert not hasattr(ev, "agent_used_get_section")
+    assert ev.AGENT_EVALUATORS == [ev.agent_search_count]
+
+
+def test_search_count_still_scores_a_single_prefetch():
+    """Retrieval now happens once, in code, before the agent. num_searches must
+    keep counting it or every case would read as 'never searched — hallucinated'."""
+    from eval.evaluators import agent_search_count
+
+    result = agent_search_count({"agent_metadata": {"num_searches": 1}}, {})
+    assert result["score"] == 1.0
