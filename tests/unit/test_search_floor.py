@@ -97,20 +97,20 @@ def test_the_reranker_fallback_path_is_never_floored(reranked, monkeypatch):
 
 
 def test_the_default_threshold_is_the_measured_one():
-    """The floor shipped at 0.0 until it could be measured; this pins what it was
-    measured AS, so it cannot drift back to a guess.
+    """Pins what the floor was measured AS, so it cannot drift back to a guess.
 
-    2026-09-25, VM Phoenix, all 38 scored production requests: escalated scored
-    0.0170-0.0172 (n=3), answered 0.8265-0.9981 (n=27), no overlap. 0.2 sits well
-    below the lowest answered score on purpose — a too-high floor escalates
-    answerable questions, which is the expensive direction.
+    2026-09-25, chatbot-test-v1, 61 distinct questions through the real remote
+    stack: correct retrievals scored 0.8478-0.9998 (n=59); the two document
+    misses scored 0.5519 and 0.9886. 0.2 therefore sits 4.2x below the lowest
+    correct retrieval and fired on none of the 61 — deliberately inert, there to
+    catch obviously-irrelevant questions rather than borderline ones.
 
-    If you change this, change it because you re-measured, and update config.py's
-    comment with the new sample.
+    Change it only after re-measuring, and update config.py's comment with the
+    new sample.
     """
     # Bound to a local first: a failing `assert settings.x == y` prints the whole
     # Settings repr, which carries live .env secrets.
     value = sp.settings.reranker_min_score
     assert value == 0.2
-    # The floor must stay clear of the lowest score that produced a good answer.
-    assert value < 0.8265
+    # Must stay clear of the lowest top_score that produced a CORRECT retrieval.
+    assert value < 0.8478

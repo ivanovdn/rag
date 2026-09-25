@@ -80,15 +80,30 @@ class Settings(BaseSettings):
     # This is NOT a reuse of min_confidence_score: that one is cosine similarity
     # on the reranker-off path, this one is a reranker relevance probability, and
     # one knob for two scales would be a latent bug.
-    # Measured, not guessed (2026-09-25, VM Phoenix, all 38 scored production
-    # requests since retrieval spans landed): escalated requests scored
-    # 0.0170-0.0172 (n=3), answered ones 0.8265-0.9981 (n=27) — no overlap, and
-    # no reranker-fallback rows, so the "reranker scores compressed" failure mode
-    # CLAUDE.md records is not present here. 0.2 sits 11.6x above the highest
-    # escalated score and 4.1x below the lowest answered one. Deliberately far
-    # below the midpoint: the escalated cluster is only n=3 and the 0.8265 low
-    # answer is a single observation, so the margin protecting real questions
-    # matters more than catching marginal ones. Re-measure as the sample grows.
+    # Relevance floor on the reranker's 0.0-1.0 score. 0.0 means OFF.
+    # NOT a reuse of min_confidence_score: that one is cosine similarity on the
+    # reranker-off path, this is a reranker relevance probability, and one knob
+    # for two scales would be a latent bug.
+    #
+    # Measured 2026-09-25 on chatbot-test-v1, 61 DISTINCT questions through the
+    # real remote stack:
+    #   right document retrieved (n=59): top_score 0.8478 .. 0.9998
+    #   document missed          (n=2) : 0.5519 and 0.9886
+    # So 0.2 sits 4.2x below the lowest score that produced a correct retrieval,
+    # and it fired on NONE of the 61. It is deliberately inert: it exists to catch
+    # obviously-irrelevant questions (an earlier "can I bring penguin into office"
+    # scored 0.017), not to adjudicate borderline ones.
+    #
+    # Do not raise it expecting better precision. One of the two document misses
+    # scored 0.9886 — a high score does not mean the right document was found, so
+    # no threshold separates hits from misses on this corpus. Raising it toward
+    # 0.6-0.7 would make the single 0.5519 case escalate in code instead of by
+    # model judgement (saving one LLM call) at the cost of only ~1.2-1.4x margin
+    # above the lowest correct retrieval. That trade was judged not worth it.
+    #
+    # An earlier version of this comment cited "38 production requests, n=3
+    # escalated / n=27 answered". That was wrong: those 38 requests were 5
+    # distinct questions, one of them repeated 23 times during load testing.
     reranker_min_score: float = 0.2
     reranker_instruction: str = "Given an employee compliance question, retrieve the internal policy clause that answers it"
 
