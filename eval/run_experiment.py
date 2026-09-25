@@ -296,14 +296,26 @@ def main():
         metadata = {**infra_meta, "search_type": search_type, "embedding_model": settings.embedding_model,
                      "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
+                     "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
+                     "min_confidence_score": settings.min_confidence_score if not settings.reranker_enabled else None,
                      "top_k": top_k, "tier": "tier1"}
     else:
         task = make_agent_task(verbose=args.verbose)
         evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
+        # Every knob that changes the result belongs here: an experiment whose
+        # parameters are only recoverable from its NAME cannot be compared against
+        # another six weeks later. reranker_min_score in particular gates retrieval
+        # entirely when it fires, and embedding_model was missing from the agent
+        # tiers although it decides what is retrievable at all.
         metadata = {**infra_meta, "llm": settings.llm_model, "search_type": search_type,
+                     "embedding_model": settings.embedding_model,
                      "reranker": reranker_info,
                      "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
+                     "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
+                     "min_confidence_score": settings.min_confidence_score if not settings.reranker_enabled else None,
+                     "num_ctx": settings.ollama_num_ctx,
+                     "temperature": settings.llm_temperature,
                      "agent_type": "function-agent-toolfree", "top_k": top_k, "tier": args.tier,
                      "structured_output": True}
 
