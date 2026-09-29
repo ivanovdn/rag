@@ -251,9 +251,10 @@ def search_chunks(
     Returns list[ScoredPoint] in BOTH modes, because fusion happens server-side —
     so no caller needs a branch. The score means different things (an RRF score
     around 1/(RRF_K + rank) when bm25_enabled, a cosine similarity otherwise);
-    callers record which in `score_type`, and anything comparing a score against
-    a threshold must check which scale it is on. See search_policies'
-    min_confidence_score guard.
+    search_policies records which in `score_type`, alongside the score itself in
+    `_last_search_results`, and anything comparing a score against a threshold
+    must check which scale it is on. See search_policies' min_confidence_score
+    guard.
     """
     tracer = get_tracer()
     limit = top_k or settings.retrieval_top_k

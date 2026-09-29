@@ -95,6 +95,21 @@ def test_the_retrieval_score_is_captured_for_eval_logging(monkeypatch, retrieval
     assert sp._last_search_results[0]["retrieval_score"] == 0.016
 
 
+def test_the_captured_score_carries_the_scale_it_is_on(monkeypatch, retrieval):
+    """0.016 and 0.85 are not comparable, and this dict is what lands in eval
+    result JSON to be read weeks later. The number without its unit is how a
+    score ends up judged against the wrong threshold."""
+    retrieval([_Hit(0.016)])
+    monkeypatch.setattr(sp.settings, "bm25_enabled", True)
+    sp.search_policies("q")
+    assert sp._last_search_results[0]["score_type"] == "rrf"
+
+    retrieval([_Hit(0.80)])
+    monkeypatch.setattr(sp.settings, "bm25_enabled", False)
+    sp.search_policies("q")
+    assert sp._last_search_results[0]["score_type"] == "cosine"
+
+
 def test_empty_results_still_report_no_match(monkeypatch, retrieval):
     monkeypatch.setattr(sp.settings, "bm25_enabled", True)
     retrieval([])

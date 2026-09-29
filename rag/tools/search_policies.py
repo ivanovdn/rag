@@ -97,7 +97,12 @@ def search_policies(query: str, top_k: int = 6) -> str:
     if settings.reranker_enabled and results:
         results = rerank(query, results, top_n=settings.reranker_top_n)
 
-    # Step 3: Capture structured results for eval logging
+    # Step 3: Capture structured results for eval logging.
+    # score_type travels with retrieval_score because it is that number's unit:
+    # 0.016 (RRF) and 0.85 (cosine) are not comparable, and this dict is read by
+    # people, in eval result JSON, often long after the run. Recording the number
+    # without its scale is how a score gets judged against the wrong threshold —
+    # the failure this file's min_confidence_score guard exists to prevent.
     _last_search_results = [
         {
             "doc_title": r["doc_title"],
@@ -106,6 +111,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
             "clause_number": r.get("clause_number", ""),
             "rerank_score": round(r.get("rerank_score", 0), 4),
             "retrieval_score": round(r.get("retrieval_score", 0), 4),
+            "score_type": r.get("score_type", ""),
         }
         for r in results
     ]

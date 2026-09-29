@@ -33,5 +33,8 @@ def test_nothing_imports_them():
     assert offenders == [], f"still referencing deleted modules: {offenders}"
 
 
-def test_the_stale_gitignore_entry_is_gone():
-    assert ".bm25_index.json" not in Path(".gitignore").read_text(encoding="utf-8")
+def test_the_stale_ignore_entries_are_gone():
+    """Both of them. An ignore rule for a file that no longer exists is how a
+    reader concludes the file still does."""
+    for path in (".gitignore", ".dockerignore"):
+        assert ".bm25_index.json" not in Path(path).read_text(encoding="utf-8"), path
