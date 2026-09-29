@@ -140,6 +140,33 @@ def init_collection(collection_name: str | None = None) -> None:
             )
 
 
+def preflight_sparse_config() -> None:
+    """Refuse to start if BM25 is on but the collection has no sparse vector.
+
+    Qdrant answers a sparse query against a collection lacking that vector with
+    "Not existing vector name error". That is NOT transient, so without this
+    check it would surface as a content escalation on every single question --
+    the bot would appear healthy while finding nothing.
+
+    Deliberately raises instead of auto-disabling BM25. A bot that quietly drops
+    to dense-only looks fine and answers worse, which is exactly the failure mode
+    this migration exists to remove.
+    """
+    if not settings.bm25_enabled:
+        return
+    client = get_qdrant_client()
+    info = client.get_collection(settings.qdrant_collection)
+    sparse = info.config.params.sparse_vectors or {}
+    if SPARSE_VECTOR_NAME not in sparse:
+        raise RuntimeError(
+            f"BM25_ENABLED=true but collection '{settings.qdrant_collection}' has no "
+            f"'{SPARSE_VECTOR_NAME}' sparse vector (found: {sorted(sparse) or 'none'}). "
+            "Build a sparse-enabled collection with "
+            "`PYTHONPATH=. python scripts/migrate_collection.py --target <name>`, "
+            "or set BM25_ENABLED=false."
+        )
+
+
 def upsert_chunks(chunks: "list[PolicyChunk]", embeddings: list[list[float]]) -> None:
     """Upsert chunks with their dense and sparse vectors into Qdrant.
 
