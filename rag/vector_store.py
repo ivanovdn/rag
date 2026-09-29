@@ -12,8 +12,10 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    Modifier,
     PayloadSchemaType,
     PointStruct,
+    SparseVectorParams,
     VectorParams,
 )
 
@@ -29,6 +31,13 @@ _client: QdrantClient | None = None
 # each posted individually over HTTP by a SimpleSpanProcessor — truncate document
 # content so a debugging aid doesn't become real payload weight per request.
 _DOCUMENT_CONTENT_MAX_CHARS = 1000
+
+# The sparse vector's name inside the collection, and Qdrant's built-in BM25
+# model. Only built-in models resolve on a self-hosted server; any other name
+# fails with "InferenceService URL not configured", which would require
+# server-side config on a shared host we do not own.
+SPARSE_VECTOR_NAME = "bm25"
+BM25_MODEL = "qdrant/bm25"
 
 
 def _document_span_attributes(points: list) -> dict:
@@ -76,47 +85,40 @@ def get_qdrant_client() -> QdrantClient:
     return _client
 
 
-def init_collection() -> None:
-    """Create collection with payload indexes if it doesn't exist."""
+def init_collection(collection_name: str | None = None) -> None:
+    """Create the collection with its payload indexes if it does not exist.
+
+    Takes an explicit name so scripts/migrate_collection.py can build a target
+    other than the configured one from this single schema definition, rather
+    than duplicating it and letting the two drift.
+    """
+    name = collection_name or settings.qdrant_collection
     client = get_qdrant_client()
-    if not client.collection_exists(settings.qdrant_collection):
+    if not client.collection_exists(name):
         client.create_collection(
-            collection_name=settings.qdrant_collection,
+            collection_name=name,
+            # Bare VectorParams, not a dict: that is what keeps the dense vector
+            # unnamed, so no search call needs `using=`. Verified that an unnamed
+            # dense vector coexists with a named sparse one.
             vectors_config=VectorParams(
                 size=settings.qdrant_vector_dim,
                 distance=Distance.COSINE,
             ),
+            sparse_vectors_config={
+                SPARSE_VECTOR_NAME: SparseVectorParams(modifier=Modifier.IDF),
+            },
         )
-        client.create_payload_index(
-            collection_name=settings.qdrant_collection,
-            field_name="doc_id",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        client.create_payload_index(
-            collection_name=settings.qdrant_collection,
-            field_name="section",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        client.create_payload_index(
-            collection_name=settings.qdrant_collection,
-            field_name="section_number",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        client.create_payload_index(
-            collection_name=settings.qdrant_collection,
-            field_name="clause",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        client.create_payload_index(
-            collection_name=settings.qdrant_collection,
-            field_name="clause_number",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        client.create_payload_index(
-            collection_name=settings.qdrant_collection,
-            field_name="section_display",
-            field_schema=PayloadSchemaType.TEXT,
-        )
+        for field, schema in (
+            ("doc_id", PayloadSchemaType.KEYWORD),
+            ("section", PayloadSchemaType.KEYWORD),
+            ("section_number", PayloadSchemaType.KEYWORD),
+            ("clause", PayloadSchemaType.KEYWORD),
+            ("clause_number", PayloadSchemaType.KEYWORD),
+            ("section_display", PayloadSchemaType.TEXT),
+        ):
+            client.create_payload_index(
+                collection_name=name, field_name=field, field_schema=schema
+            )
 
 
 def upsert_chunks(chunks: "list[PolicyChunk]", embeddings: list[list[float]]) -> None:
