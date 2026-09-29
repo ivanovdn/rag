@@ -77,7 +77,7 @@ def get_tracer():
 
     Usage:
         tracer = get_tracer()
-        with tracer.start_as_current_span("hybrid_search") as span:
+        with tracer.start_as_current_span("search_vectors") as span:
             span.set_attribute("query", query)
             span.set_attribute("vector_top_score", 0.87)
             # ... do work ...
