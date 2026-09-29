@@ -47,6 +47,13 @@ def _dense_of(point) -> list[float]:
 
 def migrate(source: str, target: str, dry_run: bool) -> int:
     """Copy every point from `source` into `target`, adding a sparse vector."""
+    # Which Qdrant, spelled out before anything else. get_qdrant_client()
+    # resolves the URL from USE_REMOTE_QDRANT, so running this from a laptop with
+    # that false builds the new collection in a LOCAL Qdrant -- and --verify then
+    # checks that same local Qdrant and reports a fully green 1602/1602 for a
+    # collection production cannot see. Local and remote are separate stores;
+    # build on the host that will read it.
+    print(f"qdrant:       {settings.active_qdrant_url}")
     client = get_qdrant_client()
     total = client.count(collection_name=source, exact=True).count
 
@@ -106,6 +113,10 @@ def verify(source: str, target: str) -> bool:
     re-ingesting leaves the dense half byte-identical, so an eval delta on the
     new collection is attributable to the sparse half alone.
     """
+    # First line, same as migrate(): a green report says nothing about WHICH
+    # Qdrant it is green on, and verify() resolves the same URL the migration
+    # did -- so a migration built locally verifies locally, perfectly.
+    print(f"qdrant:       {settings.active_qdrant_url}")
     client = get_qdrant_client()
 
     src = client.count(collection_name=source, exact=True).count

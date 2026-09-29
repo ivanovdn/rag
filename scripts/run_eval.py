@@ -29,6 +29,7 @@ from pathlib import Path
 from config import settings
 from rag.observability import get_tracer
 from rag.search_first import compose_agent_input, prefetch
+from rag.vector_store import preflight_sparse_config
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
@@ -653,6 +654,11 @@ def main():
     )
     parser.add_argument("--dataset", default=None, help="Override dataset path")
     args = parser.parse_args()
+
+    # Same reason as eval/run_experiment.py: BM25 on against a collection with no
+    # sparse vector is a non-transient failure on every query, so it produces a
+    # plausible-looking zero rather than an error. Fail before spending GPU.
+    preflight_sparse_config()
 
     tiers = (
         ["retrieval", "e2e", "escalation", "chatbot"]

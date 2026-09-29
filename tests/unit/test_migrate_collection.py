@@ -246,3 +246,46 @@ def test_init_observability_runs_after_arg_parsing_not_before():
     register Phoenix and attempt a network export before help text prints."""
     source = Path("scripts/migrate_collection.py").read_text(encoding="utf-8")
     assert source.index("args = parser.parse_args()") < source.index("init_observability()")
+
+
+# --- which Qdrant --------------------------------------------------------
+#
+# get_qdrant_client() resolves its URL from USE_REMOTE_QDRANT, so this script
+# will happily build v2 in a LOCAL Qdrant when run from a laptop -- and
+# --verify then checks that same local Qdrant and reports a fully green
+# 1602/1602 for a collection production cannot see. Naming the URL is the only
+# thing that makes that visible.
+
+
+def test_migrate_names_the_qdrant_it_is_writing_to(client, capsys):
+    # Bound to a local first -- an assertion touching `settings` itself would put
+    # the whole Settings repr, real .env secrets included, into pytest's output.
+    url = migrate_mod.settings.active_qdrant_url
+
+    migrate_mod.migrate("src", "dst", dry_run=False)
+
+    assert url in capsys.readouterr().out
+
+
+def test_the_dry_run_names_the_qdrant_too(client, capsys):
+    """The dry run is where an operator checks they are pointed at the right
+    place, so it is the one that most needs to say where that is."""
+    url = migrate_mod.settings.active_qdrant_url
+
+    migrate_mod.migrate("src", "dst", dry_run=True)
+
+    assert url in capsys.readouterr().out
+
+
+def test_verify_names_the_qdrant_it_checked(monkeypatch, capsys):
+    """A green report says nothing about WHICH Qdrant it is green on."""
+    url = migrate_mod.settings.active_qdrant_url
+    points = [_SrcPoint("c1", [0.1], {"text": "t"})]
+    target = [_SrcPoint("c1", {"": [0.1], "bm25": object()}, {"text": "t"})]
+    monkeypatch.setattr(
+        migrate_mod, "get_qdrant_client", lambda: _VerifyClient(points, target)
+    )
+
+    migrate_mod.verify("src", "dst")
+
+    assert url in capsys.readouterr().out

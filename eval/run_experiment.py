@@ -282,6 +282,16 @@ def main():
     from phoenix.client import Client
     from eval.evaluators import TIER1_EVALUATORS, TIER2_EVALUATORS, CHATBOT_EVALUATORS
     from config import settings
+    from rag.vector_store import preflight_sparse_config
+
+    # BM25_ENABLED=true against a collection with no sparse vector fails every
+    # query with "Not existing vector name error". That is not transient, so
+    # every question escalates and hit_evaluator comes out near zero -- which
+    # reads exactly like the sparse half failing on its merits, and the rollout's
+    # response to a low gate score is a 100-line fallback encoder. Both
+    # QDRANT_COLLECTION and BM25_ENABLED have to be set for the gate run; this
+    # turns forgetting the first into a message instead of a plausible zero.
+    preflight_sparse_config()
 
     top_k = args.top_k if args.top_k is not None else settings.retrieval_top_k
     tier_cfg = TIER_CONFIG[args.tier]

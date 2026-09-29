@@ -166,3 +166,15 @@ def test_the_ingest_entry_point_guards_the_schema_before_ingesting():
     assert "assert_sparse_vector(" in source
     # Before anything is parsed or written, not after the first document.
     assert source.index("assert_sparse_vector(") < source.index("ingest_files(paths")
+
+
+def test_the_eval_entry_points_run_the_preflight():
+    """A gate run with BM25 on against a collection with no sparse vector fails
+    every query non-transiently, so hit_evaluator reads near zero — which looks
+    exactly like the sparse half failing on its merits, and sends the operator
+    to the D10 fallback over a one-line env mistake."""
+    from pathlib import Path
+
+    for path in ("eval/run_experiment.py", "scripts/run_eval.py"):
+        source = Path(path).read_text(encoding="utf-8")
+        assert "preflight_sparse_config()" in source, path

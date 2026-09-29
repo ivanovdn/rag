@@ -386,7 +386,16 @@ Qdrant configuration, only our own collections.
 3. **Verify.** `--verify` must report 1602 of 1602 points and 25 of 25 sampled
    ids present with non-empty sparse vectors, and the collection must read back
    with `sparse: {"bm25": {"modifier": "idf"}}`.
-4. **Run the gate.** `chatbot-test-v1` against v2 with `BM25_ENABLED=true`.
+4. **Run the gate.** `chatbot-test-v1` with **both**
+   `QDRANT_COLLECTION=compliance_policies_v2` **and** `BM25_ENABLED=true` set in
+   the eval environment — both, not just the second. `BM25_ENABLED=true` against
+   `compliance_policies` fails every query with `Not existing vector name error`,
+   which is not transient, so every question escalates and `hit_evaluator` comes
+   out near zero: a plausible-looking result that reads as the sparse half
+   failing on its merits and sends you to step 5's fallback over a one-line env
+   mistake. The preflight in `eval/run_experiment.py` and `scripts/run_eval.py`
+   refuses that combination up front. The live bot is still on
+   `compliance_policies`; nothing here changes what it reads.
    Compare `hit_evaluator` to 0.9180. Per the standing gotcha, the eval container
    must mount `config.py`, `rag/`, `eval/` and `scripts/` together, or it runs
    main's pipeline against the new harness.
