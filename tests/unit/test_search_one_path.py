@@ -66,6 +66,28 @@ def test_the_cosine_floor_still_applies_on_the_plain_dense_path(monkeypatch, ret
     assert sp.search_policies("how long are backups kept?") == sp.NO_MATCH
 
 
+def test_the_cosine_floor_does_not_judge_a_reranked_score(monkeypatch, retrieval):
+    """The `not reranker_enabled` clause, which the fixture pins to False for
+    every other test here — so a mutation deleting it passes them all.
+
+    Reranker on with bm25 off is exactly rollout step 1, and it is the shape in
+    which this clause is the only thing keeping the 0.45 cosine floor off a
+    pipeline CLAUDE.md records that floor has never actually run on. 0.20 is a
+    retrieval score the reranker is there to rescore, not a verdict.
+    """
+    monkeypatch.setattr(sp.settings, "bm25_enabled", False)
+    monkeypatch.setattr(sp.settings, "reranker_enabled", True)
+    # Identity rerank: no rerank_score, so the Step 3b floor cannot fire either
+    # and the only thing under test is the cosine guard.
+    monkeypatch.setattr(sp, "rerank", lambda query, results, top_n: results)
+    retrieval([_Hit(0.20)])
+
+    result = sp.search_policies("how long are backups kept?")
+
+    assert result != sp.NO_MATCH
+    assert "Backup Policy [Internal]" in result
+
+
 def test_the_cosine_floor_passes_a_high_enough_dense_score(monkeypatch, retrieval):
     monkeypatch.setattr(sp.settings, "bm25_enabled", False)
     retrieval([_Hit(0.80)])
