@@ -1,16 +1,29 @@
-import logging
 from pathlib import Path
 
+from config import settings
 from ingest.docx_parser import parse_docx
 from rag.embeddings import embed_texts
-from rag.vector_store import delete_document, init_collection, upsert_chunks
-
-logger = logging.getLogger(__name__)
+from rag.vector_store import (
+    assert_sparse_vector,
+    delete_document,
+    init_collection,
+    upsert_chunks,
+)
 
 
 def ingest_document(filepath: Path, doc_link: str) -> int:
     """Parse a DOCX file, embed chunks, and upsert to Qdrant."""
     init_collection()
+    # Before delete_document, and ungated by any query-side flag: upsert_chunks
+    # always writes a sparse vector, so an upsert into a collection that has no
+    # sparse vector fails -- AFTER the delete has already committed. The
+    # document's chunks are then simply gone from a live index, the bot answers
+    # "no relevant policy found" for it, and nothing looks broken.
+    assert_sparse_vector(
+        settings.qdrant_collection,
+        "Re-ingesting would delete this document's chunks and then fail to write "
+        "them back.",
+    )
     chunks = parse_docx(filepath, doc_link)
     if not chunks:
         return 0

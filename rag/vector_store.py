@@ -140,6 +140,32 @@ def init_collection(collection_name: str | None = None) -> None:
             )
 
 
+def assert_sparse_vector(collection_name: str, reason: str) -> None:
+    """Refuse to proceed unless `collection_name` carries the sparse vector.
+
+    The single definition of that check, shared by every caller that needs it —
+    the query-side preflight below and the write-side guard in
+    ingest/pipeline.py. `reason` is the caller's framing; the part an operator
+    has to act on (which collection, which vector is missing, and the command
+    that builds one) is appended here, once, so the two cannot drift.
+
+    The collection name is explicit rather than defaulted, because pointing a
+    write at the wrong collection is the mistake this whole family of guards
+    exists to catch.
+    """
+    client = get_qdrant_client()
+    info = client.get_collection(collection_name)
+    sparse = info.config.params.sparse_vectors or {}
+    if SPARSE_VECTOR_NAME in sparse:
+        return
+    raise RuntimeError(
+        f"{reason} Collection '{collection_name}' has no '{SPARSE_VECTOR_NAME}' "
+        f"sparse vector (found: {sorted(sparse) or 'none'}). Build a sparse-enabled "
+        "collection with "
+        "`PYTHONPATH=. python scripts/migrate_collection.py --target <name>`."
+    )
+
+
 def preflight_sparse_config() -> None:
     """Refuse to start if BM25 is on but the collection has no sparse vector.
 
@@ -151,20 +177,18 @@ def preflight_sparse_config() -> None:
     Deliberately raises instead of auto-disabling BM25. A bot that quietly drops
     to dense-only looks fine and answers worse, which is exactly the failure mode
     this migration exists to remove.
+
+    Query-side only, hence the bm25_enabled gate. The WRITE side is ungated and
+    calls assert_sparse_vector directly: upsert_chunks always writes a sparse
+    vector, so a collection without one breaks ingest whatever this flag says.
     """
     if not settings.bm25_enabled:
         return
-    client = get_qdrant_client()
-    info = client.get_collection(settings.qdrant_collection)
-    sparse = info.config.params.sparse_vectors or {}
-    if SPARSE_VECTOR_NAME not in sparse:
-        raise RuntimeError(
-            f"BM25_ENABLED=true but collection '{settings.qdrant_collection}' has no "
-            f"'{SPARSE_VECTOR_NAME}' sparse vector (found: {sorted(sparse) or 'none'}). "
-            "Build a sparse-enabled collection with "
-            "`PYTHONPATH=. python scripts/migrate_collection.py --target <name>`, "
-            "or set BM25_ENABLED=false."
-        )
+    assert_sparse_vector(
+        settings.qdrant_collection,
+        "BM25_ENABLED=true, but this collection cannot answer a sparse query "
+        "(set BM25_ENABLED=false to run dense-only).",
+    )
 
 
 def upsert_chunks(chunks: "list[PolicyChunk]", embeddings: list[list[float]]) -> None:
