@@ -96,7 +96,16 @@ def migrate(source: str, target: str, dry_run: bool) -> int:
 
 
 def verify(source: str, target: str) -> bool:
-    """Check count parity, the sparse schema, and a sample of ids."""
+    """Check count parity, the sparse schema, dense/payload fidelity, and sparse
+    presence on a sample of ids.
+
+    Count parity, schema presence, and non-empty sparse vectors would all pass
+    even if a dense vector were zeroed or scrambled in the copy — they say
+    nothing about the dense half. The dense-vector check below is what actually
+    protects the premise this whole script exists for: that copying rather than
+    re-ingesting leaves the dense half byte-identical, so an eval delta on the
+    new collection is attributable to the sparse half alone.
+    """
     client = get_qdrant_client()
 
     src = client.count(collection_name=source, exact=True).count
@@ -109,10 +118,14 @@ def verify(source: str, target: str) -> bool:
     print(f"sparse config: {sorted(sparse) or 'none'} {'OK' if schema_ok else 'MISSING'}")
 
     sample, _ = client.scroll(
-        collection_name=source, limit=VERIFY_SAMPLE, with_payload=False, with_vectors=False
+        collection_name=source, limit=VERIFY_SAMPLE, with_payload=True, with_vectors=True
     )
     ids = [p.id for p in sample]
-    found = client.retrieve(collection_name=target, ids=ids, with_vectors=True)
+    found = client.retrieve(
+        collection_name=target, ids=ids, with_payload=True, with_vectors=True
+    )
+    found_by_id = {p.id: p for p in found}
+
     present = sum(
         1
         for p in found
@@ -121,18 +134,28 @@ def verify(source: str, target: str) -> bool:
     sample_ok = present == len(ids)
     print(f"sampled ids:   {present}/{len(ids)} present with a non-empty sparse vector")
 
-    return counts_ok and schema_ok and sample_ok
+    # _dense_of is reused on both sides (not a raw == on .vector) so a bare-list
+    # source point and an already-migrated, named-vector target point compare
+    # equal instead of a list-vs-dict false negative.
+    dense_matches = 0
+    payload_matches = 0
+    for p in sample:
+        t = found_by_id.get(p.id)
+        if t is None:
+            continue
+        if _dense_of(t) == _dense_of(p):
+            dense_matches += 1
+        if t.payload == p.payload:
+            payload_matches += 1
+    dense_ok = dense_matches == len(ids)
+    payload_ok = payload_matches == len(ids)
+    print(f"dense vectors:  {dense_matches}/{len(ids)} identical")
+    print(f"payloads:       {payload_matches}/{len(ids)} identical")
+
+    return counts_ok and schema_ok and sample_ok and dense_ok and payload_ok
 
 
 def main() -> int:
-    # Inside main(), not at module top: this script imports no LlamaIndex or
-    # Ollama code (it copies vectors, it never embeds), so there is nothing for
-    # the usual ordering rule to order — and a module-level call would register
-    # a global TracerProvider and attempt a network export on mere import,
-    # which the tests below do. If this script ever gains a LlamaIndex or Ollama
-    # import, this call must move back above it.
-    init_observability()
-
     parser = argparse.ArgumentParser(
         description="Copy points into a sparse-enabled Qdrant collection",
     )
@@ -144,6 +167,17 @@ def main() -> int:
         "--force", action="store_true", help="write into a non-empty target"
     )
     args = parser.parse_args()
+
+    # After parse_args(), not as the first statement of main(): argparse exits
+    # from inside parse_args() itself on --help or a usage error, so calling
+    # this any earlier would register a global TracerProvider and attempt a
+    # network export before help text even prints. Still not at module top:
+    # this script imports no LlamaIndex or Ollama code (it copies vectors, it
+    # never embeds), so there is nothing for the usual ordering rule to order,
+    # and the module stays importable in tests with no side effect regardless
+    # of exactly where in main() this sits. If this script ever gains a
+    # LlamaIndex or Ollama import, this call must move above that import.
+    init_observability()
 
     if args.source == args.target:
         print("ERROR: --source and --target must differ")
