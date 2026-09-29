@@ -42,6 +42,21 @@ def hybrid_search(
     b_candidates = bm25_candidates or settings.hybrid_bm25_candidates
 
     # 1. Vector search
+    #
+    # search_chunks() now checks settings.bm25_enabled itself (Task 4), and that
+    # flag is already True on every path that reaches this function (its only
+    # callers gate on it) -- so this call takes search_chunks' server-side
+    # dense+sparse RRF branch, not a plain dense one. vector_results below (and
+    # vector_score/vector_rank, and hybrid_search_formatted's "vec=" field) now
+    # carry an RRF score (~0.01-0.02), not a cosine (~0.7-0.99), and get fused a
+    # SECOND time just below against the legacy local BM25 index -- this module
+    # fuses twice. bm25_enabled defaults to True in config.py and ships true in
+    # .env.example, so this double fusion is the default on a fresh clone or a
+    # container without this repo's own .env, not an edge case; it stays
+    # low-damage only because .bm25_index.json is usually absent, so
+    # search_bm25() returns [] and the second fusion degenerates into a
+    # rank-preserving reorder. This module is deleted outright in Task 9 --
+    # build nothing new on this path meanwhile.
     query_vector = embed_query(query)
     vector_results = search_chunks(query, query_vector, top_k=v_candidates)
     logger.info(

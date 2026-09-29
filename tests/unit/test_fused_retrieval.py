@@ -68,6 +68,7 @@ def test_bm25_on_sends_two_prefetch_branches_fused_by_rrf(monkeypatch, client, s
     dense, sparse = call["prefetch"]
     assert dense.query == [0.1, 0.2]
     assert dense.limit == 20
+    assert dense.using is None
     assert sparse.using == "bm25"
     assert sparse.limit == 15
     assert sparse.query.model == "qdrant/bm25"

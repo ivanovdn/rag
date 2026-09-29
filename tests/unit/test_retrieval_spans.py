@@ -211,6 +211,7 @@ def test_embed_functions_never_record_hf_token(monkeypatch, span_exporter):
 def test_search_vectors_span_name_kind_and_attributes(monkeypatch, span_exporter):
     fake_points = [_FakePoint(0.91), _FakePoint(0.42)]
     fake_client = _FakeQdrantClient(fake_points)
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: fake_client)
     monkeypatch.setattr(vector_store_mod.settings, "qdrant_collection", "compliance_policies")
 
@@ -230,6 +231,7 @@ def test_search_vectors_span_name_kind_and_attributes(monkeypatch, span_exporter
 
 def test_search_vectors_default_limit_falls_back_to_retrieval_top_k(monkeypatch, span_exporter):
     fake_client = _FakeQdrantClient([])
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: fake_client)
     monkeypatch.setattr(vector_store_mod.settings, "retrieval_top_k", 10)
 
@@ -262,6 +264,7 @@ def test_search_vectors_span_includes_retrieval_documents(monkeypatch, span_expo
             point_id="chunk-2",
         ),
     ]
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient(points))
 
     vector_store_mod.search_chunks("q", [0.1, 0.2, 0.3], top_k=2)
@@ -287,6 +290,7 @@ def test_search_vectors_document_attrs_missing_payload_keys_does_not_raise(
     monkeypatch, span_exporter
 ):
     points = [_FakePointWithPayload(0.5, {}, point_id="chunk-x")]  # empty payload
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient(points))
 
     result = vector_store_mod.search_chunks("q", [0.1], top_k=1)  # must not raise
@@ -297,6 +301,7 @@ def test_search_vectors_document_attrs_missing_payload_keys_does_not_raise(
 
 
 def test_search_vectors_no_points_means_no_document_attrs(monkeypatch, span_exporter):
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient([]))
 
     vector_store_mod.search_chunks("q", [0.1], top_k=1)
@@ -307,6 +312,7 @@ def test_search_vectors_no_points_means_no_document_attrs(monkeypatch, span_expo
 
 def test_search_vectors_exception_propagates_unchanged_and_span_errors(monkeypatch, span_exporter):
     boom = ResponseHandlingException("qdrant unreachable")
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(
         vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClientRaises(boom)
     )
