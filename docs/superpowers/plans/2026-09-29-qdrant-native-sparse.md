@@ -977,8 +977,11 @@ Then replace everything from `retrieve_k = ...` down to the end of the `results 
 
     # min_confidence_score is a COSINE threshold (0.45). It may only judge a score
     # that IS a cosine similarity — reranker off AND no RRF fusion. An RRF score is
-    # ~0.016, so dropping the bm25 half of this condition would return NO_MATCH for
-    # every question in the corpus, with no error raised anywhere. Same class of bug
+    # ~0.016 (1/(k + rank), with k pinned to 60 in rag/vector_store.py), so dropping
+    # the bm25 half of this condition would return NO_MATCH for every question in the
+    # corpus, with no error raised anywhere. That total failure is the diagnosable
+    # one: at Qdrant's default k of 2, RRF scores land in the same range as cosine
+    # ones and the same mistake would fail only for some questions. Same class of bug
     # as the rerank_score-presence guard in Step 3b: the guard is on what the number
     # MEANS, not on which component produced it.
     if (
@@ -1804,25 +1807,35 @@ In `.env.example`, replace the hybrid block:
 
 ```bash
 # Hybrid Search (BM25 sparse vectors, stored in Qdrant)
-# Query-side only: sparse vectors are always written at ingest, so flipping this
-# needs no re-ingest. The collection must have a `bm25` sparse vector or the bot
-# refuses to start — build one with scripts/migrate_collection.py.
+# BM25_ENABLED and the two candidate counts below are query-side only: sparse
+# vectors are always written at ingest, so flipping them needs no re-ingest. The
+# collection must have a `bm25` sparse vector or the bot refuses to start — build
+# one with scripts/migrate_collection.py.
 BM25_ENABLED=true
 HYBRID_VECTOR_CANDIDATES=20
 HYBRID_BM25_CANDIDATES=20
 # BM25 length normalisation. Qdrant's default is 256; this corpus measures ~50.
+# WRITE-TIME, unlike everything above it: avg_len is baked into every stored
+# sparse vector and is inert at query time. Measured — the same text stored at
+# avg_len 50 vs 256 gives 1.504788 vs 1.652097, while changing it on the query
+# side alone changes nothing. So editing this does nothing until the vectors are
+# re-encoded: migrate_collection.py into a fresh collection, or a full re-ingest.
+# Re-ingesting ONE policy after changing it leaves that document normalised
+# differently from all the others, undetectably — Qdrant discards collection-level
+# BM25 config, so nothing records what a stored vector was encoded with.
 BM25_AVG_LEN=50.0
 ```
 
 - [ ] **Step 6: Update CLAUDE.md**
 
-Replace the `BM25_ENABLED=true silently does nothing (or hurts)` gotcha row with four rows carrying what was verified:
+Replace the `BM25_ENABLED=true silently does nothing (or hurts)` gotcha row with five rows carrying what was verified:
 
 ```
 | `BM25_ENABLED=true` and the bot refuses to start | Correct behaviour. Sparse vectors live in the collection now; a collection without a `bm25` sparse vector cannot answer a sparse query (Qdrant: `Not existing vector name error`), and that error is NOT transient, so without the preflight every question would become a content escalation. Build one with `scripts/migrate_collection.py --target <name>`. |
 | BM25 `k`/`b`/`avg_len` have no effect | A collection-level `Bm25Config` is **accepted and silently discarded** by Qdrant 1.17.1 — the `PUT` returns `ok` and the collection reads back with only `{"modifier": "idf"}`. They work ONLY in per-document `options`, so they must be passed on every upsert and every query (`rag/vector_store.py::bm25_document`). |
+| Editing `BM25_AVG_LEN` in `.env` changes nothing | It is a **write-time** setting, unlike `BM25_ENABLED` and the candidate counts beside it: `avg_len` is baked into every stored sparse vector and is inert at query time (measured — the same text stored at 50 vs 256 gives 1.504788 vs 1.652097; changing it query-side alone changes nothing). Re-encode to apply it: `migrate_collection.py` into a fresh collection, or a full re-ingest. Re-ingesting ONE policy after changing it leaves that document normalised differently from the other 1601 and **nothing can detect it** — Qdrant discards collection-level BM25 config, so a stored vector carries no record of what encoded it. Third member of the "a setting that never fires" family, with `MIN_CONFIDENCE_SCORE` and `RERANKER_QUERY_TEMPLATE`. |
 | Installing `fastembed` changes retrieval with no error | `cloud_inference=False` is the qdrant-client default and means "encode `models.Document` locally via fastembed". Server-side BM25 works here only because fastembed is absent. `get_qdrant_client()` sets `cloud_inference=True` explicitly — do not remove it, and do not add fastembed. |
-| Adding a vector to an existing Qdrant collection | Not possible: `Not existing vector name error`. Any vector-schema change means a new collection plus a migration (`scripts/migrate_collection.py` copies points, keeping dense vectors byte-identical so an A/B isolates the change). Self-hosted inference also works only for built-in models — `qdrant/bm25` resolves, anything else fails with `InferenceService URL not configured`. |
+| Adding a vector to an existing Qdrant collection | Not possible: `Not existing vector name error`. Any vector-schema change means a new collection plus a migration (`scripts/migrate_collection.py` copies points, keeping dense vectors byte-identical so an A/B isolates the change). **Local and remote Qdrant are separate stores — build on the host that will use it:** the script resolves its URL from `USE_REMOTE_QDRANT` like everything else, so from a laptop it will happily build v2 locally and then `--verify` it locally, fully green, for a collection production cannot see. It prints the URL it used on the first line of every run; read it. Self-hosted inference also works only for built-in models — `qdrant/bm25` resolves, anything else fails with `InferenceService URL not configured`. |
 ```
 
 Also update the Architecture block: `rag/` no longer lists `bm25_index.py` or `hybrid_search.py`, and the **Search flow** line becomes:
