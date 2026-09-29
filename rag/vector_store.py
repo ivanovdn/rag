@@ -9,6 +9,7 @@ from openinference.semconv.trace import (
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    Document,
     FieldCondition,
     Filter,
     MatchValue,
@@ -38,6 +39,21 @@ _DOCUMENT_CONTENT_MAX_CHARS = 1000
 # server-side config on a shared host we do not own.
 SPARSE_VECTOR_NAME = "bm25"
 BM25_MODEL = "qdrant/bm25"
+
+
+def bm25_document(text: str) -> Document:
+    """Text handed to Qdrant for server-side BM25 encoding.
+
+    avg_len goes in per-document `options` on EVERY call, at ingest and at query
+    time alike: Qdrant 1.17.1 accepts a collection-level Bm25Config and silently
+    discards it (verified 2026-09-29 — the collection reads back carrying only
+    {"modifier": "idf"}), so this is the only place k/b/avg_len take effect.
+    """
+    return Document(
+        text=text,
+        model=BM25_MODEL,
+        options={"avg_len": settings.bm25_avg_len},
+    )
 
 
 def _document_span_attributes(points: list) -> dict:
@@ -122,17 +138,22 @@ def init_collection(collection_name: str | None = None) -> None:
 
 
 def upsert_chunks(chunks: "list[PolicyChunk]", embeddings: list[list[float]]) -> None:
-    """Upsert chunks with their embeddings into Qdrant."""
+    """Upsert chunks with their dense and sparse vectors into Qdrant.
+
+    The sparse vector is written unconditionally, regardless of BM25_ENABLED:
+    that flag is query-side only now. Gating the write on it is what let an
+    index and a collection drift apart silently.
+    """
     client = get_qdrant_client()
     points = [
         PointStruct(
             id=chunk.chunk_id,
-            vector=embedding,
+            # "" is the unnamed dense vector; "bm25" is the named sparse one.
+            vector={"": embedding, SPARSE_VECTOR_NAME: bm25_document(chunk.text)},
             payload=chunk.model_dump(),
         )
         for chunk, embedding in zip(chunks, embeddings)
     ]
-    # Upsert in batches of 100
     batch_size = 100
     for i in range(0, len(points), batch_size):
         client.upsert(
