@@ -64,7 +64,15 @@ def _document_span_attributes(points: list) -> dict:
 def get_qdrant_client() -> QdrantClient:
     global _client
     if _client is None:
-        _client = QdrantClient(url=settings.active_qdrant_url, timeout=10)
+        # cloud_inference=True means "do not embed models.Document locally, send
+        # the text to the server". Despite the name it is correct for a
+        # self-hosted server: Qdrant 1.17.1 resolves the built-in qdrant/bm25
+        # model itself, with no InferenceService configured (verified
+        # 2026-09-29). The client default is False, i.e. encode locally via
+        # fastembed — which works today only because fastembed is not installed.
+        _client = QdrantClient(
+            url=settings.active_qdrant_url, timeout=10, cloud_inference=True
+        )
     return _client
 
 

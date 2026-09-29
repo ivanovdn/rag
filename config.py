@@ -111,6 +111,12 @@ class Settings(BaseSettings):
     bm25_enabled: bool = True
     hybrid_vector_candidates: int = 20
     hybrid_bm25_candidates: int = 20
+    # BM25 length normalisation, passed to Qdrant in per-document `options`.
+    # Qdrant's default is 256; this corpus measured 1602 chunks at mean 49.7
+    # tokens (median 38, p90 109, max 350) on 2026-09-29. At 256 the term
+    # (1 - b + b*dl/avg_len) stays near 0.25 for every chunk, so `b` goes inert
+    # and long chunks are never penalised.
+    bm25_avg_len: float = 50.0
 
     # Agent
     agent_timeout: int = 120
