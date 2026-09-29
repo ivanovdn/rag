@@ -26,89 +26,50 @@ def setup_async():
 
 
 def make_tier1_task(top_k: int):
+    # Local imports: init_observability() must run before any LlamaIndex/Ollama
+    # import, and this module is imported by the CLI entry point below.
     from config import settings
+    from rag.embeddings import embed_query
+    from rag.vector_store import search_chunks
 
-    def _to_result_dicts(raw_results, is_hybrid: bool):
-        """Convert raw search results to a common dict format."""
-        if is_hybrid:
-            return [
+    retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
+
+    def retrieval_task(input):
+        # One path for both modes: Qdrant fuses server-side, so dense-only and
+        # dense+sparse both come back as ScoredPoints with the same payload.
+        vector = embed_query(input["question"])
+        raw = search_chunks(input["question"], vector, top_k=retrieve_k)
+        results = [
+            {
+                "doc_title": r.payload.get("doc_title", ""),
+                "section": r.payload.get("section", ""),
+                "clause": r.payload.get("clause", ""),
+                "clause_number": r.payload.get("clause_number", ""),
+                "text": r.payload.get("text", ""),
+                "retrieval_score": round(r.score, 4),
+            }
+            for r in raw
+        ]
+
+        if settings.reranker_enabled and results:
+            from rag.reranker import rerank
+
+            results = rerank(input["question"], results, top_n=settings.reranker_top_n)
+
+        return {
+            "search_results": [
                 {
                     "doc_title": r["doc_title"],
                     "section": r["section"],
                     "clause": r.get("clause", ""),
                     "clause_number": r.get("clause_number", ""),
-                    "text": r.get("text", ""),
-                    "retrieval_score": round(r["rrf_score"], 4),
+                    "retrieval_score": r.get("retrieval_score", 0),
+                    "rerank_score": r.get("rerank_score"),
+                    "original_rank": r.get("original_rank"),
                 }
-                for r in raw_results
+                for r in results
             ]
-        else:
-            return [
-                {
-                    "doc_title": r.payload.get("doc_title", ""),
-                    "section": r.payload.get("section", ""),
-                    "clause": r.payload.get("clause", ""),
-                    "clause_number": r.payload.get("clause_number", ""),
-                    "text": r.payload.get("text", ""),
-                    "retrieval_score": round(r.score, 4),
-                }
-                for r in raw_results
-            ]
-
-    retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
-
-    if settings.bm25_enabled:
-        from rag.hybrid_search import hybrid_search
-
-        def retrieval_task(input):
-            raw = hybrid_search(input["question"], top_k=retrieve_k)
-            results = _to_result_dicts(raw, is_hybrid=True)
-
-            if settings.reranker_enabled and results:
-                from rag.reranker import rerank
-                results = rerank(input["question"], results, top_n=settings.reranker_top_n)
-
-            return {
-                "search_results": [
-                    {
-                        "doc_title": r["doc_title"],
-                        "section": r["section"],
-                        "clause": r.get("clause", ""),
-                        "clause_number": r.get("clause_number", ""),
-                        "retrieval_score": r.get("retrieval_score", 0),
-                        "rerank_score": r.get("rerank_score"),
-                        "original_rank": r.get("original_rank"),
-                    }
-                    for r in results
-                ]
-            }
-    else:
-        from rag.embeddings import embed_query
-        from rag.vector_store import search_chunks
-
-        def retrieval_task(input):
-            vector = embed_query(input["question"])
-            raw = search_chunks(input["question"], vector, top_k=retrieve_k)
-            results = _to_result_dicts(raw, is_hybrid=False)
-
-            if settings.reranker_enabled and results:
-                from rag.reranker import rerank
-                results = rerank(input["question"], results, top_n=settings.reranker_top_n)
-
-            return {
-                "search_results": [
-                    {
-                        "doc_title": r["doc_title"],
-                        "section": r["section"],
-                        "clause": r.get("clause", ""),
-                        "clause_number": r.get("clause_number", ""),
-                        "retrieval_score": r.get("retrieval_score", 0),
-                        "rerank_score": r.get("rerank_score"),
-                        "original_rank": r.get("original_rank"),
-                    }
-                    for r in results
-                ]
-            }
+        }
 
     return retrieval_task
 
@@ -374,6 +335,11 @@ def main():
         "embedding_source": settings.embedding_source,
         "embedding_url": settings.ollama_embedding_url if settings.embedding_source == "ollama" else "local",
         "qdrant_url": settings.active_qdrant_url,
+        # The collection is a retrieval parameter now: v1 and v2 hold different
+        # indexes, so a run that does not name it cannot be compared later.
+        "qdrant_collection": settings.qdrant_collection,
+        "bm25_enabled": settings.bm25_enabled,
+        "bm25_avg_len": settings.bm25_avg_len,
         "reranker_backend": settings.reranker_backend if settings.reranker_enabled else "none",
         "reranker_url": settings.reranker_url if settings.reranker_enabled else "none",
     }
@@ -385,7 +351,7 @@ def main():
                      "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
-                     "min_confidence_score": settings.min_confidence_score if not settings.reranker_enabled else None,
+                     "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
                      "top_k": top_k, "tier": "tier1"}
     else:
         task = make_agent_task(verbose=args.verbose)
@@ -401,7 +367,7 @@ def main():
                      "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
-                     "min_confidence_score": settings.min_confidence_score if not settings.reranker_enabled else None,
+                     "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
                      "num_ctx": settings.ollama_num_ctx,
                      "temperature": settings.llm_temperature,
                      # The prompt is a parameter like any other, and the one most
