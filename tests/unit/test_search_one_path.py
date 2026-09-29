@@ -1,7 +1,9 @@
 """search_policies runs one retrieval path for both modes.
 
 The guard test below is the important one. min_confidence_score is a COSINE
-threshold of 0.45. An RRF score is around 0.016. Guarding only on
+threshold of 0.45. An RRF score is around 0.016 — 1/(k + rank), with k pinned to
+60 in rag/vector_store.py (RRF_K); Qdrant's own default is 2, which would put an
+RRF score in the same range as a cosine one. Guarding only on
 `not reranker_enabled` — which is what the code said before the branches merged —
 would compare the two and escalate every question in the corpus, silently.
 """
@@ -45,7 +47,7 @@ def retrieval(monkeypatch):
 
 
 def test_an_rrf_score_is_not_measured_against_the_cosine_floor(monkeypatch, retrieval):
-    """The regression guard. 0.016 is a perfectly normal RRF score."""
+    """The regression guard. 0.016 is a perfectly normal RRF score at k=60."""
     monkeypatch.setattr(sp.settings, "bm25_enabled", True)
     retrieval([_Hit(0.016)])
 

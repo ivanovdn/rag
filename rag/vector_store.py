@@ -12,13 +12,13 @@ from qdrant_client.models import (
     Document,
     FieldCondition,
     Filter,
-    Fusion,
-    FusionQuery,
     MatchValue,
     Modifier,
     PayloadSchemaType,
     PointStruct,
     Prefetch,
+    Rrf,
+    RrfQuery,
     SparseVectorParams,
     VectorParams,
 )
@@ -42,6 +42,22 @@ _DOCUMENT_CONTENT_MAX_CHARS = 1000
 # server-side config on a shared host we do not own.
 SPARSE_VECTOR_NAME = "bm25"
 BM25_MODEL = "qdrant/bm25"
+
+# Reciprocal-rank-fusion constant, pinned. 60 is what the client-side fusion
+# module this replaced used; Qdrant's own default -- what a bare
+# FusionQuery(Fusion.RRF) gets you -- is 2. Measured on Qdrant 1.17.1: the
+# default scores ranks 1-3 at 0.5 / 0.333 / 0.25, while {"rrf": {"k": 60}}
+# scores them 0.016667 / 0.016393 / 0.016129, exactly 1/60, 1/61, 1/62.
+#
+# Two things rest on keeping 60. The eval gate's whole premise is that the
+# encoder is the only variable that changed between the old collection and the
+# new one, and a 30x shift in the fusion constant breaks that (as does spec
+# D10's fallback, which has to reproduce a previously measured ranking). And the
+# cosine-floor guard in rag/tools/search_policies.py reasons about the ~0.016
+# magnitude: at k=2 an RRF score lands in the same range as a cosine one, so
+# dropping a clause of that guard would fail intermittently and
+# question-dependently instead of for every question -- far harder to diagnose.
+RRF_K = 60
 
 
 def bm25_document(text: str) -> Document:
@@ -234,9 +250,10 @@ def search_chunks(
 
     Returns list[ScoredPoint] in BOTH modes, because fusion happens server-side —
     so no caller needs a branch. The score means different things (an RRF score
-    when bm25_enabled, a cosine similarity otherwise); callers record which in
-    `score_type`, and anything comparing a score against a threshold must check
-    which scale it is on. See search_policies' min_confidence_score guard.
+    around 1/(RRF_K + rank) when bm25_enabled, a cosine similarity otherwise);
+    callers record which in `score_type`, and anything comparing a score against
+    a threshold must check which scale it is on. See search_policies'
+    min_confidence_score guard.
     """
     tracer = get_tracer()
     limit = top_k or settings.retrieval_top_k
@@ -254,6 +271,7 @@ def search_chunks(
     ) as span:
         if settings.bm25_enabled:
             span.set_attribute("qdrant.fusion", "rrf")
+            span.set_attribute("qdrant.rrf_k", RRF_K)
             span.set_attribute("qdrant.bm25_avg_len", settings.bm25_avg_len)
             response = client.query_points(
                 collection_name=settings.qdrant_collection,
@@ -268,7 +286,7 @@ def search_chunks(
                         limit=settings.hybrid_bm25_candidates,
                     ),
                 ],
-                query=FusionQuery(fusion=Fusion.RRF),
+                query=RrfQuery(rrf=Rrf(k=RRF_K)),
                 limit=limit,
                 with_payload=True,
             )

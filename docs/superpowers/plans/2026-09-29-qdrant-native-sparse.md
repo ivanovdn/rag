@@ -4,7 +4,7 @@
 
 **Goal:** Move BM25 from a gitignored JSON file into Qdrant as native sparse vectors, so the lexical index lives in the collection, survives re-ingestion, needs no mount, and is fused server-side.
 
-**Architecture:** A new collection carries an unnamed 768-dim dense vector (unchanged) plus a named `bm25` sparse vector with `modifier: idf`. Qdrant performs BM25 encoding itself via its built-in `qdrant/bm25` model, so no encoder ships in this repo. Retrieval becomes one `query_points` call with two `Prefetch` branches fused by RRF; because fusion is server-side, both the BM25-on and BM25-off paths return `list[ScoredPoint]`, collapsing three duplicated call sites into one each. A point-copying migration script builds the new collection from the existing one, leaving dense vectors byte-identical.
+**Architecture:** A new collection carries an unnamed 768-dim dense vector (unchanged) plus a named `bm25` sparse vector with `modifier: idf`. Qdrant performs BM25 encoding itself via its built-in `qdrant/bm25` model, so no encoder ships in this repo. Retrieval becomes one `query_points` call with two `Prefetch` branches fused by RRF at a pinned `k=60` (Qdrant's default is 2; 60 is what the deleted client-side fusion used); because fusion is server-side, both the BM25-on and BM25-off paths return `list[ScoredPoint]`, collapsing three duplicated call sites into one each. A point-copying migration script builds the new collection from the existing one, leaving dense vectors byte-identical.
 
 **Tech Stack:** Python 3.12, `qdrant-client` 1.17.0, Qdrant server 1.17.1, pytest, OpenTelemetry / OpenInference. **No new dependencies.**
 
@@ -585,7 +585,9 @@ def client(monkeypatch):
     return fake
 
 
-def test_bm25_on_sends_two_prefetch_branches_fused_by_rrf(monkeypatch, client, span_exporter):
+def test_bm25_on_sends_two_prefetch_branches_fused_by_rrf_at_k_60(
+    monkeypatch, client, span_exporter
+):
     monkeypatch.setattr(vs.settings, "bm25_enabled", True)
     monkeypatch.setattr(vs.settings, "hybrid_vector_candidates", 20)
     monkeypatch.setattr(vs.settings, "hybrid_bm25_candidates", 15)
@@ -600,7 +602,11 @@ def test_bm25_on_sends_two_prefetch_branches_fused_by_rrf(monkeypatch, client, s
     assert sparse.limit == 15
     assert sparse.query.model == "qdrant/bm25"
     assert sparse.query.text == "retention period"
-    assert call["query"].fusion == "rrf"
+    # The k, not just the fusion method: a bare FusionQuery(Fusion.RRF) takes
+    # Qdrant's default of 2, while the deleted client-side hybrid_search.py used
+    # 60. Measured on 1.17.1: k=2 scores ranks 1-3 at 0.5/0.333/0.25, k=60 at
+    # 0.016667/0.016393/0.016129 — exactly 1/60, 1/61, 1/62.
+    assert call["query"].rrf.k == 60
     assert call["limit"] == 6
 
 
@@ -648,6 +654,7 @@ def test_span_keeps_its_historical_name_and_gains_fusion_attributes(
     assert span.attributes["qdrant.collection"] == "compliance_policies_v2"
     assert span.attributes["qdrant.bm25_enabled"] is True
     assert span.attributes["qdrant.fusion"] == "rrf"
+    assert span.attributes["qdrant.rrf_k"] == 60
     assert span.attributes["qdrant.returned_count"] == 2
     assert span.attributes["qdrant.top_score"] == 0.91
 
@@ -668,7 +675,7 @@ Expected: FAIL — `AttributeError: module 'rag.vector_store' has no attribute '
 
 - [ ] **Step 3: Implement `search_chunks`**
 
-In `rag/vector_store.py`, add `Fusion`, `FusionQuery` and `Prefetch` to the `qdrant_client.models` import, and replace `search_vectors` entirely:
+In `rag/vector_store.py`, add `Prefetch`, `Rrf` and `RrfQuery` to the `qdrant_client.models` import, define `RRF_K = 60` beside `SPARSE_VECTOR_NAME`, and replace `search_vectors` entirely. `k` is pinned rather than left to the server: the deleted client-side `rag/hybrid_search.py` fused with `_RRF_K = 60`, and a bare `FusionQuery(Fusion.RRF)` takes Qdrant's default of **2** — a 30x change that would break the eval gate's premise that the encoder is the only variable under test, move the ranking spec D10's fallback has to reproduce, and put RRF scores in the same numeric range as cosine ones, so the `min_confidence_score` guard in Task 4 would fail only for *some* questions instead of all of them.
 
 ```python
 def search_chunks(
@@ -678,9 +685,10 @@ def search_chunks(
 
     Returns list[ScoredPoint] in BOTH modes, because fusion happens server-side —
     so no caller needs a branch. The score means different things (an RRF score
-    when bm25_enabled, a cosine similarity otherwise); callers record which in
-    `score_type`, and anything comparing a score against a threshold must check
-    which scale it is on. See search_policies' min_confidence_score guard.
+    around 1/(RRF_K + rank) when bm25_enabled, a cosine similarity otherwise);
+    callers record which in `score_type`, and anything comparing a score against
+    a threshold must check which scale it is on. See search_policies'
+    min_confidence_score guard.
     """
     tracer = get_tracer()
     limit = top_k or settings.retrieval_top_k
@@ -698,6 +706,7 @@ def search_chunks(
     ) as span:
         if settings.bm25_enabled:
             span.set_attribute("qdrant.fusion", "rrf")
+            span.set_attribute("qdrant.rrf_k", RRF_K)
             span.set_attribute("qdrant.bm25_avg_len", settings.bm25_avg_len)
             response = client.query_points(
                 collection_name=settings.qdrant_collection,
@@ -712,7 +721,7 @@ def search_chunks(
                         limit=settings.hybrid_bm25_candidates,
                     ),
                 ],
-                query=FusionQuery(fusion=Fusion.RRF),
+                query=RrfQuery(rrf=Rrf(k=RRF_K)),
                 limit=limit,
                 with_payload=True,
             )
@@ -800,7 +809,7 @@ git commit -m "feat(retrieval): fuse dense and sparse server-side via the Query 
 - Consumes: `search_chunks(query_text, query_vector, top_k)` from Task 4.
 - Produces: nothing new. `search_policies(query, top_k)` keeps its signature and its return contract (`NO_MATCH` / `UNAVAILABLE` / formatted sources).
 
-**This task carries the sharpest correctness risk in the plan.** `min_confidence_score` is `0.45` and is a **cosine** threshold. Today the BM25 branch returns before reaching it. Once both modes share one path, a guard on `not reranker_enabled` alone would compare `0.45` against an RRF score of roughly `0.016` and return `NO_RELEVANT_POLICY_FOUND` for every question — escalating the entire corpus with no error anywhere.
+**This task carries the sharpest correctness risk in the plan.** `min_confidence_score` is `0.45` and is a **cosine** threshold. Today the BM25 branch returns before reaching it. Once both modes share one path, a guard on `not reranker_enabled` alone would compare `0.45` against an RRF score of roughly `0.016` (`1/(k + rank)`, with `k` pinned to 60) and return `NO_RELEVANT_POLICY_FOUND` for every question — escalating the entire corpus with no error anywhere. Every-question failure is the diagnosable case: at Qdrant's default `k` of 2 an RRF score lands in the cosine range and the same mistake would fail question-dependently.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -810,7 +819,9 @@ Create `tests/unit/test_search_one_path.py`:
 """search_policies runs one retrieval path for both modes.
 
 The guard test below is the important one. min_confidence_score is a COSINE
-threshold of 0.45. An RRF score is around 0.016. Guarding only on
+threshold of 0.45. An RRF score is around 0.016 — 1/(k + rank), with k pinned
+to 60 in rag/vector_store.py (RRF_K); Qdrant's own default is 2, which would put
+an RRF score in the same range as a cosine one. Guarding only on
 `not reranker_enabled` — which is what the code said before the branches merged —
 would compare the two and escalate every question in the corpus, silently.
 """
@@ -854,7 +865,7 @@ def retrieval(monkeypatch):
 
 
 def test_an_rrf_score_is_not_measured_against_the_cosine_floor(monkeypatch, retrieval):
-    """The regression guard. 0.016 is a perfectly normal RRF score."""
+    """The regression guard. 0.016 is a perfectly normal RRF score at k=60."""
     monkeypatch.setattr(sp.settings, "bm25_enabled", True)
     retrieval([_Hit(0.016)])
 

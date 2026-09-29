@@ -57,7 +57,9 @@ def client(monkeypatch):
     return fake
 
 
-def test_bm25_on_sends_two_prefetch_branches_fused_by_rrf(monkeypatch, client, span_exporter):
+def test_bm25_on_sends_two_prefetch_branches_fused_by_rrf_at_k_60(
+    monkeypatch, client, span_exporter
+):
     monkeypatch.setattr(vs.settings, "bm25_enabled", True)
     monkeypatch.setattr(vs.settings, "hybrid_vector_candidates", 20)
     monkeypatch.setattr(vs.settings, "hybrid_bm25_candidates", 15)
@@ -73,7 +75,12 @@ def test_bm25_on_sends_two_prefetch_branches_fused_by_rrf(monkeypatch, client, s
     assert sparse.limit == 15
     assert sparse.query.model == "qdrant/bm25"
     assert sparse.query.text == "retention period"
-    assert call["query"].fusion == "rrf"
+    # k is the point, not just the fusion method. A bare FusionQuery(Fusion.RRF)
+    # takes Qdrant's default of 2; the deleted client-side hybrid_search.py used
+    # 60, and the eval gate's premise is that the encoder is the only variable
+    # that changed. Measured on 1.17.1: k=2 gives 0.5/0.333/0.25 for ranks 1-3,
+    # k=60 gives 0.016667/0.016393/0.016129 — exactly 1/60, 1/61, 1/62.
+    assert call["query"].rrf.k == 60
     assert call["limit"] == 6
 
 
@@ -121,8 +128,26 @@ def test_span_keeps_its_historical_name_and_gains_fusion_attributes(
     assert span.attributes["qdrant.collection"] == "compliance_policies_v2"
     assert span.attributes["qdrant.bm25_enabled"] is True
     assert span.attributes["qdrant.fusion"] == "rrf"
+    assert span.attributes["qdrant.rrf_k"] == 60
     assert span.attributes["qdrant.returned_count"] == 2
     assert span.attributes["qdrant.top_score"] == 0.91
+
+
+def test_the_fusion_constant_is_pinned_not_left_to_the_server_default(
+    monkeypatch, client
+):
+    """Qdrant's default k is 2. At k=2 an RRF score sits in the same numeric
+    range as a cosine similarity, which would turn the cosine-floor guard in
+    search_policies from "wrong for every question" into "wrong for some
+    questions" — the harder failure to diagnose. It would also move the ranking
+    the eval gate and spec D10's fallback are measured against.
+    """
+    monkeypatch.setattr(vs.settings, "bm25_enabled", True)
+
+    vs.search_chunks("q", [0.1], top_k=6)
+
+    assert vs.RRF_K == 60
+    assert client.calls[0]["query"].model_dump() == {"rrf": {"k": 60, "weights": None}}
 
 
 def test_default_limit_falls_back_to_retrieval_top_k(monkeypatch, client, span_exporter):

@@ -211,7 +211,7 @@ if settings.bm25_enabled:
                 using="bm25",
                 limit=settings.hybrid_bm25_candidates),
         ],
-        query=models.FusionQuery(fusion=models.Fusion.RRF),
+        query=models.RrfQuery(rrf=models.Rrf(k=60)),
         limit=limit,
         with_payload=True,
     )
@@ -223,6 +223,17 @@ else:
         with_payload=True,
     )
 ```
+
+`k=60` is pinned, not left to the server. The deleted client-side
+`rag/hybrid_search.py` fused with `_RRF_K = 60`; a bare
+`FusionQuery(Fusion.RRF)` takes Qdrant's own default of **2** (measured on
+1.17.1: ranks 1-3 score 0.5 / 0.333 / 0.25 by default, versus 0.016667 /
+0.016393 / 0.016129 — exactly 1/60, 1/61, 1/62 — with `{"rrf": {"k": 60}}`).
+Pinning it is what keeps this document's premise true: the encoder is the only
+variable that changed between the old collection and the new one, so the gate
+below measures the encoder. It also keeps the ~0.016 magnitude the
+`min_confidence_score` trap below reasons about, and it is what lets D10's
+fallback reproduce a previously measured ranking.
 
 Both branches return `list[ScoredPoint]` with identical payload shape. That is
 the structural win: fusion moves server-side, so the roughly 100 lines of
@@ -252,9 +263,12 @@ if not settings.reranker_enabled and not settings.bm25_enabled and \
         raw[0].score < settings.min_confidence_score:
 ```
 
-An RRF score is around 0.016, so applying a 0.45 cosine threshold to it would
-return `NO_RELEVANT_POLICY_FOUND` for every question — escalating the entire
-corpus with no error. The guard is on the score's *meaning*, not on the reranker
+An RRF score is around 0.016 — `1/(k + rank)` with `k` pinned to 60 — so
+applying a 0.45 cosine threshold to it would return `NO_RELEVANT_POLICY_FOUND`
+for every question, escalating the entire corpus with no error. That total
+failure is the *diagnosable* one: at Qdrant's default `k` of 2 an RRF score
+lands in the same numeric range as a cosine similarity, and the same mistake
+would fail only for some questions. The guard is on the score's *meaning*, not on the reranker
 alone. This is the same class of bug as the `rerank_score`-presence guard in
 `search_policies.py`, and it gets its own regression test.
 
@@ -333,14 +347,18 @@ All unit tests stay offline. Nothing touches the network or `172.20.0.22`.
 - **Request shape**, with `client.query_points` mocked: with `bm25_enabled=True`,
   two `Prefetch` entries are sent, the sparse one carries `using="bm25"` and a
   `Document` with `model="qdrant/bm25"` and `options={"avg_len": …}`, the query
-  is `FusionQuery(RRF)`, and both limits come from settings. With
-  `bm25_enabled=False`, no `prefetch` and no `FusionQuery` are sent.
+  is `RrfQuery(rrf=Rrf(k=60))` — the `k` is asserted, not just the fusion
+  method — and both limits come from settings. With
+  `bm25_enabled=False`, no `prefetch` and no fusion query are sent.
 - **`avg_len` threading**: changing `settings.bm25_avg_len` changes the value in
   both the upsert Document and the query Document.
 - **`cloud_inference=True`** is set on the constructed client (D3).
 - **`min_confidence_score` regression**: with `bm25_enabled=True` and
   `reranker_enabled=False`, a top score of 0.016 does **not** produce
-  `NO_RELEVANT_POLICY_FOUND`. This test is the guard on the trap above.
+  `NO_RELEVANT_POLICY_FOUND`. This test is the guard on the trap above. Its
+  sibling covers the other clause: `reranker_enabled=True` with
+  `bm25_enabled=False` and a top score of 0.20 must not produce it either —
+  that is the shape rollout step 1 runs in.
 - **Preflight**: a collection whose sparse config lacks `bm25` fails startup with
   a message naming the collection; with `bm25_enabled=False` it does not.
 - **Migration script**: `--dry-run` writes nothing; a point is copied with id,
