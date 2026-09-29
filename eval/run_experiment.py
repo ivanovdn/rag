@@ -84,11 +84,11 @@ def make_tier1_task(top_k: int):
             }
     else:
         from rag.embeddings import embed_query
-        from rag.vector_store import search_vectors
+        from rag.vector_store import search_chunks
 
         def retrieval_task(input):
             vector = embed_query(input["question"])
-            raw = search_vectors(vector, top_k=retrieve_k)
+            raw = search_chunks(input["question"], vector, top_k=retrieve_k)
             results = _to_result_dicts(raw, is_hybrid=False)
 
             if settings.reranker_enabled and results:

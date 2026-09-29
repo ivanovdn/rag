@@ -102,7 +102,7 @@ async def run_agent_query(agent, agent_input: str) -> str:
 
 def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
     from rag.embeddings import embed_query
-    from rag.vector_store import search_vectors
+    from rag.vector_store import search_chunks
 
     tracer = get_tracer()
     data = load_dataset(dataset_path)
@@ -143,7 +143,7 @@ def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
                     )
             else:
                 vector = embed_query(tc["question"])
-                raw_results = search_vectors(vector, top_k=top_k)
+                raw_results = search_chunks(tc["question"], vector, top_k=top_k)
                 search_results = []
                 for r in raw_results:
                     p = r.payload

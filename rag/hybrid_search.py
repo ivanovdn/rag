@@ -15,7 +15,7 @@ import logging
 from config import settings
 from rag.bm25_index import search_bm25
 from rag.embeddings import embed_query
-from rag.vector_store import search_vectors
+from rag.vector_store import search_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def hybrid_search(
 
     # 1. Vector search
     query_vector = embed_query(query)
-    vector_results = search_vectors(query_vector, top_k=v_candidates)
+    vector_results = search_chunks(query, query_vector, top_k=v_candidates)
     logger.info(
         f"Vector search: {len(vector_results)} results"
         + (f", top score: {vector_results[0].score:.3f}" if vector_results else "")

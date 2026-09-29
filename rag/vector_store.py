@@ -12,10 +12,13 @@ from qdrant_client.models import (
     Document,
     FieldCondition,
     Filter,
+    Fusion,
+    FusionQuery,
     MatchValue,
     Modifier,
     PayloadSchemaType,
     PointStruct,
+    Prefetch,
     SparseVectorParams,
     VectorParams,
 )
@@ -173,27 +176,58 @@ def delete_document(doc_id: str) -> None:
     )
 
 
-def search_vectors(
-    query_vector: list[float], top_k: int | None = None
+def search_chunks(
+    query_text: str, query_vector: list[float], top_k: int | None = None
 ) -> list:
-    """Search for similar vectors, returns list of ScoredPoint."""
+    """Retrieve candidate chunks: dense only, or dense + sparse fused by Qdrant.
+
+    Returns list[ScoredPoint] in BOTH modes, because fusion happens server-side —
+    so no caller needs a branch. The score means different things (an RRF score
+    when bm25_enabled, a cosine similarity otherwise); callers record which in
+    `score_type`, and anything comparing a score against a threshold must check
+    which scale it is on. See search_policies' min_confidence_score guard.
+    """
     tracer = get_tracer()
     limit = top_k or settings.retrieval_top_k
+    client = get_qdrant_client()
+    # The span name stays "search_vectors" although the function was renamed, so
+    # Phoenix comparisons against runs recorded before this migration stay valid.
     with tracer.start_as_current_span(
         "search_vectors",
         attributes={
             SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.RETRIEVER.value,
             "qdrant.collection": settings.qdrant_collection,
             "qdrant.limit": limit,
+            "qdrant.bm25_enabled": settings.bm25_enabled,
         },
     ) as span:
-        client = get_qdrant_client()
-        response = client.query_points(
-            collection_name=settings.qdrant_collection,
-            query=query_vector,
-            limit=limit,
-            with_payload=True,
-        )
+        if settings.bm25_enabled:
+            span.set_attribute("qdrant.fusion", "rrf")
+            span.set_attribute("qdrant.bm25_avg_len", settings.bm25_avg_len)
+            response = client.query_points(
+                collection_name=settings.qdrant_collection,
+                prefetch=[
+                    Prefetch(
+                        query=query_vector,
+                        limit=settings.hybrid_vector_candidates,
+                    ),
+                    Prefetch(
+                        query=bm25_document(query_text),
+                        using=SPARSE_VECTOR_NAME,
+                        limit=settings.hybrid_bm25_candidates,
+                    ),
+                ],
+                query=FusionQuery(fusion=Fusion.RRF),
+                limit=limit,
+                with_payload=True,
+            )
+        else:
+            response = client.query_points(
+                collection_name=settings.qdrant_collection,
+                query=query_vector,
+                limit=limit,
+                with_payload=True,
+            )
         points = response.points
         span.set_attribute("qdrant.returned_count", len(points))
         if points:

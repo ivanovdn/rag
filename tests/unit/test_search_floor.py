@@ -30,7 +30,7 @@ def reranked(monkeypatch):
         }
 
     monkeypatch.setattr("rag.embeddings.embed_query", lambda q: [0.0] * 768)
-    monkeypatch.setattr("rag.vector_store.search_vectors", lambda v, top_k: [_Hit()])
+    monkeypatch.setattr("rag.vector_store.search_chunks", lambda q, v, top_k: [_Hit()])
     return sp
 
 

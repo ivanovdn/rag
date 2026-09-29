@@ -56,7 +56,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
         ]
     else:
         from rag.embeddings import embed_query
-        from rag.vector_store import search_vectors
+        from rag.vector_store import search_chunks
         from rag.resilience import retry_transient, is_transient, RETRY_BACKOFFS
         from rag.observability import record_infra_unavailable
 
@@ -71,7 +71,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
             raise
 
         try:
-            raw = retry_transient(lambda: search_vectors(query_vector, top_k=retrieve_k))
+            raw = retry_transient(lambda: search_chunks(query, query_vector, top_k=retrieve_k))
         except Exception as exc:
             if is_transient(exc):
                 _last_search_results = []
