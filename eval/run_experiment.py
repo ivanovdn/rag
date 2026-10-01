@@ -16,6 +16,37 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Safe at module level: config pulls no LlamaIndex or Ollama, so it does not
+# compete with the init_observability() ordering the local imports below protect.
+# _tracing_target needs it, and so does the test that patches it here.
+# init_observability itself is imported inside main(), not here: rag.observability
+# is just as import-light, but test_eval_metadata.py guards this file against any
+# top-level `rag.*` import, and satisfying that guard costs nothing.
+from config import settings
+
+# Eval spans go to their own Phoenix project. The bot's project records what real
+# users asked; a 61-question gate run dropped into it reads as production traffic
+# to whoever looks at it later.
+EVAL_PROJECT_NAME = "compliance-bot-eval"
+
+
+def _tracing_target(args) -> tuple[str, str] | None:
+    """(project, endpoint) for this run's spans, or None when tracing is off.
+
+    The endpoint follows --phoenix-url when that is given. That flag moves the
+    client which writes the experiment; leaving traces on the configured endpoint
+    would put the experiment on one Phoenix and its spans on another, with nothing
+    anywhere reporting the split.
+    """
+    if args.no_trace:
+        return None
+    project = args.phoenix_project or EVAL_PROJECT_NAME
+    if args.phoenix_url:
+        endpoint = f"{args.phoenix_url.rstrip('/')}/v1/traces"
+    else:
+        endpoint = settings.phoenix_endpoint
+    return project, endpoint
+
 
 def setup_async():
     try:
@@ -276,7 +307,31 @@ def main():
     parser.add_argument("--top-k", type=int, default=None, help="Override retrieval_top_k from .env")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--phoenix-url", default=None)
+    parser.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="Do not emit Phoenix traces for this run",
+    )
+    parser.add_argument(
+        "--phoenix-project",
+        default=None,
+        help=f"Phoenix project for this run's traces (default: {EVAL_PROJECT_NAME})",
+    )
     args = parser.parse_args()
+
+    # Before setup_async() and every local import below it: make_agent_task() pulls
+    # eval/agent_wrapper.py, which imports llama_index at module level, and Phoenix's
+    # instrumentors must be installed before that happens or the agent's own spans
+    # are never recorded. This entry point had no such call at all until now, which
+    # is why eval runs produced no spans of any kind.
+    trace_target = _tracing_target(args)
+    if trace_target is None:
+        print("tracing:      off (--no-trace)")
+    else:
+        from rag.observability import init_observability
+
+        print(f"tracing:      project={trace_target[0]} endpoint={trace_target[1]}")
+        init_observability(project_name=trace_target[0], endpoint=trace_target[1])
 
     setup_async()
     from phoenix.client import Client
@@ -348,6 +403,9 @@ def main():
         # The collection is a retrieval parameter now: v1 and v2 hold different
         # indexes, so a run that does not name it cannot be compared later.
         "qdrant_collection": settings.qdrant_collection,
+        # Which Phoenix project holds this run's spans. Without it, finding a
+        # six-week-old run's traces means guessing.
+        "phoenix_project": trace_target[0] if trace_target else None,
         "bm25_enabled": settings.bm25_enabled,
         "bm25_avg_len": settings.bm25_avg_len,
         "reranker_backend": settings.reranker_backend if settings.reranker_enabled else "none",

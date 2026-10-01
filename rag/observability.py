@@ -26,9 +26,23 @@ logger = logging.getLogger(__name__)
 _initialized = False
 
 
-def init_observability() -> None:
+def init_observability(
+    project_name: str | None = None, endpoint: str | None = None
+) -> None:
     """
     Initialize Phoenix tracing. Safe to call multiple times (idempotent).
+
+    Both arguments default to the configured values. They exist so an eval run can
+    write its spans to its own project rather than the bot's — the bot's project is
+    a record of what real users asked, and a 61-question gate run dropped into it
+    reads as production traffic to anyone looking later. See eval/run_experiment.py.
+
+    PHOENIX_ENABLED=false still wins over both, so the kill switch keeps meaning
+    what it says even when a caller passes arguments.
+
+    Idempotent via a module-level flag, which means a SECOND call with DIFFERENT
+    arguments is silently ignored — the first call's project is the one that
+    sticks. No entry point calls this twice today.
 
     Call this at the top of:
     - scripts/test_query.py
@@ -43,20 +57,17 @@ def init_observability() -> None:
         _initialized = True
         return
 
+    project = project_name or settings.phoenix_project_name
+    target = endpoint or settings.phoenix_endpoint
+
     try:
         from phoenix.otel import register
 
         # Connect to Phoenix server and auto-instrument all OpenInference libraries
-        register(
-            endpoint=settings.phoenix_endpoint,
-            project_name=settings.phoenix_project_name,
-            auto_instrument=True,
-        )
+        register(endpoint=target, project_name=project, auto_instrument=True)
 
         logger.info(
-            f"Phoenix observability initialized: "
-            f"endpoint={settings.phoenix_endpoint}, "
-            f"project={settings.phoenix_project_name}"
+            f"Phoenix observability initialized: endpoint={target}, project={project}"
         )
         _initialized = True
 
