@@ -26,23 +26,24 @@ logger = logging.getLogger(__name__)
 _initialized = False
 
 
-def init_observability(
-    project_name: str | None = None, endpoint: str | None = None
-) -> None:
+def init_observability(endpoint: str | None = None) -> None:
     """
     Initialize Phoenix tracing. Safe to call multiple times (idempotent).
 
-    Both arguments default to the configured values. They exist so an eval run can
-    write its spans to its own project rather than the bot's — the bot's project is
-    a record of what real users asked, and a 61-question gate run dropped into it
-    reads as production traffic to anyone looking later. See eval/run_experiment.py.
+    `endpoint` defaults to the configured one. It exists so eval/run_experiment.py
+    can keep traces on the same Phoenix its --phoenix-url writes the experiment to;
+    without it, an experiment could land on one server and its spans on another
+    with nothing reporting the split.
 
-    PHOENIX_ENABLED=false still wins over both, so the kill switch keeps meaning
-    what it says even when a caller passes arguments.
+    There is deliberately no project override. Phoenix's run_experiment files task
+    spans under its own per-experiment project and overrides whatever was
+    registered here, so one would be inert where it was wanted — measured
+    2026-10-02. PHOENIX_ENABLED=false still wins, so the kill switch keeps meaning
+    what it says even when a caller passes an argument.
 
-    Idempotent via a module-level flag, which means a SECOND call with DIFFERENT
-    arguments is silently ignored — the first call's project is the one that
-    sticks. No entry point calls this twice today.
+    Idempotent via a module-level flag, which means a SECOND call with a DIFFERENT
+    endpoint is silently ignored — the first call wins. No entry point calls this
+    twice today.
 
     Call this at the top of:
     - scripts/test_query.py
@@ -57,7 +58,7 @@ def init_observability(
         _initialized = True
         return
 
-    project = project_name or settings.phoenix_project_name
+    project = settings.phoenix_project_name
     target = endpoint or settings.phoenix_endpoint
 
     try:

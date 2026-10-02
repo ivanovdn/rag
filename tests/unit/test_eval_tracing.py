@@ -1,12 +1,16 @@
-"""Eval runs emit Phoenix traces, into their own project.
+"""Eval runs emit Phoenix traces.
 
 Before this, `eval/run_experiment.py` never called `init_observability()` at all,
-so a gate run produced no spans: no retrieval timings, no token counts, nothing
-to inspect afterwards. The fix has to keep those traces out of the production
-project, and — less obviously — has to keep the trace endpoint pointing at the
-same Phoenix the experiment itself is written to. `--phoenix-url` moves only the
-client; a trace endpoint left behind would send spans somewhere else entirely and
-report nothing wrong.
+so a gate run produced no spans: no retrieval timings, no token counts, nothing to
+inspect afterwards. Measured 2026-10-02 on a real 61-question run: with the call,
+the experiment carries 36 each of `embed_query`, `search_vectors` and `rerank`
+plus the LlamaIndex agent spans. Without it, `auto_instrument` never installs the
+instrumentor and `get_tracer()` hands back a no-op, so none of them exist.
+
+What this deliberately does NOT do is choose the project. Phoenix's
+`run_experiment` files task spans under its own per-experiment project and
+overrides whatever was registered, so a project override here is inert — see
+`test_the_run_does_not_claim_to_choose_a_project`.
 
 Nothing here registers a real tracer or touches the network: `register` is
 replaced, and `_initialized` is reset so each test exercises a fresh call.
@@ -17,10 +21,10 @@ import argparse
 import pytest
 
 import rag.observability as obs
-from eval.run_experiment import EVAL_PROJECT_NAME, _tracing_target
+from eval.run_experiment import _tracing_endpoint
 
 
-# --- init_observability's new parameters ---------------------------------------
+# --- init_observability's endpoint override ------------------------------------
 
 
 @pytest.fixture
@@ -39,75 +43,51 @@ def captured_register(monkeypatch):
     return captured
 
 
-def test_an_explicit_project_and_endpoint_reach_phoenix(captured_register):
-    obs.init_observability(
-        project_name="compliance-bot-eval", endpoint="http://172.20.1.10:6006/v1/traces"
-    )
+def test_an_explicit_endpoint_reaches_phoenix(captured_register):
+    obs.init_observability(endpoint="http://172.20.1.10:6006/v1/traces")
 
-    assert captured_register["project_name"] == "compliance-bot-eval"
     assert captured_register["endpoint"] == "http://172.20.1.10:6006/v1/traces"
 
 
-def test_omitting_them_falls_back_to_settings(monkeypatch, captured_register):
-    monkeypatch.setattr(obs.settings, "phoenix_project_name", "compliance-bot")
+def test_omitting_it_falls_back_to_settings(monkeypatch, captured_register):
     monkeypatch.setattr(obs.settings, "phoenix_endpoint", "http://localhost:6006/v1/traces")
+    monkeypatch.setattr(obs.settings, "phoenix_project_name", "compliance-bot")
 
     obs.init_observability()
 
-    assert captured_register["project_name"] == "compliance-bot"
     assert captured_register["endpoint"] == "http://localhost:6006/v1/traces"
+    assert captured_register["project_name"] == "compliance-bot"
 
 
 def test_phoenix_disabled_still_registers_nothing(monkeypatch, captured_register):
-    """The kill switch outranks an explicit project — otherwise PHOENIX_ENABLED=false
+    """The kill switch outranks an explicit endpoint — otherwise PHOENIX_ENABLED=false
     would stop meaning what it says the moment a caller passed an argument."""
     monkeypatch.setattr(obs.settings, "phoenix_enabled", False)
 
-    obs.init_observability(project_name="compliance-bot-eval")
+    obs.init_observability(endpoint="http://172.20.1.10:6006/v1/traces")
 
     assert captured_register == {}
 
 
-# --- which project and endpoint an eval run resolves to ------------------------
+# --- which endpoint an eval run resolves to ------------------------------------
 
 
 def _args(**overrides):
-    """The argparse Namespace main() builds, with only what _tracing_target reads."""
-    defaults = {"no_trace": False, "phoenix_project": None, "phoenix_url": None}
+    """The argparse Namespace main() builds, with only what _tracing_endpoint reads."""
+    defaults = {"no_trace": False, "phoenix_url": None}
     return argparse.Namespace(**{**defaults, **overrides})
 
 
-def test_tracing_is_on_by_default_and_uses_its_own_project(monkeypatch):
-    """Separate from the bot's project: a gate run's spans must not be mistaken for
-    production traffic when someone reads the production project later."""
-    monkeypatch.setattr("eval.run_experiment.settings.phoenix_project_name", "compliance-bot")
-
-    target = _tracing_target(_args())
-
-    assert target is not None
-    project, _ = target
-    assert project == EVAL_PROJECT_NAME
-    assert project != "compliance-bot"
-
-
-def test_no_trace_disables_it(monkeypatch):
-    assert _tracing_target(_args(no_trace=True)) is None
-
-
-def test_phoenix_project_overrides_the_default(monkeypatch):
-    project, _ = _tracing_target(_args(phoenix_project="rrf-k-sweep"))
-
-    assert project == "rrf-k-sweep"
-
-
-def test_the_endpoint_defaults_to_the_configured_one(monkeypatch):
+def test_tracing_is_on_by_default(monkeypatch):
     monkeypatch.setattr(
         "eval.run_experiment.settings.phoenix_endpoint", "http://localhost:6006/v1/traces"
     )
 
-    _, endpoint = _tracing_target(_args())
+    assert _tracing_endpoint(_args()) == "http://localhost:6006/v1/traces"
 
-    assert endpoint == "http://localhost:6006/v1/traces"
+
+def test_no_trace_disables_it():
+    assert _tracing_endpoint(_args(no_trace=True)) is None
 
 
 def test_the_endpoint_follows_phoenix_url_when_given(monkeypatch):
@@ -118,28 +98,42 @@ def test_the_endpoint_follows_phoenix_url_when_given(monkeypatch):
         "eval.run_experiment.settings.phoenix_endpoint", "http://localhost:6006/v1/traces"
     )
 
-    _, endpoint = _tracing_target(_args(phoenix_url="http://172.20.1.10:6006"))
-
-    assert endpoint == "http://172.20.1.10:6006/v1/traces"
-
-
-def test_a_phoenix_url_with_a_trailing_slash_does_not_double_up(monkeypatch):
-    _, endpoint = _tracing_target(_args(phoenix_url="http://172.20.1.10:6006/"))
-
-    assert endpoint == "http://172.20.1.10:6006/v1/traces"
+    assert (
+        _tracing_endpoint(_args(phoenix_url="http://172.20.1.10:6006"))
+        == "http://172.20.1.10:6006/v1/traces"
+    )
 
 
-# --- the run records where its traces went ------------------------------------
+def test_a_phoenix_url_with_a_trailing_slash_does_not_double_up():
+    assert (
+        _tracing_endpoint(_args(phoenix_url="http://172.20.1.10:6006/"))
+        == "http://172.20.1.10:6006/v1/traces"
+    )
 
 
-def test_experiment_metadata_names_the_project_holding_the_traces():
-    """Without this, finding a six-week-old run's spans means guessing which
-    project they landed in."""
+# --- what this entry point must NOT try to do ---------------------------------
+
+
+def test_the_run_does_not_claim_to_choose_a_project():
+    """Pins a deliberate absence, because the reason for it is not obvious.
+
+    An earlier version of this file registered a dedicated `compliance-bot-eval`
+    project and recorded it in experiment metadata. Measured 2026-10-02: Phoenix's
+    run_experiment files task spans under its OWN per-experiment project and
+    overrides the registered one, so `compliance-bot-eval` was never created (the
+    API returned 404 for it) while the spans sat in `Experiment-<hash>`. The
+    metadata key therefore pointed at a project that did not exist — worse than
+    no key, since its stated purpose was to stop you guessing where traces went.
+
+    Phoenix already records the real project on the experiment itself, and already
+    isolates experiments from the bot's project without help.
+    """
     from pathlib import Path
 
     source = Path("eval/run_experiment.py").read_text(encoding="utf-8")
 
-    assert '"phoenix_project": trace_target' in source
+    assert "phoenix_project" not in source
+    assert "EVAL_PROJECT_NAME" not in source
 
 
 def test_tracing_is_initialised_before_llamaindex_is_imported():
