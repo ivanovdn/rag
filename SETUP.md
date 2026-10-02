@@ -379,6 +379,12 @@ reach at `172.20.1.10:6006` from outside. The `-e` overrides let one image
 measure several configurations without an edit or a rebuild, which is how a
 control run isolates one variable. `--no-trace` turns tracing off for a run.
 
+To sweep the candidate count, either `-e RERANKER_CANDIDATES=40` or the
+`--candidates 40` flag — they reach the same setting, so both apply to every
+tier. It is the only candidate knob there is: it sizes the dense prefetch, the
+sparse prefetch, and the fused limit together, so raising it actually widens the
+pool rather than leaving it pinned by a per-branch cap.
+
 **Step 1 is not optional.** The image bakes `config.py` and `rag/` at build time,
 so mounting only `eval/` gives you the new harness running main's pipeline — a
 green run that measured the wrong code. Mount all four, and assert something

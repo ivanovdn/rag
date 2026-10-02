@@ -303,7 +303,14 @@ def main():
     parser.add_argument("--name", default=None, help="Experiment name (auto-generated from config if omitted)")
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--description", default=None)
-    parser.add_argument("--top-k", type=int, default=None, help="Override RERANKER_CANDIDATES from .env")
+    parser.add_argument(
+        "--candidates",
+        "--top-k",
+        dest="candidates",
+        type=int,
+        default=None,
+        help="Override RERANKER_CANDIDATES for this run (sizes both prefetches and the fused limit)",
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--phoenix-url", default=None)
     parser.add_argument(
@@ -344,7 +351,15 @@ def main():
     # turns forgetting the first into a message instead of a plausible zero.
     preflight_sparse_config()
 
-    top_k = args.top_k if args.top_k is not None else settings.reranker_candidates
+    # Write the override INTO settings rather than threading it as a parameter.
+    # Only tier1 builds its own retrieval; tier2/chatbot go through
+    # rag.tools.search_policies, which reads settings.reranker_candidates
+    # directly — so a threaded parameter reached exactly one of the three tiers
+    # and silently did nothing on the one the gate is measured from. Every
+    # reader must see the same number or the flag is decoration.
+    if args.candidates is not None:
+        settings.reranker_candidates = args.candidates
+    candidates = settings.reranker_candidates
     tier_cfg = TIER_CONFIG[args.tier]
     dataset_name = args.dataset or tier_cfg["default_dataset"]
     description = args.description or tier_cfg["description"]
@@ -355,9 +370,9 @@ def main():
         search = "hybrid" if settings.bm25_enabled else "vector"
         if settings.reranker_enabled:
             reranker_short = settings.reranker_model.replace("/", "-")
-            args.name = f"agentic_{args.tier}_{embed_short}_{search}_cand{settings.reranker_candidates}_{reranker_short}_top{settings.reranker_top_n}"
+            args.name = f"agentic_{args.tier}_{embed_short}_{search}_cand{candidates}_{reranker_short}_top{settings.reranker_top_n}"
         else:
-            args.name = f"agentic_{args.tier}_{embed_short}_{search}_top{top_k}"
+            args.name = f"agentic_{args.tier}_{embed_short}_{search}_cand{candidates}"
 
     client_kwargs = {}
     if args.phoenix_url:
@@ -382,9 +397,9 @@ def main():
     print(f"  Embedding:   {settings.embedding_model}")
     print(f"  LLM:         {settings.llm_model}")
     print(f"  Ollama:      {settings.active_ollama_url} ({'remote' if settings.use_remote_ollama else 'local'}, timeout={settings.active_request_timeout}s)")
-    print(f"  top_k:       {top_k} (from {'--top-k' if args.top_k is not None else '.env'})")
+    print(f"  Candidates:  {candidates} (from {'--candidates' if args.candidates is not None else 'RERANKER_CANDIDATES in .env'}) — sizes both prefetches and the fused limit")
     print(f"  BM25:        {'on' if settings.bm25_enabled else 'off'}")
-    print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (candidates={settings.reranker_candidates}, top_n={settings.reranker_top_n})" if settings.reranker_enabled else ""))
+    print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (top_n={settings.reranker_top_n})" if settings.reranker_enabled else ""))
 
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
     reranker_info = settings.reranker_model if settings.reranker_enabled else "none"
@@ -406,14 +421,14 @@ def main():
     }
 
     if args.tier == "tier1":
-        task = make_tier1_task(top_k=top_k)
+        task = make_tier1_task(top_k=candidates)
         evaluators = TIER1_EVALUATORS
         metadata = {**infra_meta, "search_type": search_type, "embedding_model": settings.embedding_model,
                      "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
                      "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
-                     "top_k": top_k, "tier": "tier1"}
+                     "candidates": candidates, "tier": "tier1"}
     else:
         task = make_agent_task(verbose=args.verbose)
         evaluators = TIER2_EVALUATORS if args.tier == "tier2" else CHATBOT_EVALUATORS
