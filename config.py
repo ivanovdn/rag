@@ -65,7 +65,6 @@ class Settings(BaseSettings):
     policy_base_url: str = "http://intranet.company.com/policies"
 
     # Retrieval
-    retrieval_top_k: int = 10
     min_confidence_score: float = 0.45
 
     # Reranker (any /v1/rerank-compatible server: llama-server, vLLM, etc.)
@@ -75,11 +74,17 @@ class Settings(BaseSettings):
     reranker_model: str = "qwen3-reranker-0.6b-q8"
     reranker_query_template: str = "<Instruct>: {instruction}\n<Query>: {query}"
     reranker_top_n: int = 6
+    # The ONLY candidate count in retrieval. It sizes all three places that have
+    # to agree: the dense prefetch, the sparse prefetch, and the fused limit they
+    # feed. They were three independent settings until 2026-10-02, at 20/20
+    # against a fused 25 -- and because the fused result is drawn from the UNION
+    # of the two branches, the pool silently shrank toward 20 exactly when the
+    # branches agreed, which is what a working hybrid does. Sized together, the
+    # union is >= the limit by construction and the number here is the number
+    # retrieved. Read only when the reranker is on; with it off, search_policies
+    # passes its own top_k (6), because 25 unranked chunks would not fit the
+    # agent's num_ctx of 4096.
     reranker_candidates: int = 20
-    # Relevance floor on the reranker's 0.0-1.0 score. 0.0 means OFF.
-    # This is NOT a reuse of min_confidence_score: that one is cosine similarity
-    # on the reranker-off path, this one is a reranker relevance probability, and
-    # one knob for two scales would be a latent bug.
     # Relevance floor on the reranker's 0.0-1.0 score. 0.0 means OFF.
     # NOT a reuse of min_confidence_score: that one is cosine similarity on the
     # reranker-off path, this is a reranker relevance probability, and one knob
@@ -109,15 +114,13 @@ class Settings(BaseSettings):
 
     # Hybrid search
     bm25_enabled: bool = True
-    hybrid_vector_candidates: int = 20
-    hybrid_bm25_candidates: int = 20
     # BM25 length normalisation, passed to Qdrant in per-document `options`.
     # Qdrant's default is 256; this corpus measured 1602 chunks at mean 49.7
     # tokens (median 38, p90 109, max 350) on 2026-09-29. At 256 the term
     # (1 - b + b*dl/avg_len) stays near 0.25 for every chunk, so `b` goes inert
     # and long chunks are never penalised.
     #
-    # WRITE-TIME, unlike bm25_enabled and the candidate counts above: this is
+    # WRITE-TIME, unlike bm25_enabled and reranker_candidates: this is
     # baked into every stored sparse vector and is inert at query time (measured:
     # the same text stored at 50 vs 256 gives 1.504788 vs 1.652097; changing it
     # on the query side alone changes nothing). Changing it means re-encoding —

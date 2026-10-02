@@ -63,9 +63,7 @@ def config_snapshot() -> dict:
         "embedding_model": settings.embedding_model,
         "llm_model": settings.llm_model,
         "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
-        "retrieval_top_k": settings.retrieval_top_k,
-        "hybrid_vector_candidates": settings.hybrid_vector_candidates,
-        "hybrid_bm25_candidates": settings.hybrid_bm25_candidates,
+        "reranker_candidates": settings.reranker_candidates,
     }
 
 
@@ -108,7 +106,7 @@ def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
     tracer = get_tracer()
     data = load_dataset(dataset_path)
     test_cases = data["test_cases"]
-    top_k = settings.retrieval_top_k
+    top_k = settings.reranker_candidates
 
     results = []
     hits = 0

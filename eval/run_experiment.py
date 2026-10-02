@@ -303,7 +303,7 @@ def main():
     parser.add_argument("--name", default=None, help="Experiment name (auto-generated from config if omitted)")
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--description", default=None)
-    parser.add_argument("--top-k", type=int, default=None, help="Override retrieval_top_k from .env")
+    parser.add_argument("--top-k", type=int, default=None, help="Override RERANKER_CANDIDATES from .env")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--phoenix-url", default=None)
     parser.add_argument(
@@ -344,7 +344,7 @@ def main():
     # turns forgetting the first into a message instead of a plausible zero.
     preflight_sparse_config()
 
-    top_k = args.top_k if args.top_k is not None else settings.retrieval_top_k
+    top_k = args.top_k if args.top_k is not None else settings.reranker_candidates
     tier_cfg = TIER_CONFIG[args.tier]
     dataset_name = args.dataset or tier_cfg["default_dataset"]
     description = args.description or tier_cfg["description"]

@@ -61,18 +61,14 @@ def test_bm25_on_sends_two_prefetch_branches_fused_by_rrf_at_k_60(
     monkeypatch, client, span_exporter
 ):
     monkeypatch.setattr(vs.settings, "bm25_enabled", True)
-    monkeypatch.setattr(vs.settings, "hybrid_vector_candidates", 20)
-    monkeypatch.setattr(vs.settings, "hybrid_bm25_candidates", 15)
 
     vs.search_chunks("retention period", [0.1, 0.2], top_k=6)
 
     call = client.calls[0]
     dense, sparse = call["prefetch"]
     assert dense.query == [0.1, 0.2]
-    assert dense.limit == 20
     assert dense.using is None
     assert sparse.using == "bm25"
-    assert sparse.limit == 15
     assert sparse.query.model == "qdrant/bm25"
     assert sparse.query.text == "retention period"
     # k is the point, not just the fusion method. A bare FusionQuery(Fusion.RRF)
@@ -150,10 +146,40 @@ def test_the_fusion_constant_is_pinned_not_left_to_the_server_default(
     assert client.calls[0]["query"].model_dump() == {"rrf": {"k": 60, "weights": None}}
 
 
-def test_default_limit_falls_back_to_retrieval_top_k(monkeypatch, client, span_exporter):
-    monkeypatch.setattr(vs.settings, "bm25_enabled", False)
-    monkeypatch.setattr(vs.settings, "retrieval_top_k", 10)
+@pytest.mark.parametrize("requested", [2, 6, 25, 50])
+def test_each_prefetch_branch_supplies_at_least_the_fused_limit(
+    monkeypatch, client, requested
+):
+    """One knob, applied at all three places it has to agree.
 
-    vs.search_chunks("q", [0.1])
+    The fused result can only be drawn from the UNION of the two prefetch
+    branches. When the branches were sized independently of the fused limit,
+    production asked RRF for 25 while handing it two 20-item lists: the union
+    ranges from 20 (identical branches) to 40 (disjoint ones), so any query
+    where dense and sparse agreed on more than 15 documents returned fewer
+    candidates than asked for, and nothing anywhere reported it. High overlap
+    is what a working hybrid produces, so the shortfall tracked retrieval
+    quality — the worst possible shape for a silent one.
 
-    assert client.calls[0]["limit"] == 10
+    Sizing each branch at the fused limit makes the union >= the limit by
+    construction, which is what makes the knob's number true.
+    """
+    monkeypatch.setattr(vs.settings, "bm25_enabled", True)
+
+    vs.search_chunks("q", [0.1], top_k=requested)
+
+    call = client.calls[0]
+    dense, sparse = call["prefetch"]
+    assert dense.limit == requested
+    assert sparse.limit == requested
+    assert call["limit"] == requested
+
+
+def test_search_chunks_requires_an_explicit_top_k(client):
+    """`limit = top_k or settings.retrieval_top_k` read a setting that no caller
+    could reach: every caller passed a truthy top_k, so the fallback was dead
+    and RETRIEVAL_TOP_K was inert. A required argument cannot silently disagree
+    with what the caller asked for.
+    """
+    with pytest.raises(TypeError):
+        vs.search_chunks("q", [0.1])

@@ -125,7 +125,8 @@ running before the delete, ungated by `BM25_ENABLED` because the write is ungate
 5. **Section and clause precision.** `retrieval_section_hit` is 0.9508; the
    remaining failures are the next real lever. On the `vllm-score` backend
    `RERANKER_INSTRUCTION` is the knob that applies, not `RERANKER_QUERY_TEMPLATE`.
-   `HYBRID_BM25_CANDIDATES` and chunking are the others.
+   `RERANKER_CANDIDATES` and chunking are the others (there is no longer a
+   per-branch candidate count — see #12).
 6. **Extract `cosine_floor_applies()`.** The predicate
    `not reranker_enabled and not bm25_enabled` now exists in four places — the live
    guard in `search_policies.py` and three metadata mirrors. It encodes the branch's
@@ -145,7 +146,12 @@ running before the delete, ungated by `BM25_ENABLED` because the write is ungate
     ad hoc. Carried from #7.
 11. **`render_escalation` does not HTML-escape** and interpolates a model-supplied
     reason. Pre-existing. Carried from #9.
-12. **Prefetch limits ignore the caller's `top_k`** — they read
-    `HYBRID_VECTOR_CANDIDATES` / `HYBRID_BM25_CANDIDATES` regardless, so a caller
-    asking for more than their sum would silently under-return. Identical to the
-    deleted `hybrid_search`, so not a regression.
+12. ~~**Prefetch limits ignore the caller's `top_k`**~~ — **DONE 2026-10-02**,
+    and worse than recorded here. The threshold is not their *sum* but their
+    *union*: production ran 20/20 against a fused limit of 25, so any query where
+    the dense and sparse branches agreed on more than 15 documents returned fewer
+    than 25 candidates, silently — and high overlap is what a working hybrid
+    produces, so the shortfall tracked retrieval quality. Fixed by collapsing
+    `RETRIEVAL_TOP_K`, `HYBRID_VECTOR_CANDIDATES` and `HYBRID_BM25_CANDIDATES`
+    into `RERANKER_CANDIDATES`, which now sizes both prefetches and the limit
+    they feed, making the union >= the limit by construction.

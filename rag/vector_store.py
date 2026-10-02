@@ -243,9 +243,7 @@ def delete_document(doc_id: str) -> None:
     )
 
 
-def search_chunks(
-    query_text: str, query_vector: list[float], top_k: int | None = None
-) -> list:
+def search_chunks(query_text: str, query_vector: list[float], top_k: int) -> list:
     """Retrieve candidate chunks: dense only, or dense + sparse fused by Qdrant.
 
     Returns list[ScoredPoint] in BOTH modes, because fusion happens server-side —
@@ -255,9 +253,15 @@ def search_chunks(
     `_last_search_results`, and anything comparing a score against a threshold
     must check which scale it is on. See search_policies' min_confidence_score
     guard.
+
+    `top_k` sizes BOTH prefetch branches as well as the fused limit, and is
+    required rather than defaulted. The fused result is drawn from the union of
+    the two branches, so a branch smaller than the limit caps the pool — and the
+    shortfall grows as the branches agree, which is the opposite of a signal you
+    would notice. Equal sizing makes the union >= the limit by construction.
     """
     tracer = get_tracer()
-    limit = top_k or settings.retrieval_top_k
+    limit = top_k
     client = get_qdrant_client()
     # The span name stays "search_vectors" although the function was renamed, so
     # Phoenix comparisons against runs recorded before this migration stay valid.
@@ -279,12 +283,12 @@ def search_chunks(
                 prefetch=[
                     Prefetch(
                         query=query_vector,
-                        limit=settings.hybrid_vector_candidates,
+                        limit=limit,
                     ),
                     Prefetch(
                         query=bm25_document(query_text),
                         using=SPARSE_VECTOR_NAME,
-                        limit=settings.hybrid_bm25_candidates,
+                        limit=limit,
                     ),
                 ],
                 query=RrfQuery(rrf=Rrf(k=RRF_K)),
