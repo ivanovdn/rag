@@ -1,6 +1,6 @@
 """
 Unit tests for the retrieval-path Phoenix/OpenTelemetry spans added to the four
-leaf functions: rag.embeddings.embed_query / embed_texts, rag.vector_store.search_vectors,
+leaf functions: rag.embeddings.embed_query / embed_texts, rag.vector_store.search_chunks,
 and rag.reranker.rerank.
 
 Uses an in-memory OTel span exporter — never a live Phoenix instance — and mocks all
@@ -205,16 +205,17 @@ def test_embed_functions_never_record_hf_token(monkeypatch, span_exporter):
             assert "synthetic-test-secret" not in str(value)
 
 
-# --- search_vectors ------------------------------------------------------------------
+# --- search_chunks ------------------------------------------------------------------
 
 
 def test_search_vectors_span_name_kind_and_attributes(monkeypatch, span_exporter):
     fake_points = [_FakePoint(0.91), _FakePoint(0.42)]
     fake_client = _FakeQdrantClient(fake_points)
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: fake_client)
     monkeypatch.setattr(vector_store_mod.settings, "qdrant_collection", "compliance_policies")
 
-    result = vector_store_mod.search_vectors([0.1, 0.2, 0.3], top_k=5)
+    result = vector_store_mod.search_chunks("what is the retention period?", [0.1, 0.2, 0.3], top_k=5)
 
     assert result == fake_points  # unchanged return value
     spans = span_exporter.get_finished_spans()
@@ -230,10 +231,11 @@ def test_search_vectors_span_name_kind_and_attributes(monkeypatch, span_exporter
 
 def test_search_vectors_default_limit_falls_back_to_retrieval_top_k(monkeypatch, span_exporter):
     fake_client = _FakeQdrantClient([])
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: fake_client)
     monkeypatch.setattr(vector_store_mod.settings, "retrieval_top_k", 10)
 
-    result = vector_store_mod.search_vectors([0.1, 0.2, 0.3])
+    result = vector_store_mod.search_chunks("what is the retention period?", [0.1, 0.2, 0.3])
 
     assert result == []
     span = span_exporter.get_finished_spans()[0]
@@ -262,9 +264,10 @@ def test_search_vectors_span_includes_retrieval_documents(monkeypatch, span_expo
             point_id="chunk-2",
         ),
     ]
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient(points))
 
-    vector_store_mod.search_vectors([0.1, 0.2, 0.3], top_k=2)
+    vector_store_mod.search_chunks("q", [0.1, 0.2, 0.3], top_k=2)
 
     span = span_exporter.get_finished_spans()[0]
     attrs = span.attributes
@@ -287,9 +290,10 @@ def test_search_vectors_document_attrs_missing_payload_keys_does_not_raise(
     monkeypatch, span_exporter
 ):
     points = [_FakePointWithPayload(0.5, {}, point_id="chunk-x")]  # empty payload
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient(points))
 
-    result = vector_store_mod.search_vectors([0.1], top_k=1)  # must not raise
+    result = vector_store_mod.search_chunks("q", [0.1], top_k=1)  # must not raise
 
     assert result == points
     span = span_exporter.get_finished_spans()[0]
@@ -297,9 +301,10 @@ def test_search_vectors_document_attrs_missing_payload_keys_does_not_raise(
 
 
 def test_search_vectors_no_points_means_no_document_attrs(monkeypatch, span_exporter):
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClient([]))
 
-    vector_store_mod.search_vectors([0.1], top_k=1)
+    vector_store_mod.search_chunks("q", [0.1], top_k=1)
 
     span = span_exporter.get_finished_spans()[0]
     assert _doc_attr(0, DocumentAttributes.DOCUMENT_ID) not in span.attributes
@@ -307,12 +312,13 @@ def test_search_vectors_no_points_means_no_document_attrs(monkeypatch, span_expo
 
 def test_search_vectors_exception_propagates_unchanged_and_span_errors(monkeypatch, span_exporter):
     boom = ResponseHandlingException("qdrant unreachable")
+    monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(
         vector_store_mod, "get_qdrant_client", lambda: _FakeQdrantClientRaises(boom)
     )
 
     with pytest.raises(ResponseHandlingException) as excinfo:
-        vector_store_mod.search_vectors([0.1, 0.2])
+        vector_store_mod.search_chunks("q", [0.1, 0.2])
     assert excinfo.value is boom
 
     spans = span_exporter.get_finished_spans()
@@ -516,7 +522,7 @@ def test_all_four_functions_work_with_phoenix_disabled(monkeypatch):
     # the point is exactly that nothing breaks when Phoenix is off.
     assert embeddings_mod.embed_query("q") == [0.1, 0.2]
     assert embeddings_mod.embed_texts(["a", "b"]) == [[0.1, 0.2], [0.1, 0.2]]
-    assert vector_store_mod.search_vectors([0.1, 0.2]) == fake_points
+    assert vector_store_mod.search_chunks("q", [0.1, 0.2]) == fake_points
     assert reranker_mod.rerank("q", [{"text": "a"}])[0]["rerank_score"] == 0.8
 
 

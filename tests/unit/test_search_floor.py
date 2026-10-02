@@ -29,8 +29,8 @@ def reranked(monkeypatch):
             "text": "Team Members are forbidden to install any unlicensed software.",
         }
 
-    monkeypatch.setattr("rag.embeddings.embed_query", lambda q: [0.0] * 768)
-    monkeypatch.setattr("rag.vector_store.search_vectors", lambda v, top_k: [_Hit()])
+    monkeypatch.setattr(sp, "embed_query", lambda q: [0.0] * 768)
+    monkeypatch.setattr(sp, "search_chunks", lambda q, v, top_k: [_Hit()])
     return sp
 
 
@@ -45,7 +45,7 @@ def _rerank_returning(score):
 
 def test_floor_rejects_a_low_scoring_top_result(reranked, monkeypatch):
     monkeypatch.setattr(reranked.settings, "reranker_min_score", 0.5)
-    monkeypatch.setattr("rag.reranker.rerank", _rerank_returning(0.10))
+    monkeypatch.setattr(sp, "rerank", _rerank_returning(0.10))
 
     assert reranked.search_policies("anything") == "NO_RELEVANT_POLICY_FOUND"
 
@@ -59,7 +59,7 @@ def test_a_rejected_search_still_reports_what_it_found(reranked, monkeypatch):
     threshold. Do not "fix" this into matching the other paths.
     """
     monkeypatch.setattr(reranked.settings, "reranker_min_score", 0.5)
-    monkeypatch.setattr("rag.reranker.rerank", _rerank_returning(0.10))
+    monkeypatch.setattr(sp, "rerank", _rerank_returning(0.10))
 
     reranked.search_policies("anything")
 
@@ -69,7 +69,7 @@ def test_a_rejected_search_still_reports_what_it_found(reranked, monkeypatch):
 
 def test_floor_passes_a_high_scoring_top_result(reranked, monkeypatch):
     monkeypatch.setattr(reranked.settings, "reranker_min_score", 0.5)
-    monkeypatch.setattr("rag.reranker.rerank", _rerank_returning(0.80))
+    monkeypatch.setattr(sp, "rerank", _rerank_returning(0.80))
 
     assert "[Source 1]" in reranked.search_policies("anything")
 
@@ -77,7 +77,7 @@ def test_floor_passes_a_high_scoring_top_result(reranked, monkeypatch):
 def test_a_zero_threshold_disables_the_floor(reranked, monkeypatch):
     """Ships at 0.0; the live value is measured on the VM, not guessed here."""
     monkeypatch.setattr(reranked.settings, "reranker_min_score", 0.0)
-    monkeypatch.setattr("rag.reranker.rerank", _rerank_returning(0.0))
+    monkeypatch.setattr(sp, "rerank", _rerank_returning(0.0))
 
     assert "[Source 1]" in reranked.search_policies("anything")
 
@@ -91,7 +91,7 @@ def test_the_reranker_fallback_path_is_never_floored(reranked, monkeypatch):
     down — turning a degraded-but-working pipeline into a total outage.
     """
     monkeypatch.setattr(reranked.settings, "reranker_min_score", 0.9)
-    monkeypatch.setattr("rag.reranker.rerank", _rerank_returning(None))
+    monkeypatch.setattr(sp, "rerank", _rerank_returning(None))
 
     assert "[Source 1]" in reranked.search_policies("anything")
 

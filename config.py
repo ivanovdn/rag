@@ -111,6 +111,21 @@ class Settings(BaseSettings):
     bm25_enabled: bool = True
     hybrid_vector_candidates: int = 20
     hybrid_bm25_candidates: int = 20
+    # BM25 length normalisation, passed to Qdrant in per-document `options`.
+    # Qdrant's default is 256; this corpus measured 1602 chunks at mean 49.7
+    # tokens (median 38, p90 109, max 350) on 2026-09-29. At 256 the term
+    # (1 - b + b*dl/avg_len) stays near 0.25 for every chunk, so `b` goes inert
+    # and long chunks are never penalised.
+    #
+    # WRITE-TIME, unlike bm25_enabled and the candidate counts above: this is
+    # baked into every stored sparse vector and is inert at query time (measured:
+    # the same text stored at 50 vs 256 gives 1.504788 vs 1.652097; changing it
+    # on the query side alone changes nothing). Changing it means re-encoding —
+    # scripts/migrate_collection.py into a fresh collection, or a full re-ingest.
+    # A partial re-ingest silently mixes two normalisations, and nothing can
+    # detect it: Qdrant discards collection-level BM25 config, so a stored vector
+    # carries no record of what produced it.
+    bm25_avg_len: float = 50.0
 
     # Agent
     agent_timeout: int = 120

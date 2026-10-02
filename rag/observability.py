@@ -26,9 +26,24 @@ logger = logging.getLogger(__name__)
 _initialized = False
 
 
-def init_observability() -> None:
+def init_observability(endpoint: str | None = None) -> None:
     """
     Initialize Phoenix tracing. Safe to call multiple times (idempotent).
+
+    `endpoint` defaults to the configured one. It exists so eval/run_experiment.py
+    can keep traces on the same Phoenix its --phoenix-url writes the experiment to;
+    without it, an experiment could land on one server and its spans on another
+    with nothing reporting the split.
+
+    There is deliberately no project override. Phoenix's run_experiment files task
+    spans under its own per-experiment project and overrides whatever was
+    registered here, so one would be inert where it was wanted — measured
+    2026-10-02. PHOENIX_ENABLED=false still wins, so the kill switch keeps meaning
+    what it says even when a caller passes an argument.
+
+    Idempotent via a module-level flag, which means a SECOND call with a DIFFERENT
+    endpoint is silently ignored — the first call wins. No entry point calls this
+    twice today.
 
     Call this at the top of:
     - scripts/test_query.py
@@ -43,20 +58,17 @@ def init_observability() -> None:
         _initialized = True
         return
 
+    project = settings.phoenix_project_name
+    target = endpoint or settings.phoenix_endpoint
+
     try:
         from phoenix.otel import register
 
         # Connect to Phoenix server and auto-instrument all OpenInference libraries
-        register(
-            endpoint=settings.phoenix_endpoint,
-            project_name=settings.phoenix_project_name,
-            auto_instrument=True,
-        )
+        register(endpoint=target, project_name=project, auto_instrument=True)
 
         logger.info(
-            f"Phoenix observability initialized: "
-            f"endpoint={settings.phoenix_endpoint}, "
-            f"project={settings.phoenix_project_name}"
+            f"Phoenix observability initialized: endpoint={target}, project={project}"
         )
         _initialized = True
 
@@ -77,7 +89,7 @@ def get_tracer():
 
     Usage:
         tracer = get_tracer()
-        with tracer.start_as_current_span("hybrid_search") as span:
+        with tracer.start_as_current_span("search_vectors") as span:
             span.set_attribute("query", query)
             span.set_attribute("vector_top_score", 0.87)
             # ... do work ...

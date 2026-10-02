@@ -1,0 +1,140 @@
+"""search_policies runs one retrieval path for both modes.
+
+The guard test below is the important one. min_confidence_score is a COSINE
+threshold of 0.45. An RRF score is around 0.016 — 1/(k + rank), with k pinned to
+60 in rag/vector_store.py (RRF_K); Qdrant's own default is 2, which would put an
+RRF score in the same range as a cosine one. Guarding only on
+`not reranker_enabled` — which is what the code said before the branches merged —
+would compare the two and escalate every question in the corpus, silently.
+"""
+
+import pytest
+
+import rag.tools.search_policies as sp
+
+
+class _Hit:
+    def __init__(self, score, doc_title="Backup Policy [Internal]"):
+        self.score = score
+        self.id = "c1"
+        self.payload = {
+            "doc_title": doc_title,
+            "doc_id": "backup-policy-internal",
+            "section": "Data Retention",
+            "clause": "Retention Period",
+            "clause_number": "4.7",
+            "text": "Backups are retained for ninety days.",
+        }
+
+
+@pytest.fixture
+def retrieval(monkeypatch):
+    """embed_query and search_chunks mocked; nothing touches the network.
+
+    Patched on `sp`, NOT on rag.embeddings / rag.vector_store: search_policies
+    binds both names at module import (imports-at-top), so patching the source
+    module would leave the already-bound name untouched and the test would hit
+    the real network. This is the CLAUDE.md stale-import gotcha.
+    """
+    monkeypatch.setattr(sp, "embed_query", lambda q: [0.0] * 768)
+    monkeypatch.setattr(sp.settings, "reranker_enabled", False)
+    monkeypatch.setattr(sp.settings, "min_confidence_score", 0.45)
+
+    def _install(points):
+        monkeypatch.setattr(sp, "search_chunks", lambda q, v, top_k: points)
+
+    return _install
+
+
+def test_an_rrf_score_is_not_measured_against_the_cosine_floor(monkeypatch, retrieval):
+    """The regression guard. 0.016 is a perfectly normal RRF score at k=60."""
+    monkeypatch.setattr(sp.settings, "bm25_enabled", True)
+    retrieval([_Hit(0.016)])
+
+    result = sp.search_policies("how long are backups kept?")
+
+    assert result != sp.NO_MATCH
+    assert "Backup Policy [Internal]" in result
+
+
+def test_the_cosine_floor_still_applies_on_the_plain_dense_path(monkeypatch, retrieval):
+    """Reranker off AND bm25 off is the only configuration where the score is
+    actually a cosine similarity, so it is the only one the floor may judge."""
+    monkeypatch.setattr(sp.settings, "bm25_enabled", False)
+    retrieval([_Hit(0.20)])
+
+    assert sp.search_policies("how long are backups kept?") == sp.NO_MATCH
+
+
+def test_the_cosine_floor_does_not_judge_a_reranked_score(monkeypatch, retrieval):
+    """The `not reranker_enabled` clause, which the fixture pins to False for
+    every other test here — so a mutation deleting it passes them all.
+
+    Reranker on with bm25 off is exactly rollout step 1, and it is the shape in
+    which this clause is the only thing keeping the 0.45 cosine floor off a
+    pipeline CLAUDE.md records that floor has never actually run on. 0.20 is a
+    retrieval score the reranker is there to rescore, not a verdict.
+    """
+    monkeypatch.setattr(sp.settings, "bm25_enabled", False)
+    monkeypatch.setattr(sp.settings, "reranker_enabled", True)
+    # Identity rerank: no rerank_score, so the Step 3b floor cannot fire either
+    # and the only thing under test is the cosine guard.
+    monkeypatch.setattr(sp, "rerank", lambda query, results, top_n: results)
+    retrieval([_Hit(0.20)])
+
+    result = sp.search_policies("how long are backups kept?")
+
+    assert result != sp.NO_MATCH
+    assert "Backup Policy [Internal]" in result
+
+
+def test_the_cosine_floor_passes_a_high_enough_dense_score(monkeypatch, retrieval):
+    monkeypatch.setattr(sp.settings, "bm25_enabled", False)
+    retrieval([_Hit(0.80)])
+
+    assert sp.search_policies("how long are backups kept?") != sp.NO_MATCH
+
+
+def test_both_modes_format_sources_identically(monkeypatch, retrieval):
+    """One code path means one output shape — no drift between the two modes."""
+    retrieval([_Hit(0.90)])
+
+    monkeypatch.setattr(sp.settings, "bm25_enabled", True)
+    fused = sp.search_policies("q")
+    monkeypatch.setattr(sp.settings, "bm25_enabled", False)
+    dense = sp.search_policies("q")
+
+    assert fused == dense
+    assert "[Source 1] Backup Policy [Internal]" in fused
+
+
+def test_the_retrieval_score_is_captured_for_eval_logging(monkeypatch, retrieval):
+    monkeypatch.setattr(sp.settings, "bm25_enabled", True)
+    retrieval([_Hit(0.016)])
+
+    sp.search_policies("q")
+
+    assert sp._last_search_results[0]["retrieval_score"] == 0.016
+
+
+def test_the_captured_score_carries_the_scale_it_is_on(monkeypatch, retrieval):
+    """0.016 and 0.85 are not comparable, and this dict is what lands in eval
+    result JSON to be read weeks later. The number without its unit is how a
+    score ends up judged against the wrong threshold."""
+    retrieval([_Hit(0.016)])
+    monkeypatch.setattr(sp.settings, "bm25_enabled", True)
+    sp.search_policies("q")
+    assert sp._last_search_results[0]["score_type"] == "rrf"
+
+    retrieval([_Hit(0.80)])
+    monkeypatch.setattr(sp.settings, "bm25_enabled", False)
+    sp.search_policies("q")
+    assert sp._last_search_results[0]["score_type"] == "cosine"
+
+
+def test_empty_results_still_report_no_match(monkeypatch, retrieval):
+    monkeypatch.setattr(sp.settings, "bm25_enabled", True)
+    retrieval([])
+
+    assert sp.search_policies("q") == sp.NO_MATCH
+    assert sp._last_search_results == []

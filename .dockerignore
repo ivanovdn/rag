@@ -14,7 +14,6 @@ channels/teams/data/
 qdrant_data/
 phoenix_data/
 *.db
-.bm25_index.json
 
 # Source documents (ingested separately, not needed at runtime)
 policies/

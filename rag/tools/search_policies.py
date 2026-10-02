@@ -3,7 +3,11 @@ import asyncio
 from llama_index.core.tools import FunctionTool
 
 from config import settings
-from rag.observability import record_floor_rejection
+from rag.embeddings import embed_query
+from rag.observability import record_floor_rejection, record_infra_unavailable
+from rag.reranker import rerank
+from rag.resilience import RETRY_BACKOFFS, is_transient, retry_transient
+from rag.vector_store import search_chunks
 
 _last_search_results: list[dict] = []
 _retrieval_unavailable: bool = False
@@ -29,87 +33,76 @@ def search_policies(query: str, top_k: int = 6) -> str:
     global _last_search_results, _retrieval_unavailable
     _retrieval_unavailable = False
 
-    # How many candidates to retrieve (more when reranker will rescore)
+    # How many candidates to retrieve (more when the reranker will rescore)
     retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
 
-    # Step 1: Retrieve candidates
-    if settings.bm25_enabled:
-        from rag.hybrid_search import hybrid_search
-
-        raw = hybrid_search(query=query, top_k=retrieve_k)
-        if not raw:
+    # Step 1: Retrieve candidates — dense only, or dense + sparse fused by Qdrant.
+    # One path for both: fusion is server-side, so both return ScoredPoints.
+    try:
+        query_vector = retry_transient(lambda: embed_query(query))
+    except Exception as exc:
+        if is_transient(exc):
             _last_search_results = []
-            return NO_MATCH
+            _retrieval_unavailable = True
+            record_infra_unavailable("embeddings", type(exc).__name__, len(RETRY_BACKOFFS))
+            return UNAVAILABLE
+        raise
 
-        results = [
-            {
-                "doc_title": r["doc_title"],
-                "doc_id": r["doc_id"],
-                "section": r.get("section", ""),
-                "clause": r.get("clause", ""),
-                "clause_number": r.get("clause_number", ""),
-                "text": r["text"],
-                "retrieval_score": r["rrf_score"],
-                "score_type": "rrf",
-            }
-            for r in raw
-        ]
-    else:
-        from rag.embeddings import embed_query
-        from rag.vector_store import search_vectors
-        from rag.resilience import retry_transient, is_transient, RETRY_BACKOFFS
-        from rag.observability import record_infra_unavailable
-
-        try:
-            query_vector = retry_transient(lambda: embed_query(query))
-        except Exception as exc:
-            if is_transient(exc):
-                _last_search_results = []
-                _retrieval_unavailable = True
-                record_infra_unavailable("embeddings", type(exc).__name__, len(RETRY_BACKOFFS))
-                return UNAVAILABLE
-            raise
-
-        try:
-            raw = retry_transient(lambda: search_vectors(query_vector, top_k=retrieve_k))
-        except Exception as exc:
-            if is_transient(exc):
-                _last_search_results = []
-                _retrieval_unavailable = True
-                record_infra_unavailable("qdrant", type(exc).__name__, len(RETRY_BACKOFFS))
-                return UNAVAILABLE
-            raise
-
-        if not raw:
+    try:
+        raw = retry_transient(lambda: search_chunks(query, query_vector, top_k=retrieve_k))
+    except Exception as exc:
+        if is_transient(exc):
             _last_search_results = []
-            return NO_MATCH
+            _retrieval_unavailable = True
+            record_infra_unavailable("qdrant", type(exc).__name__, len(RETRY_BACKOFFS))
+            return UNAVAILABLE
+        raise
 
-        # Apply confidence threshold only when reranker is OFF
-        if not settings.reranker_enabled and raw[0].score < settings.min_confidence_score:
-            _last_search_results = []
-            return NO_MATCH
+    if not raw:
+        _last_search_results = []
+        return NO_MATCH
 
-        results = [
-            {
-                "doc_title": r.payload["doc_title"],
-                "doc_id": r.payload["doc_id"],
-                "section": r.payload.get("section", ""),
-                "clause": r.payload.get("clause", ""),
-                "clause_number": r.payload.get("clause_number", ""),
-                "text": r.payload["text"],
-                "retrieval_score": r.score,
-                "score_type": "cosine",
-            }
-            for r in raw
-        ]
+    # min_confidence_score is a COSINE threshold (0.45). It may only judge a score
+    # that IS a cosine similarity — reranker off AND no RRF fusion. An RRF score is
+    # ~0.016 (1/(k + rank), with k pinned to 60 in rag/vector_store.py), so dropping
+    # the bm25 half of this condition would return NO_MATCH for every question in the
+    # corpus, with no error raised anywhere. That total failure is the diagnosable
+    # one: at Qdrant's default k of 2, RRF scores land in the same range as cosine
+    # ones and the same mistake would fail only for some questions. Same class of bug
+    # as the rerank_score-presence guard in Step 3b: the guard is on what the number
+    # MEANS, not on which component produced it.
+    if (
+        not settings.reranker_enabled
+        and not settings.bm25_enabled
+        and raw[0].score < settings.min_confidence_score
+    ):
+        _last_search_results = []
+        return NO_MATCH
+
+    results = [
+        {
+            "doc_title": r.payload["doc_title"],
+            "doc_id": r.payload["doc_id"],
+            "section": r.payload.get("section", ""),
+            "clause": r.payload.get("clause", ""),
+            "clause_number": r.payload.get("clause_number", ""),
+            "text": r.payload["text"],
+            "retrieval_score": r.score,
+            "score_type": "rrf" if settings.bm25_enabled else "cosine",
+        }
+        for r in raw
+    ]
 
     # Step 2: Rerank (if enabled)
     if settings.reranker_enabled and results:
-        from rag.reranker import rerank
-
         results = rerank(query, results, top_n=settings.reranker_top_n)
 
-    # Step 3: Capture structured results for eval logging
+    # Step 3: Capture structured results for eval logging.
+    # score_type travels with retrieval_score because it is that number's unit:
+    # 0.016 (RRF) and 0.85 (cosine) are not comparable, and this dict is read by
+    # people, in eval result JSON, often long after the run. Recording the number
+    # without its scale is how a score gets judged against the wrong threshold —
+    # the failure this file's min_confidence_score guard exists to prevent.
     _last_search_results = [
         {
             "doc_title": r["doc_title"],
@@ -118,6 +111,7 @@ def search_policies(query: str, top_k: int = 6) -> str:
             "clause_number": r.get("clause_number", ""),
             "rerank_score": round(r.get("rerank_score", 0), 4),
             "retrieval_score": round(r.get("retrieval_score", 0), 4),
+            "score_type": r.get("score_type", ""),
         }
         for r in results
     ]

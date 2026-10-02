@@ -19,8 +19,11 @@ init_observability()
 
 from channels.teams.auth import TokenRefresher
 from channels.teams.bot import TeamsBot
+from rag.vector_store import preflight_sparse_config
 
 if __name__ == "__main__":
+    # Fails loudly here rather than turning every question into an escalation.
+    preflight_sparse_config()
     token_refresher = TokenRefresher()
     bot = TeamsBot(token_refresher)
     bot.run()

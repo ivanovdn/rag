@@ -1,30 +1,34 @@
-import logging
 from pathlib import Path
 
 from config import settings
 from ingest.docx_parser import parse_docx
 from rag.embeddings import embed_texts
-from rag.vector_store import delete_document, init_collection, upsert_chunks
-
-logger = logging.getLogger(__name__)
+from rag.vector_store import (
+    assert_sparse_vector,
+    delete_document,
+    init_collection,
+    upsert_chunks,
+)
 
 
 def ingest_document(filepath: Path, doc_link: str) -> int:
     """Parse a DOCX file, embed chunks, and upsert to Qdrant."""
     init_collection()
+    # Before delete_document, and ungated by any query-side flag: upsert_chunks
+    # always writes a sparse vector, so an upsert into a collection that has no
+    # sparse vector fails -- AFTER the delete has already committed. The
+    # document's chunks are then simply gone from a live index, the bot answers
+    # "no relevant policy found" for it, and nothing looks broken.
+    assert_sparse_vector(
+        settings.qdrant_collection,
+        "Re-ingesting would delete this document's chunks and then fail to write "
+        "them back.",
+    )
     chunks = parse_docx(filepath, doc_link)
     if not chunks:
         return 0
 
     doc_id = chunks[0].doc_id
-
-    # Remove old version (both stores)
-    if settings.bm25_enabled:
-        from rag.bm25_index import remove_document_from_bm25
-
-        removed = remove_document_from_bm25(doc_id)
-        if removed:
-            logger.info(f"Removed {removed} old BM25 chunks for {doc_id}")
 
     delete_document(doc_id)
 
@@ -44,13 +48,6 @@ def ingest_document(filepath: Path, doc_link: str) -> int:
 
     embeddings = embed_texts(embed_inputs)
     upsert_chunks(chunks, embeddings)
-
-    # Sync BM25 index
-    if settings.bm25_enabled:
-        from rag.bm25_index import add_chunks_to_bm25
-
-        add_chunks_to_bm25(chunks)
-        logger.info(f"Added {len(chunks)} chunks to BM25 index")
 
     return len(chunks)
 

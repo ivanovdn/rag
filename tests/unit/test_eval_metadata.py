@@ -7,6 +7,7 @@ pinned here.
 """
 
 import hashlib
+from pathlib import Path
 
 from eval.run_experiment import _prompt_meta
 
@@ -122,3 +123,20 @@ def test_mirror_stores_the_prompt_with_no_templating():
     assert len(prompts.created) == 1
     version = prompts.created[0]["version"]
     assert version._template_format == "NONE", version._template_format
+
+
+def test_experiment_metadata_identifies_the_collection_and_bm25_parameters():
+    """An experiment whose retrieval parameters are only recoverable from its NAME
+    cannot be compared against another six weeks later. After this migration the
+    collection is a parameter too: v1 and v2 hold different indexes."""
+    source = Path("eval/run_experiment.py").read_text(encoding="utf-8")
+
+    assert '"qdrant_collection": settings.qdrant_collection' in source
+    assert '"bm25_enabled": settings.bm25_enabled' in source
+    assert '"bm25_avg_len": settings.bm25_avg_len' in source
+
+
+def test_no_eval_entry_point_still_imports_the_deleted_hybrid_module():
+    for path in ("eval/run_experiment.py", "scripts/run_eval.py"):
+        source = Path(path).read_text(encoding="utf-8")
+        assert "hybrid_search" not in source, f"{path} still imports hybrid_search"

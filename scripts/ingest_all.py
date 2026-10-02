@@ -13,6 +13,7 @@ init_observability()  # Must be before any LlamaIndex imports
 
 from config import settings
 from ingest.pipeline import ingest_files, ingest_folder, resolve_docx_paths
+from rag.vector_store import assert_sparse_vector, init_collection
 
 
 def main():
@@ -45,6 +46,18 @@ def main():
         help="Base URL for document links",
     )
     args = parser.parse_args()
+
+    # Fail here, before a single document is touched. ingest_document repeats
+    # this check per document because that is where the delete-then-upsert
+    # window is; this call is what turns "one policy silently vanished" into a
+    # message the operator reads before starting. init_collection() first, so a
+    # first-ever run creates the collection (already sparse-enabled) rather than
+    # asserting against one that does not exist yet.
+    init_collection()
+    assert_sparse_vector(
+        settings.qdrant_collection,
+        "Ingest writes a sparse vector for every chunk.",
+    )
 
     if args.files:
         # Validate every path before ingesting anything, so one bad filename

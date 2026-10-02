@@ -16,6 +16,36 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Safe at module level: config pulls no LlamaIndex or Ollama, so it does not
+# compete with the init_observability() ordering the local imports below protect.
+# _tracing_endpoint needs it, and so does the test that patches it here.
+# init_observability itself is imported inside main(), not here: rag.observability
+# is just as import-light, but test_eval_metadata.py guards this file against any
+# top-level `rag.*` import, and satisfying that guard costs nothing.
+from config import settings
+
+
+def _tracing_endpoint(args) -> str | None:
+    """Where this run's spans go, or None when tracing is off.
+
+    Deliberately does not choose a PROJECT. Phoenix's run_experiment files task
+    spans under its own per-experiment project and overrides whatever was
+    registered, so an override here would be inert — measured 2026-10-02, when a
+    registered `compliance-bot-eval` was never created while the spans sat in
+    `Experiment-<hash>`. Phoenix already records the real project on the
+    experiment, and already keeps it out of the bot's project unaided.
+
+    The endpoint follows --phoenix-url when that is given. That flag moves the
+    client which writes the experiment; leaving traces on the configured endpoint
+    would put the experiment on one Phoenix and its spans on another, with nothing
+    anywhere reporting the split.
+    """
+    if args.no_trace:
+        return None
+    if args.phoenix_url:
+        return f"{args.phoenix_url.rstrip('/')}/v1/traces"
+    return settings.phoenix_endpoint
+
 
 def setup_async():
     try:
@@ -26,89 +56,50 @@ def setup_async():
 
 
 def make_tier1_task(top_k: int):
+    # Local imports: init_observability() must run before any LlamaIndex/Ollama
+    # import, and this module is imported by the CLI entry point below.
     from config import settings
+    from rag.embeddings import embed_query
+    from rag.vector_store import search_chunks
 
-    def _to_result_dicts(raw_results, is_hybrid: bool):
-        """Convert raw search results to a common dict format."""
-        if is_hybrid:
-            return [
+    retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
+
+    def retrieval_task(input):
+        # One path for both modes: Qdrant fuses server-side, so dense-only and
+        # dense+sparse both come back as ScoredPoints with the same payload.
+        vector = embed_query(input["question"])
+        raw = search_chunks(input["question"], vector, top_k=retrieve_k)
+        results = [
+            {
+                "doc_title": r.payload.get("doc_title", ""),
+                "section": r.payload.get("section", ""),
+                "clause": r.payload.get("clause", ""),
+                "clause_number": r.payload.get("clause_number", ""),
+                "text": r.payload.get("text", ""),
+                "retrieval_score": round(r.score, 4),
+            }
+            for r in raw
+        ]
+
+        if settings.reranker_enabled and results:
+            from rag.reranker import rerank
+
+            results = rerank(input["question"], results, top_n=settings.reranker_top_n)
+
+        return {
+            "search_results": [
                 {
                     "doc_title": r["doc_title"],
                     "section": r["section"],
                     "clause": r.get("clause", ""),
                     "clause_number": r.get("clause_number", ""),
-                    "text": r.get("text", ""),
-                    "retrieval_score": round(r["rrf_score"], 4),
+                    "retrieval_score": r.get("retrieval_score", 0),
+                    "rerank_score": r.get("rerank_score"),
+                    "original_rank": r.get("original_rank"),
                 }
-                for r in raw_results
+                for r in results
             ]
-        else:
-            return [
-                {
-                    "doc_title": r.payload.get("doc_title", ""),
-                    "section": r.payload.get("section", ""),
-                    "clause": r.payload.get("clause", ""),
-                    "clause_number": r.payload.get("clause_number", ""),
-                    "text": r.payload.get("text", ""),
-                    "retrieval_score": round(r.score, 4),
-                }
-                for r in raw_results
-            ]
-
-    retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
-
-    if settings.bm25_enabled:
-        from rag.hybrid_search import hybrid_search
-
-        def retrieval_task(input):
-            raw = hybrid_search(input["question"], top_k=retrieve_k)
-            results = _to_result_dicts(raw, is_hybrid=True)
-
-            if settings.reranker_enabled and results:
-                from rag.reranker import rerank
-                results = rerank(input["question"], results, top_n=settings.reranker_top_n)
-
-            return {
-                "search_results": [
-                    {
-                        "doc_title": r["doc_title"],
-                        "section": r["section"],
-                        "clause": r.get("clause", ""),
-                        "clause_number": r.get("clause_number", ""),
-                        "retrieval_score": r.get("retrieval_score", 0),
-                        "rerank_score": r.get("rerank_score"),
-                        "original_rank": r.get("original_rank"),
-                    }
-                    for r in results
-                ]
-            }
-    else:
-        from rag.embeddings import embed_query
-        from rag.vector_store import search_vectors
-
-        def retrieval_task(input):
-            vector = embed_query(input["question"])
-            raw = search_vectors(vector, top_k=retrieve_k)
-            results = _to_result_dicts(raw, is_hybrid=False)
-
-            if settings.reranker_enabled and results:
-                from rag.reranker import rerank
-                results = rerank(input["question"], results, top_n=settings.reranker_top_n)
-
-            return {
-                "search_results": [
-                    {
-                        "doc_title": r["doc_title"],
-                        "section": r["section"],
-                        "clause": r.get("clause", ""),
-                        "clause_number": r.get("clause_number", ""),
-                        "retrieval_score": r.get("retrieval_score", 0),
-                        "rerank_score": r.get("rerank_score"),
-                        "original_rank": r.get("original_rank"),
-                    }
-                    for r in results
-                ]
-            }
+        }
 
     return retrieval_task
 
@@ -315,12 +306,43 @@ def main():
     parser.add_argument("--top-k", type=int, default=None, help="Override retrieval_top_k from .env")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--phoenix-url", default=None)
+    parser.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="Do not emit Phoenix traces for this run",
+    )
     args = parser.parse_args()
+
+    # Before setup_async() and every local import below it: make_agent_task() pulls
+    # eval/agent_wrapper.py, which imports llama_index at module level, and Phoenix's
+    # instrumentors must be installed before that happens or the agent's own spans
+    # are never recorded. This entry point had no such call at all until now, which
+    # is why eval runs produced no spans of any kind.
+    trace_endpoint = _tracing_endpoint(args)
+    if trace_endpoint is None:
+        print("tracing:      off (--no-trace)")
+    else:
+        from rag.observability import init_observability
+
+        print(f"tracing:      endpoint={trace_endpoint}")
+        print("              spans land in Phoenix's per-experiment project, "
+              "reachable from the experiment -- NOT from the Projects page")
+        init_observability(endpoint=trace_endpoint)
 
     setup_async()
     from phoenix.client import Client
     from eval.evaluators import TIER1_EVALUATORS, TIER2_EVALUATORS, CHATBOT_EVALUATORS
     from config import settings
+    from rag.vector_store import preflight_sparse_config
+
+    # BM25_ENABLED=true against a collection with no sparse vector fails every
+    # query with "Not existing vector name error". That is not transient, so
+    # every question escalates and hit_evaluator comes out near zero -- which
+    # reads exactly like the sparse half failing on its merits, and the rollout's
+    # response to a low gate score is a 100-line fallback encoder. Both
+    # QDRANT_COLLECTION and BM25_ENABLED have to be set for the gate run; this
+    # turns forgetting the first into a message instead of a plausible zero.
+    preflight_sparse_config()
 
     top_k = args.top_k if args.top_k is not None else settings.retrieval_top_k
     tier_cfg = TIER_CONFIG[args.tier]
@@ -374,6 +396,11 @@ def main():
         "embedding_source": settings.embedding_source,
         "embedding_url": settings.ollama_embedding_url if settings.embedding_source == "ollama" else "local",
         "qdrant_url": settings.active_qdrant_url,
+        # The collection is a retrieval parameter now: v1 and v2 hold different
+        # indexes, so a run that does not name it cannot be compared later.
+        "qdrant_collection": settings.qdrant_collection,
+        "bm25_enabled": settings.bm25_enabled,
+        "bm25_avg_len": settings.bm25_avg_len,
         "reranker_backend": settings.reranker_backend if settings.reranker_enabled else "none",
         "reranker_url": settings.reranker_url if settings.reranker_enabled else "none",
     }
@@ -385,7 +412,7 @@ def main():
                      "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
-                     "min_confidence_score": settings.min_confidence_score if not settings.reranker_enabled else None,
+                     "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
                      "top_k": top_k, "tier": "tier1"}
     else:
         task = make_agent_task(verbose=args.verbose)
@@ -401,7 +428,7 @@ def main():
                      "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
-                     "min_confidence_score": settings.min_confidence_score if not settings.reranker_enabled else None,
+                     "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
                      "num_ctx": settings.ollama_num_ctx,
                      "temperature": settings.llm_temperature,
                      # The prompt is a parameter like any other, and the one most

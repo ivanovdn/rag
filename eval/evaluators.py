@@ -64,7 +64,7 @@ def _match_result(r, exp):
 # ============================================================
 # RETRIEVAL EVALUATORS
 # Source: output["search_results"]
-# Tier 1: from hybrid_search(user_question)
+# Tier 1: from search_chunks(user_question)
 # Tier 2/Chatbot: from agent's actual search_policies tool calls
 # ============================================================
 

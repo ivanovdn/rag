@@ -29,6 +29,7 @@ from pathlib import Path
 from config import settings
 from rag.observability import get_tracer
 from rag.search_first import compose_agent_input, prefetch
+from rag.vector_store import preflight_sparse_config
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
@@ -61,7 +62,7 @@ def config_snapshot() -> dict:
         "bm25_enabled": settings.bm25_enabled,
         "embedding_model": settings.embedding_model,
         "llm_model": settings.llm_model,
-        "min_confidence_score": settings.min_confidence_score,
+        "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
         "retrieval_top_k": settings.retrieval_top_k,
         "hybrid_vector_candidates": settings.hybrid_vector_candidates,
         "hybrid_bm25_candidates": settings.hybrid_bm25_candidates,
@@ -102,7 +103,7 @@ async def run_agent_query(agent, agent_input: str) -> str:
 
 def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
     from rag.embeddings import embed_query
-    from rag.vector_store import search_vectors
+    from rag.vector_store import search_chunks
 
     tracer = get_tracer()
     data = load_dataset(dataset_path)
@@ -121,45 +122,23 @@ def run_retrieval_eval(dataset_path: Path, tag: str) -> dict:
             span.set_attribute("eval.test_id", tc["id"])
             span.set_attribute("eval.question", tc["question"])
 
-            # Run search
-            if settings.bm25_enabled:
-                from rag.hybrid_search import hybrid_search
-
-                raw_results = hybrid_search(tc["question"], top_k=top_k)
-                search_results = []
-                for r in raw_results:
-                    search_results.append(
-                        {
-                            "doc_id": r["doc_id"],
-                            "doc_title": r["doc_title"],
-                            "section": r.get("section", ""),
-                            "section_number": r.get("section_number", ""),
-                            "clause": r.get("clause", ""),
-                            "clause_number": r.get("clause_number", ""),
-                            "section_display": r.get("section_display", ""),
-                            "text": r["text"],
-                            "score": r["rrf_score"],
-                        }
-                    )
-            else:
-                vector = embed_query(tc["question"])
-                raw_results = search_vectors(vector, top_k=top_k)
-                search_results = []
-                for r in raw_results:
-                    p = r.payload
-                    search_results.append(
-                        {
-                            "doc_id": p.get("doc_id", ""),
-                            "doc_title": p.get("doc_title", ""),
-                            "section": p.get("section", ""),
-                            "section_number": p.get("section_number", ""),
-                            "clause": p.get("clause", ""),
-                            "clause_number": p.get("clause_number", ""),
-                            "section_display": p.get("section_display", ""),
-                            "text": p.get("text", ""),
-                            "score": r.score,
-                        }
-                    )
+            # One path for both modes: Qdrant fuses server-side.
+            vector = embed_query(tc["question"])
+            raw_results = search_chunks(tc["question"], vector, top_k=top_k)
+            search_results = [
+                {
+                    "doc_id": r.payload.get("doc_id", ""),
+                    "doc_title": r.payload.get("doc_title", ""),
+                    "section": r.payload.get("section", ""),
+                    "section_number": r.payload.get("section_number", ""),
+                    "clause": r.payload.get("clause", ""),
+                    "clause_number": r.payload.get("clause_number", ""),
+                    "section_display": r.payload.get("section_display", ""),
+                    "text": r.payload.get("text", ""),
+                    "score": r.score,
+                }
+                for r in raw_results
+            ]
 
             top_score = search_results[0]["score"] if search_results else 0.0
             top_scores.append(top_score)
@@ -675,6 +654,11 @@ def main():
     )
     parser.add_argument("--dataset", default=None, help="Override dataset path")
     args = parser.parse_args()
+
+    # Same reason as eval/run_experiment.py: BM25 on against a collection with no
+    # sparse vector is a non-transient failure on every query, so it produces a
+    # plausible-looking zero rather than an error. Fail before spending GPU.
+    preflight_sparse_config()
 
     tiers = (
         ["retrieval", "e2e", "escalation", "chatbot"]
