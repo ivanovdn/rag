@@ -303,6 +303,9 @@ python scripts/make_dataset.py eval/datasets/chatbot_test_cases.json
 
 ### Run experiments
 
+Local invocation — valid for `tier1` only; see the next section before running
+`tier2` or `chatbot`.
+
 ```bash
 # Tier 1 — retrieval only (fast, no LLM)
 python eval/run_experiment.py --tier tier1 --name baseline-retrieval
@@ -315,6 +318,75 @@ python eval/run_experiment.py --tier chatbot --name chatbot-baseline
 ```
 
 Auto-generated experiment names include backend + reranker config. Metadata captures infra (`local`/`remote`) and URLs.
+
+### Where to run it: the VM, not your laptop
+
+**A `tier2` or `chatbot` run from the Mac is silently invalid.** The dev `.env`
+points `RERANKER_URL` at `localhost:8081`; an unreachable reranker falls back to
+the original ranking with only a log warning, so the run completes and reports
+numbers that were never reranked. `tier1` is safe locally with
+`USE_REMOTE_QDRANT=true` — anything touching the LLM or reranker is not.
+
+On `srv-agent-01` (user `sa.ivanov`) the project is **one repo with two linked
+git worktrees**, not two clones:
+
+| path | role |
+|---|---|
+| `~/rag` | the deployed checkout, always on `main`. `rag-bot-1` and `rag-phoenix-1` run from its compose project. |
+| `~/rag-eval` | the experiment workbench — check out the branch under test here. |
+
+Two consequences of them being worktrees, both of which have cost time:
+
+- `~/rag-eval` **cannot hold `main`** while `~/rag` does (`fatal: 'main' is
+  already used by worktree at '/home/sa.ivanov/rag'`). Check out the branch
+  under test, or a detached HEAD. Use `git worktree move`, never `mv`.
+- `~/rag-eval` **has no `.env`** — worktrees do not share gitignored files.
+  That is why eval runs from `~/rag`, not from the worktree it measures.
+
+> ⚠️ `git clean -fdx` in `~/rag` deletes `channels/teams/data/refresh_token.json`,
+> the live rotating Azure credential. Azure invalidates superseded tokens, so a
+> backup is not a restore path. It is the only unrecoverable command here.
+
+### Running an experiment on the VM
+
+Eval runs as a throwaway container from `~/rag`, whose compose supplies the
+production config, with the other worktree's source mounted over the baked image:
+
+```bash
+cd ~/rag
+EVAL="-v /home/sa.ivanov/rag-eval/config.py:/app/config.py \
+      -v /home/sa.ivanov/rag-eval/rag:/app/rag \
+      -v /home/sa.ivanov/rag-eval/eval:/app/eval \
+      -v /home/sa.ivanov/rag-eval/scripts:/app/scripts"
+
+# 1. Assert you are running the code you think you are — BEFORE spending GPU.
+docker compose -f docker-compose-remote.yml run --rm $EVAL --entrypoint python bot \
+  -c "import rag.vector_store as vs; from rag.agent import ALL_TOOLS; print('tools:', ALL_TOOLS, '| RRF_K:', vs.RRF_K)"
+
+# 2. Upload the dataset (once per dataset change).
+docker compose -f docker-compose-remote.yml run --rm $EVAL --entrypoint python bot \
+  scripts/make_dataset.py eval/datasets/chatbot_test_cases.json --phoenix-url http://phoenix:6006
+
+# 3. Run.
+docker compose -f docker-compose-remote.yml run --rm $EVAL \
+  -e QDRANT_COLLECTION=compliance_policies_v2 -e BM25_ENABLED=true \
+  --entrypoint python bot eval/run_experiment.py \
+  --tier chatbot --name <run-name> --phoenix-url http://phoenix:6006
+```
+
+`--phoenix-url` takes the compose network name `phoenix` — the same instance you
+reach at `172.20.1.10:6006` from outside. The `-e` overrides let one image
+measure several configurations without an edit or a rebuild, which is how a
+control run isolates one variable. `--no-trace` turns tracing off for a run.
+
+**Step 1 is not optional.** The image bakes `config.py` and `rag/` at build time,
+so mounting only `eval/` gives you the new harness running main's pipeline — a
+green run that measured the wrong code. Mount all four, and assert something
+version-specific before the GPU bill starts.
+
+Traces land under **Datasets & Experiments → the dataset → the experiment → a
+row's trace link**, never on the Projects page: Phoenix files task spans under
+its own per-experiment project. See the gotcha table in `CLAUDE.md`.
 
 ---
 
