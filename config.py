@@ -1,7 +1,11 @@
+import logging
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -142,20 +146,6 @@ class Settings(BaseSettings):
     chunk_min_tokens: int = 50
     chunk_max_tokens: int = 400
 
-    # Escalation Email
-    smtp_host: str = "smtp.company.com"
-    smtp_port: int = 587
-    smtp_user: str = "bot@company.com"
-    smtp_password: str = ""
-    compliance_team_email: str = "compliance@company.com"
-
-    # API
-    api_secret_key: str = "changeme"
-    admin_api_key: str = "changeme"
-
-    # SQLite
-    database_url: str = "sqlite:///./compliance_bot.db"
-
     # Teams Bot
     teams_tenant_id: str = ""
     teams_client_id: str = ""
@@ -260,14 +250,17 @@ class Settings(BaseSettings):
 
     # Evaluation
     eval_dataset_path: str = "eval/datasets"
-    eval_confidence_threshold: float = 0.45
 
-    # extra="ignore": the deployed .env (and its untracked restore backup) is not
-    # edited by this change and still carries AGENT_MAX_ITERATIONS/
-    # ESCALATION_TICKET_PREFIX after their fields are deleted below. Without this,
-    # pydantic-settings' default extra="forbid" turns any dead/stale .env key into
-    # a hard ValidationError on import — config.py's module-level `settings =
-    # get_settings()` would crash the whole app, not just this settings lookup.
+    # extra="ignore" is load-bearing: the deployed .env (and its untracked restore
+    # backup) carries keys whose fields have been deleted, and pydantic-settings'
+    # default extra="forbid" turns any one of them into a hard ValidationError on
+    # import — config.py's module-level `settings = get_settings()` would crash
+    # the whole app, not just this settings lookup.
+    #
+    # The cost is that deleting a field silently demotes its .env key to
+    # decoration. MIN_CONFIDENCE_SCORE, RERANKER_QUERY_TEMPLATE, BM25_AVG_LEN and
+    # RETRIEVAL_TOP_K each survived that way long enough to be tuned by hand.
+    # unknown_env_keys() below is the counterweight: ignore the key, name it once.
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
@@ -275,9 +268,47 @@ class Settings(BaseSettings):
     }
 
 
+def unknown_env_keys(env_text: str) -> list[str]:
+    """Keys in `env_text` that match no Settings field, in the order they appear.
+
+    Pure function over the file's text so it can be tested without touching disk
+    or the real .env, which holds live secrets. Comparison is case-insensitive
+    because pydantic-settings resolves env keys that way — flagging a lowercase
+    key would send someone deleting a working line.
+    """
+    fields = set(Settings.model_fields)
+    orphans = []
+    for line in env_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key.lower() not in fields:
+            orphans.append(key)
+    return orphans
+
+
+def _warn_about_orphans() -> None:
+    """Name dead .env keys once per process. See the model_config comment."""
+    path = Path(".env")
+    try:
+        orphans = unknown_env_keys(path.read_text(encoding="utf-8"))
+    except OSError:
+        return
+    if orphans:
+        logger.warning(
+            ".env sets %d key(s) that match no setting and are being ignored: %s",
+            len(orphans),
+            ", ".join(orphans),
+        )
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    """Cached, so the orphan warning is emitted once per process, not per lookup."""
+    settings = Settings()
+    _warn_about_orphans()
+    return settings
 
 
 settings = get_settings()
