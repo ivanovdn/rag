@@ -182,6 +182,18 @@ def make_agent_task(verbose: bool = False):
             if call["tool"] == "search_policies":
                 agent_search_results.extend(call["results"])
 
+        # The key is exactly what evaluators._match_result can distinguish: it
+        # reads doc_title, section and clause and never clause_number, so two
+        # chunks of one clause are one hit opportunity and collapsing them cannot
+        # move a score. Widening the key would count a clause twice; narrowing it
+        # would merge clauses the evaluators tell apart.
+        #
+        # The consequence is that output["search_results"] is NOT what the agent
+        # saw — production does no dedup, format_sources shows all of them. On
+        # chatbot-test-v1 this turned 6 reranked sources into 5 for 12 of 61
+        # questions while reranker.results_out said 6 on every span, which reads
+        # exactly like the reranker dropping one. It is not. Hence the count
+        # below: the output has to say what it did to itself.
         seen = set()
         unique_results = []
         for r in agent_search_results:
@@ -198,6 +210,7 @@ def make_agent_task(verbose: bool = False):
             "parse_success": parsed["parse_success"],
             "raw_response": parsed["raw_response"],
             "search_results": unique_results,
+            "search_results_before_dedup": len(agent_search_results),
             "agent_metadata": _agent_metadata(parsed["escalation"]),
         }
     return e2e_task
