@@ -278,6 +278,16 @@ def search_chunks(query_text: str, query_vector: list[float], top_k: int) -> lis
             span.set_attribute("qdrant.fusion", "rrf")
             span.set_attribute("qdrant.rrf_k", RRF_K)
             span.set_attribute("qdrant.bm25_avg_len", settings.bm25_avg_len)
+            # Equal to qdrant.limit in correct code, which is the point of
+            # recording it. The prefetch limits were separately configured until
+            # 2026-10-02 and ran at 20 against a fused limit of 25, capping the
+            # union the fusion drew from — and no span said so. A production
+            # question answered after the fix was bit-identical to one from
+            # before it, and the trace could not distinguish "the fix is live"
+            # from "the deploy did not happen". This is the number that would
+            # have answered it. Only set when fusing: with bm25 off there is no
+            # prefetch, and a 0 would read as "prefetched nothing".
+            span.set_attribute("qdrant.prefetch_limit", limit)
             response = client.query_points(
                 collection_name=settings.qdrant_collection,
                 prefetch=[
