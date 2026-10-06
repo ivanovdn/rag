@@ -183,3 +183,38 @@ def test_search_chunks_requires_an_explicit_top_k(client):
     """
     with pytest.raises(TypeError):
         vs.search_chunks("q", [0.1])
+
+
+def test_the_span_records_the_prefetch_limit_it_actually_sent(
+    monkeypatch, client, span_exporter
+):
+    """Read from the request, not from settings, so the attribute cannot drift.
+
+    qdrant.limit and the two prefetch limits are the same number in correct
+    code, which is exactly why this is worth recording: the attribute is
+    redundant until it is not. Production ran 20/20 against a fused 25 for
+    weeks, and no trace could show it -- a question answered on 2026-10-06 was
+    bit-identical to one from 2026-10-02 and the spans could not say whether
+    that meant the fix was live or the deploy had not happened.
+    """
+    monkeypatch.setattr(vs.settings, "bm25_enabled", True)
+
+    vs.search_chunks("q", [0.1], top_k=25)
+
+    dense, sparse = client.calls[0]["prefetch"]
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes["qdrant.prefetch_limit"] == dense.limit == sparse.limit == 25
+    assert span.attributes["qdrant.limit"] == 25
+
+
+def test_a_dense_only_query_records_no_prefetch_limit(
+    monkeypatch, client, span_exporter
+):
+    """There is no prefetch to describe, and qdrant.bm25_enabled already says so.
+    A 0 or a null here would read as "prefetched nothing", which is different."""
+    monkeypatch.setattr(vs.settings, "bm25_enabled", False)
+
+    vs.search_chunks("q", [0.1], top_k=25)
+
+    span = span_exporter.get_finished_spans()[0]
+    assert "qdrant.prefetch_limit" not in span.attributes
