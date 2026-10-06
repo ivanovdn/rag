@@ -1,7 +1,11 @@
+import logging
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -65,7 +69,6 @@ class Settings(BaseSettings):
     policy_base_url: str = "http://intranet.company.com/policies"
 
     # Retrieval
-    retrieval_top_k: int = 10
     min_confidence_score: float = 0.45
 
     # Reranker (any /v1/rerank-compatible server: llama-server, vLLM, etc.)
@@ -75,11 +78,17 @@ class Settings(BaseSettings):
     reranker_model: str = "qwen3-reranker-0.6b-q8"
     reranker_query_template: str = "<Instruct>: {instruction}\n<Query>: {query}"
     reranker_top_n: int = 6
+    # The ONLY candidate count in retrieval. It sizes all three places that have
+    # to agree: the dense prefetch, the sparse prefetch, and the fused limit they
+    # feed. They were three independent settings until 2026-10-02, at 20/20
+    # against a fused 25 -- and because the fused result is drawn from the UNION
+    # of the two branches, the pool silently shrank toward 20 exactly when the
+    # branches agreed, which is what a working hybrid does. Sized together, the
+    # union is >= the limit by construction and the number here is the number
+    # retrieved. Read only when the reranker is on; with it off, search_policies
+    # passes its own top_k (6), because 25 unranked chunks would not fit the
+    # agent's num_ctx of 4096.
     reranker_candidates: int = 20
-    # Relevance floor on the reranker's 0.0-1.0 score. 0.0 means OFF.
-    # This is NOT a reuse of min_confidence_score: that one is cosine similarity
-    # on the reranker-off path, this one is a reranker relevance probability, and
-    # one knob for two scales would be a latent bug.
     # Relevance floor on the reranker's 0.0-1.0 score. 0.0 means OFF.
     # NOT a reuse of min_confidence_score: that one is cosine similarity on the
     # reranker-off path, this is a reranker relevance probability, and one knob
@@ -109,15 +118,13 @@ class Settings(BaseSettings):
 
     # Hybrid search
     bm25_enabled: bool = True
-    hybrid_vector_candidates: int = 20
-    hybrid_bm25_candidates: int = 20
     # BM25 length normalisation, passed to Qdrant in per-document `options`.
     # Qdrant's default is 256; this corpus measured 1602 chunks at mean 49.7
     # tokens (median 38, p90 109, max 350) on 2026-09-29. At 256 the term
     # (1 - b + b*dl/avg_len) stays near 0.25 for every chunk, so `b` goes inert
     # and long chunks are never penalised.
     #
-    # WRITE-TIME, unlike bm25_enabled and the candidate counts above: this is
+    # WRITE-TIME, unlike bm25_enabled and reranker_candidates: this is
     # baked into every stored sparse vector and is inert at query time (measured:
     # the same text stored at 50 vs 256 gives 1.504788 vs 1.652097; changing it
     # on the query side alone changes nothing). Changing it means re-encoding —
@@ -138,20 +145,6 @@ class Settings(BaseSettings):
     # Chunking
     chunk_min_tokens: int = 50
     chunk_max_tokens: int = 400
-
-    # Escalation Email
-    smtp_host: str = "smtp.company.com"
-    smtp_port: int = 587
-    smtp_user: str = "bot@company.com"
-    smtp_password: str = ""
-    compliance_team_email: str = "compliance@company.com"
-
-    # API
-    api_secret_key: str = "changeme"
-    admin_api_key: str = "changeme"
-
-    # SQLite
-    database_url: str = "sqlite:///./compliance_bot.db"
 
     # Teams Bot
     teams_tenant_id: str = ""
@@ -257,14 +250,26 @@ class Settings(BaseSettings):
 
     # Evaluation
     eval_dataset_path: str = "eval/datasets"
-    eval_confidence_threshold: float = 0.45
 
-    # extra="ignore": the deployed .env (and its untracked restore backup) is not
-    # edited by this change and still carries AGENT_MAX_ITERATIONS/
-    # ESCALATION_TICKET_PREFIX after their fields are deleted below. Without this,
-    # pydantic-settings' default extra="forbid" turns any dead/stale .env key into
-    # a hard ValidationError on import — config.py's module-level `settings =
-    # get_settings()` would crash the whole app, not just this settings lookup.
+    # extra="ignore" is load-bearing: the deployed .env (and its untracked restore
+    # backup) carries keys whose fields have been deleted, and pydantic-settings'
+    # default extra="forbid" turns any one of them into a hard ValidationError on
+    # import — config.py's module-level `settings = get_settings()` would crash
+    # the whole app, not just this settings lookup.
+    #
+    # The cost is that deleting a field silently demotes its .env key to
+    # decoration. MIN_CONFIDENCE_SCORE, RERANKER_QUERY_TEMPLATE, BM25_AVG_LEN and
+    # RETRIEVAL_TOP_K each survived that way long enough to be tuned by hand.
+    #
+    # The case that settles it: PIPELINE_MODE sat in the deployed .env for 109
+    # days after its field was deleted (73bb90a, 2026-06-19), found by the first
+    # run of the check below on 2026-10-06. The removal spec had listed the .env
+    # line explicitly and reasoned "a leftover env line is harmless -- but we
+    # remove it anyway to keep config honest". Knowing was never the problem. The
+    # .env is untracked and lives on a host no commit reaches, so the one step
+    # that mattered was the one nothing could verify.
+    #
+    # unknown_env_keys() below is the counterweight: ignore the key, name it once.
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
@@ -272,9 +277,68 @@ class Settings(BaseSettings):
     }
 
 
+def unknown_env_keys(env_text: str) -> list[str]:
+    """Keys in `env_text` that match no Settings field, in the order they appear.
+
+    Pure function over the file's text so it can be tested without touching disk
+    or the real .env, which holds live secrets. Comparison is case-insensitive
+    because pydantic-settings resolves env keys that way — flagging a lowercase
+    key would send someone deleting a working line.
+    """
+    fields = set(Settings.model_fields)
+    orphans = []
+    for line in env_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key.lower() not in fields:
+            orphans.append(key)
+    return orphans
+
+
+def _warn_about_orphans() -> None:
+    """Name dead .env keys once per process. See the model_config comment.
+
+    HOST-SIDE ONLY, and deliberately so. `.env` is in .dockerignore and
+    docker-compose-remote.yml injects it through `env_file:`, so inside the
+    deployed container the file does not exist and this returns silently. That
+    is the right behaviour, not a gap to patch: in the container the keys arrive
+    as environment variables indistinguishable from PATH and HOSTNAME, so there
+    is no set of "keys the operator meant as settings" left to compare against.
+
+    It therefore needs both a Python environment with the deps AND `.env` on
+    disk. A dev machine has both. `srv-agent-01` has neither in one place --
+    everything runs in Docker, so the host has no pydantic -- and there the file
+    has to be handed to a container explicitly:
+
+        docker compose -f docker-compose-remote.yml run --rm $EVAL \
+          -v /home/sa.ivanov/rag/.env:/tmp/env.check:ro \
+          --entrypoint python bot -c \
+          "from config import unknown_env_keys; \
+           print(unknown_env_keys(open('/tmp/env.check').read()) or 'clean')"
+
+    which is why unknown_env_keys() takes text rather than a path. Do not read
+    the deployed bot's silence as a clean .env -- it has never looked.
+    """
+    try:
+        orphans = unknown_env_keys(Path(".env").read_text(encoding="utf-8"))
+    except OSError:
+        return
+    if orphans:
+        logger.warning(
+            ".env sets %d key(s) that match no setting and are being ignored: %s",
+            len(orphans),
+            ", ".join(orphans),
+        )
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    """Cached, so the orphan warning is emitted once per process, not per lookup."""
+    settings = Settings()
+    _warn_about_orphans()
+    return settings
 
 
 settings = get_settings()

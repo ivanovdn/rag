@@ -59,3 +59,35 @@ def test_a_no_match_search_escalates_without_building_the_agent(monkeypatch, no_
     # produced this string.
     assert result["escalation"]["reason"] == "No relevant policy was found for this question."
     assert result["agent_metadata"]["num_searches"] == 1
+
+
+def test_the_candidates_flag_is_written_into_settings_not_threaded(monkeypatch):
+    """tier2 and chatbot never see a threaded parameter.
+
+    Only make_tier1_task() builds its own retrieval call. The agent tiers go
+    through rag.tools.search_policies, which reads settings.reranker_candidates
+    directly — so --top-k used to apply to tier1 alone while advertising itself
+    generically, and a sweep run on the chatbot tier silently measured the .env
+    value instead of the requested one. The resolved value has to land where
+    every reader looks.
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path("eval/run_experiment.py").read_text(encoding="utf-8")
+    main_fn = next(
+        n for n in ast.walk(ast.parse(source))
+        if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
+    assigns_setting = [
+        n for n in ast.walk(main_fn)
+        if isinstance(n, ast.Assign)
+        and any(
+            isinstance(t, ast.Attribute) and t.attr == "reranker_candidates"
+            for t in n.targets
+        )
+    ]
+    assert assigns_setting, (
+        "--candidates must be written into settings.reranker_candidates; "
+        "a threaded parameter reaches tier1 only"
+    )

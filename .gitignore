@@ -9,7 +9,14 @@ build/
 venv/
 
 # Environment
+# .env.* as well as .env: `sed -i.bak` and hand-made copies (.env.prod, .env.old)
+# carry the same live secrets as the original -- HF token, Teams client secret,
+# and the rotating refresh token -- and only .env was ignored, so `git add -A`
+# in a deploy checkout would have staged and pushed them. .dockerignore has
+# covered .env.* since the image was built; this did not.
 .env
+.env.*
+!.env.example
 
 # Database
 *.db

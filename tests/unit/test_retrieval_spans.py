@@ -229,13 +229,14 @@ def test_search_vectors_span_name_kind_and_attributes(monkeypatch, span_exporter
     assert span.attributes["qdrant.top_score"] == 0.91
 
 
-def test_search_vectors_default_limit_falls_back_to_retrieval_top_k(monkeypatch, span_exporter):
+def test_search_vectors_records_the_limit_it_was_given_and_omits_a_missing_top_score(
+    monkeypatch, span_exporter
+):
     fake_client = _FakeQdrantClient([])
     monkeypatch.setattr(vector_store_mod.settings, "bm25_enabled", False)
     monkeypatch.setattr(vector_store_mod, "get_qdrant_client", lambda: fake_client)
-    monkeypatch.setattr(vector_store_mod.settings, "retrieval_top_k", 10)
 
-    result = vector_store_mod.search_chunks("what is the retention period?", [0.1, 0.2, 0.3])
+    result = vector_store_mod.search_chunks("what is the retention period?", [0.1, 0.2, 0.3], top_k=10)
 
     assert result == []
     span = span_exporter.get_finished_spans()[0]
@@ -318,7 +319,7 @@ def test_search_vectors_exception_propagates_unchanged_and_span_errors(monkeypat
     )
 
     with pytest.raises(ResponseHandlingException) as excinfo:
-        vector_store_mod.search_chunks("q", [0.1, 0.2])
+        vector_store_mod.search_chunks("q", [0.1, 0.2], top_k=6)
     assert excinfo.value is boom
 
     spans = span_exporter.get_finished_spans()
@@ -522,7 +523,7 @@ def test_all_four_functions_work_with_phoenix_disabled(monkeypatch):
     # the point is exactly that nothing breaks when Phoenix is off.
     assert embeddings_mod.embed_query("q") == [0.1, 0.2]
     assert embeddings_mod.embed_texts(["a", "b"]) == [[0.1, 0.2], [0.1, 0.2]]
-    assert vector_store_mod.search_chunks("q", [0.1, 0.2]) == fake_points
+    assert vector_store_mod.search_chunks("q", [0.1, 0.2], top_k=6) == fake_points
     assert reranker_mod.rerank("q", [{"text": "a"}])[0]["rerank_score"] == 0.8
 
 
