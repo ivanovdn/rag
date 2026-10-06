@@ -289,10 +289,22 @@ def unknown_env_keys(env_text: str) -> list[str]:
 
 
 def _warn_about_orphans() -> None:
-    """Name dead .env keys once per process. See the model_config comment."""
-    path = Path(".env")
+    """Name dead .env keys once per process. See the model_config comment.
+
+    HOST-SIDE ONLY, and deliberately so. `.env` is in .dockerignore and
+    docker-compose-remote.yml injects it through `env_file:`, so inside the
+    deployed container the file does not exist and this returns silently. That
+    is the right behaviour, not a gap to patch: in the container the keys arrive
+    as environment variables indistinguishable from PATH and HOSTNAME, so there
+    is no set of "keys the operator meant as settings" left to compare against.
+
+    The check belongs where `.env` is edited, which is the host — run any script
+    from the repo root (ingest_all, test_query, run_eval, an eval container with
+    the source mounted) and it fires. Do not read the deployed bot's silence as
+    a clean .env; read the host's.
+    """
     try:
-        orphans = unknown_env_keys(path.read_text(encoding="utf-8"))
+        orphans = unknown_env_keys(Path(".env").read_text(encoding="utf-8"))
     except OSError:
         return
     if orphans:
