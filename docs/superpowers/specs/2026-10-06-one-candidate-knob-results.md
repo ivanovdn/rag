@@ -287,9 +287,24 @@ across 5 source files.
    The new attribute is still worth having, since it separates "the backend
    returned fewer" from "we trimmed", but it did not find this.
 
-2. **`RERANKER_MIN_SCORE` is undeclared in the deployed `.env`**, so the live
-   relevance floor runs on the `config.py` default of 0.2. It gates every
-   question. Declare it at the value you mean.
+2. ~~**`RERANKER_MIN_SCORE` is undeclared in the deployed `.env`**~~ —
+   **DONE 2026-10-06.** The value 0.2 was never the problem; the contradiction
+   was. `.env.example` shipped `RERANKER_MIN_SCORE=0.0`, annotated "0.0 = off",
+   while `config.py` defaulted to 0.2 — so a deployment that copied the template
+   ran with no floor and one that omitted the line ran with one. Same repo, two
+   safety behaviours, decided by whether a file was copied.
+
+   Measured before changing anything: the floor has **never fired** — 0
+   `retrieval_floor_rejected` spans across 45 reranked production questions,
+   2026-09-22 to 2026-10-06, p10 0.9772, median 0.9981. The only sub-threshold
+   scores on record are three askings of *"Can I bring penguin into office"* on
+   2026-09-24, before the floor existed, all of which escalated correctly on
+   model judgement. That is the case it exists for.
+
+   `.env.example` now carries 0.2, pinned by a test: every relevance floor must
+   match its code default and none may ship disabled. The deployed `.env`
+   declares it explicitly, so the live value is readable in the file instead of
+   inferred from Python. No behaviour change — 0.2 is what was already running.
 3. **Citation provenance.** Nothing verifies cited chunks came from the retrieved
    set. Carried from `2026-09-25-search-first-results.md` #1 and
    `2026-10-02` #2 — still the largest correctness gap.
