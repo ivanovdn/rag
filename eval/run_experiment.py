@@ -452,7 +452,7 @@ def main():
                      # committed or not); chars and tokens make the context-budget
                      # cost of a prompt change visible in the comparison.
                      **_prompt_meta(), **_mirror_prompt_to_registry(client),
-                     "agent_type": "function-agent-toolfree", "top_k": top_k, "tier": args.tier,
+                     "agent_type": "function-agent-toolfree", "candidates": candidates, "tier": args.tier,
                      "structured_output": True}
 
     print(f"  Evaluators:  {[e.__name__ for e in evaluators]}")
