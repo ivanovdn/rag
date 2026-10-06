@@ -16,6 +16,29 @@ _TOKEN_REFRESH_BUFFER = 300  # seconds before expiry to refresh
 _TOKEN_REFRESH_COOLDOWN = 30  # seconds to wait before retrying a refresh that failed
 TOKEN_FILE = Path("channels/teams/data/refresh_token.json")
 
+# AAD failures that no amount of retrying will fix, keyed by the OAuth `error` field.
+# Both produce the same symptom as a transient outage — a 401 per poll cycle — and on
+# 2026-10-06 an expired client secret cost an afternoon because the one line that said
+# so scrolled past between them, reprinted every 30s. The two need OPPOSITE actions, so
+# each names its own: rotating a secret does nothing for a revoked refresh token, and
+# the device-code flow invalidates the live token for nothing if the secret is the
+# problem. Anything not listed here is treated as transient and retried silently —
+# telling an operator to rotate a working credential is worse than saying nothing.
+_TERMINAL_AUTH_ERRORS = {
+    "invalid_client": (
+        "The app registration's client secret (TEAMS_CLIENT_SECRET) is expired or wrong. "
+        "Create a new one in the Azure portal under App registrations -> the app -> "
+        "Certificates & secrets -> New client secret, copy its Value (not the Secret ID) "
+        "into .env, then recreate the container with 'docker compose up -d' — 'restart' "
+        "reuses the environment the container was created with."
+    ),
+    "invalid_grant": (
+        "The refresh token is expired or revoked; a new client secret will not help. "
+        "Recover with an interactive device-code sign-in: "
+        "PYTHONPATH=. python scripts/get_refresh_token.py (SETUP.md Step 10)."
+    ),
+}
+
 
 class TokenRefresher:
     def __init__(self):
@@ -37,6 +60,8 @@ class TokenRefresher:
         self.token_expires_at = None
         # Set after a failed refresh; blocks further attempts until it passes.
         self._retry_refresh_after = None
+        # The terminal error already announced, so it is said once rather than per retry.
+        self._terminal_auth_error = None
         # Both the poll thread and the RAG worker call get_access_token().
         self._lock = threading.Lock()
 
@@ -85,6 +110,7 @@ class TokenRefresher:
             expires_in = token_data.get("expires_in", 3600)
             self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
             self._retry_refresh_after = None
+            self._terminal_auth_error = None
 
             if "refresh_token" in token_data:
                 self.refresh_token = token_data["refresh_token"]
@@ -98,12 +124,36 @@ class TokenRefresher:
             print(f"Error refreshing token: {e}")
             if hasattr(e, "response") and hasattr(e.response, "text"):
                 print(f"Response: {e.response.text}")
+            self._report_terminal_auth_error(e)
             # Cool off. Without this the token stays "expired", so every _get_headers()
             # on every Graph call retries the refresh under the lock at ~10s a time —
             # at 30 chats that is minutes of poll-thread stall per cycle during an AAD
             # outage. A dead credential is now retried every 30s instead.
             self._retry_refresh_after = datetime.now(timezone.utc) + timedelta(seconds=_TOKEN_REFRESH_COOLDOWN)
             return None
+
+    def _report_terminal_auth_error(self, exc):
+        """Name a credential failure retrying cannot fix, once per occurrence.
+
+        Runs inside the except block of _refresh_access_token, which the poll thread
+        reaches holding self._lock — so this swallows everything. An exception escaping
+        here would stop polling altogether, which is strictly worse than the failure it
+        is describing.
+        """
+        try:
+            body = json.loads(getattr(getattr(exc, "response", None), "text", "") or "")
+            error = body.get("error", "")
+            action = _TERMINAL_AUTH_ERRORS.get(error)
+            if not action or self._terminal_auth_error == error:
+                return
+            codes = body.get("error_codes") or []
+            code = f"AADSTS{codes[0]}" if codes else error
+            self._terminal_auth_error = error
+            print(f"ERROR: {code} is terminal — retrying will not fix it. {action}")
+        except (AttributeError, TypeError, ValueError):
+            # Not JSON, or not the shape AAD documents (a proxy's HTML 502, say).
+            # The raw body is already printed above; nothing further to add.
+            return
 
     def get_access_token(self):
         """Get access token, refreshing only if expired.
