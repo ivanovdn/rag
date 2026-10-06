@@ -2,15 +2,23 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
+    # The three live credentials are SecretStr, not str, so neither repr(settings)
+    # nor str(settings) can carry them. pytest reprs the subexpressions of a
+    # failing assert into its message, and monkeypatch.setattr interpolates
+    # repr(target) on a mistyped attribute name -- so before this, a wrong NUMBER
+    # in an unrelated test could print all three into CI output. Read them with
+    # .get_secret_value(); a missed unwrap raises (TypeError at os.environ, at
+    # requests' urlencode and at json.dump), it does not send the mask.
+
     # HuggingFace
-    hf_token: str = ""
+    hf_token: SecretStr = SecretStr("")
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
@@ -149,8 +157,8 @@ class Settings(BaseSettings):
     # Teams Bot
     teams_tenant_id: str = ""
     teams_client_id: str = ""
-    teams_client_secret: str = ""
-    teams_refresh_token: str = ""
+    teams_client_secret: SecretStr = SecretStr("")
+    teams_refresh_token: SecretStr = SecretStr("")
     teams_poll_interval: int = 5
     teams_idle_poll_interval: int = 30        # outside business hours / weekends
     teams_business_hours_start_utc: int = 7   # fast polling from this UTC hour (inclusive), Mon-Fri...

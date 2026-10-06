@@ -27,7 +27,9 @@ class TokenRefresher:
                 print("Using refresh token from file")
         except (FileNotFoundError, KeyError, json.JSONDecodeError):
             if settings.teams_refresh_token:
-                self.refresh_token = settings.teams_refresh_token
+                # Unwrapped here, not stored as a SecretStr: self.refresh_token is
+                # POSTed to Azure and json.dump()ed to TOKEN_FILE, and both reject one.
+                self.refresh_token = settings.teams_refresh_token.get_secret_value()
                 print("Using refresh token from .env")
             else:
                 raise RuntimeError("No refresh token found. Set TEAMS_REFRESH_TOKEN in .env or run get_refresh_token.py")
@@ -66,7 +68,7 @@ class TokenRefresher:
     def _refresh_access_token(self):
         data = {
             "client_id": settings.teams_client_id,
-            "client_secret": settings.teams_client_secret,
+            "client_secret": settings.teams_client_secret.get_secret_value(),
             "refresh_token": self.refresh_token,
             "grant_type": "refresh_token",
             "scope": _SCOPE,
