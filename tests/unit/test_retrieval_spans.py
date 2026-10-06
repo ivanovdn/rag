@@ -690,3 +690,50 @@ def test_tool_acall_nests_retrieval_spans_under_parent_trace(monkeypatch, span_e
             f"{name} span started its own root trace instead of nesting under "
             "the agent's tool-call span"
         )
+
+
+def test_the_span_records_how_many_scores_the_backend_returned(monkeypatch, span_exporter):
+    """The gap between what was sent and what came back had nowhere to show.
+
+    reranker.candidates_in counts documents posted; reranker.results_out counts
+    what survives the [:top_n] trim. Between them sits the backend's own answer,
+    and nothing recorded it -- so when 12 of 61 eval questions came back with 5
+    sources against RERANKER_TOP_N=6, the trace could not say whether /v1/score
+    had returned fewer scores than documents or something downstream had dropped
+    one. Three documents in, two scores back, two out: the shortfall is the
+    backend's, and now it is visible.
+    """
+    monkeypatch.setattr(reranker_mod.settings, "reranker_backend", "vllm-score")
+    monkeypatch.setattr(reranker_mod.settings, "reranker_top_n", 6)
+    monkeypatch.setattr(
+        reranker_mod, "_call_score", lambda query, documents: [(0, 0.9), (2, 0.4)]
+    )
+
+    results = [{"text": f"doc{i}"} for i in range(3)]
+    output = reranker_mod.rerank("q", results)
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes["reranker.candidates_in"] == 3
+    assert span.attributes["reranker.scores_returned"] == 2
+    assert span.attributes["reranker.results_out"] == 2
+    assert len(output) == 2
+
+
+def test_scores_returned_is_absent_when_the_reranker_never_ran(monkeypatch, span_exporter):
+    """A fallback returns the original order unscored. Recording 0 there would
+    read as "the backend scored nothing", which is the opposite of what happened
+    -- reranker.fallback already carries that case."""
+    import httpx
+
+    monkeypatch.setattr(reranker_mod.settings, "reranker_backend", "vllm-score")
+
+    def boom(query, documents):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(reranker_mod, "_call_score", boom)
+
+    reranker_mod.rerank("q", [{"text": "doc0"}])
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes["reranker.fallback"] is True
+    assert "reranker.scores_returned" not in span.attributes
