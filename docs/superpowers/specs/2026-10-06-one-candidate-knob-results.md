@@ -204,6 +204,36 @@ handed in on a mount — which is why `unknown_env_keys()` takes text, not a pat
 
 ---
 
+### A NameError shipped in the eval harness
+
+Renaming `top_k` -> `candidates` in `main()` fixed two of three uses. The third
+sat in the agent tiers' metadata dict and raised `NameError: name 'top_k' is not
+defined` — after the banner printed, on a 61-question GPU run, past the version
+assertion that is supposed to be the cheap failure point.
+
+It shipped because the harness changed *after* the gate run, so nothing executed
+that path again, and because the test guarding the rename inspects `main()`'s AST
+rather than running it. `tests/unit/test_no_undefined_names.py` is the
+dependency-free net: for every top-level function in `eval/` and `scripts/`, the
+names it reads must be bound in its own subtree, at module level, or in builtins.
+Mutation-verified against the exact bug.
+
+Writing it surfaced the same class one level down — `out |= _bindings(s)` inside
+a nested helper rebinds `out` as a local of that helper, so the checker crashed
+with `UnboundLocalError` before it could check anything. `out.update(...)` does
+not rebind.
+
+### The `top_k` metadata key was recording the wrong number
+
+Worth knowing before comparing old experiments. Through experiment 8 it recorded
+`retrieval_top_k` (20) while retrieval used `reranker_candidates` (25);
+experiment 9 recorded 25, because `e3d5c1d` changed where it read from. The same
+field name therefore means two different quantities either side of that run. It
+is now `candidates`, which draws the line visibly rather than leaving a key that
+silently changed meaning.
+
+---
+
 ## Two things this write-up got wrong first
 
 **The threshold is the union, not the sum.** Follow-up #12 of the sparse results
