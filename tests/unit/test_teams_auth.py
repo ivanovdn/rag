@@ -271,3 +271,55 @@ def test_a_successful_refresh_rearms_the_notice(tmp_path, monkeypatch, capsys):
     refresher._refresh_access_token()
 
     assert "AADSTS7000222 is terminal" in capsys.readouterr().out
+
+
+# Measured 2026-10-06, 40 minutes after the expiry above: the first attempt at
+# recovery pasted the Secret ID. Azure shows it beside the Value, it is a GUID, and it
+# looks equally official. Both arrive as error="invalid_client".
+_WRONG_FIELD_BODY = json.dumps(
+    {
+        "error": "invalid_client",
+        "error_description": (
+            "AADSTS7000215: Invalid client secret provided. Ensure the secret being sent "
+            "in the request is the client secret value, not the client secret ID, for a "
+            "secret added to app '00000000-0000-0000-0000-000000000000'."
+        ),
+        "error_codes": [7000215],
+    }
+)
+
+
+def test_the_secret_id_mistake_is_named_rather_than_told_to_rotate_again(
+    tmp_path, monkeypatch, capsys
+):
+    """'Create a new client secret' is wrong advice for someone who just created one
+    and copied the field beside it -- and acting on it burns the Value a second time,
+    since Azure renders it once. The numeric code separates the two cases that the
+    `error` field alone cannot."""
+    refresher = _refresher_that_fails_with(_WRONG_FIELD_BODY, tmp_path, monkeypatch)
+
+    refresher._refresh_access_token()
+
+    out = capsys.readouterr().out
+    # " is terminal" is the announcement's own marker -- the raw AAD body printed
+    # above already contains the bare code, so matching that alone proves nothing.
+    assert "AADSTS7000215 is terminal" in out
+    assert "Secret ID" in out
+    assert "Create a new one in the Azure portal" not in out, (
+        "sent the reader back to create another secret for a copy-paste mistake"
+    )
+
+
+def test_a_second_distinct_terminal_code_is_still_announced(tmp_path, monkeypatch, capsys):
+    """The once-only guard is per code, not per process. Recovering from 7000222 by
+    pasting the wrong field is the exact sequence that happened on 2026-10-06, and
+    swallowing the second message would have left the operator with no signal at the
+    moment they most needed one."""
+    refresher = _refresher_that_fails_with(_EXPIRED_SECRET_BODY, tmp_path, monkeypatch)
+    refresher._refresh_access_token()
+    capsys.readouterr()
+
+    monkeypatch.setattr(auth.requests, "post", lambda *a, **k: _FailingResponse(_WRONG_FIELD_BODY))
+    refresher._refresh_access_token()
+
+    assert "AADSTS7000215 is terminal" in capsys.readouterr().out

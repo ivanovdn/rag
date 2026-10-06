@@ -39,6 +39,21 @@ _TERMINAL_AUTH_ERRORS = {
     ),
 }
 
+# Checked first, by numeric code, where `error` alone is too coarse. A secret that
+# expired and a secret that was never valid both arrive as invalid_client, and the
+# fixes differ: measured 2026-10-06, the first recovery attempt after the expiry pasted
+# the Secret ID, and "create a new client secret" is wrong advice for someone who just
+# created one and copied the field beside it — acting on it burns the Value a second
+# time, since Azure renders it once.
+_TERMINAL_AUTH_CODES = {
+    7000215: (
+        "TEAMS_CLIENT_SECRET does not hold a client secret. Azure shows a Value and a "
+        "Secret ID side by side when a secret is created; the Secret ID is a GUID and "
+        "is not the credential. Re-copy the Value — and if it is no longer displayed, "
+        "it cannot be recovered, so create another secret."
+    ),
+}
+
 
 class TokenRefresher:
     def __init__(self):
@@ -142,13 +157,19 @@ class TokenRefresher:
         """
         try:
             body = json.loads(getattr(getattr(exc, "response", None), "text", "") or "")
-            error = body.get("error", "")
-            action = _TERMINAL_AUTH_ERRORS.get(error)
-            if not action or self._terminal_auth_error == error:
-                return
             codes = body.get("error_codes") or []
+            error = body.get("error", "")
+            action = _TERMINAL_AUTH_CODES.get(codes[0] if codes else None) or (
+                _TERMINAL_AUTH_ERRORS.get(error)
+            )
             code = f"AADSTS{codes[0]}" if codes else error
-            self._terminal_auth_error = error
+            # Remembered by code rather than by `error`: recovering from an expired
+            # secret by pasting the wrong field is two distinct invalid_client failures
+            # in a row, and swallowing the second leaves no signal at the moment one is
+            # most wanted.
+            if not action or self._terminal_auth_error == code:
+                return
+            self._terminal_auth_error = code
             print(f"ERROR: {code} is terminal — retrying will not fix it. {action}")
         except (AttributeError, TypeError, ValueError):
             # Not JSON, or not the shape AAD documents (a proxy's HTML 502, say).
