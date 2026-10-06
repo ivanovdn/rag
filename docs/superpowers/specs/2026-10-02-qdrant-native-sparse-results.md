@@ -112,10 +112,10 @@ running before the delete, ungated by `BM25_ENABLED` because the write is ungate
 2. **Citation provenance.** Nothing verifies that cited chunks came from the
    retrieved set — carried from `2026-09-25-search-first-results.md` #1, still the
    largest correctness gap, still deserving its own spec and eval.
-3. **Four `Settings` fields should be `SecretStr`.** `monkeypatch.setattr`
+3. **Three `Settings` fields should be `SecretStr`.** `monkeypatch.setattr`
    interpolates `repr(target)` into its `AttributeError`, and `repr(settings)`
-   carries `hf_token` / `teams_client_secret` / `teams_refresh_token` /
-   `smtp_password` as plain `str`. No test typos a setting name today, so nothing
+   carries `hf_token` / `teams_client_secret` / `teams_refresh_token` as plain
+   `str`. Was four — `smtp_password` was deleted unused on 2026-10-06. No test typos a setting name today, so nothing
    leaks — but the suite is one typo from printing `.env` into CI output, and the
    branch added ~25 more instances of the pattern. One-line fix in `config.py`,
    repo-wide effect.
@@ -146,7 +146,8 @@ running before the delete, ungated by `BM25_ENABLED` because the write is ungate
     ad hoc. Carried from #7.
 11. **`render_escalation` does not HTML-escape** and interpolates a model-supplied
     reason. Pre-existing. Carried from #9.
-12. ~~**Prefetch limits ignore the caller's `top_k`**~~ — **DONE 2026-10-02**,
+12. ~~**Prefetch limits ignore the caller's `top_k`**~~ — **DONE 2026-10-06**
+    (`2026-10-06-one-candidate-knob-results.md`),
     and worse than recorded here. The threshold is not their *sum* but their
     *union*: production ran 20/20 against a fused limit of 25, so any query where
     the dense and sparse branches agreed on more than 15 documents returned fewer
