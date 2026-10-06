@@ -234,9 +234,16 @@ across 5 source files.
    nothing is being cut client-side. `_last_search_results` neither dedupes nor
    trims. On `vllm-score`, `_call_score` scores all 25 and takes `[:6]`, which
    should be deterministic. That leaves `/v1/score` returning fewer entries than
-   documents sent, and the span cannot currently show it: `reranker.candidates_in`
-   records what was sent, nothing records what came back before the trim. One
-   attribute would make it measurable.
+   documents sent.
+
+   **Instrumented 2026-10-06:** `reranker.scores_returned` now records what the
+   backend gave back, before the `[:top_n]` trim, between `candidates_in` (sent)
+   and `results_out` (kept). On `vllm-score` it should equal `candidates_in`.
+   The next eval run answers it: if a 5-source question shows
+   `scores_returned: 25`, the loss is downstream of the backend and in our code;
+   if it shows 24, vLLM scored fewer documents than it was posted. Set only on
+   the success path — a fallback returns the original order unscored, and a 0
+   there would read as "the backend scored nothing".
 2. **`RERANKER_MIN_SCORE` is undeclared in the deployed `.env`**, so the live
    relevance floor runs on the `config.py` default of 0.2. It gates every
    question. Declare it at the value you mean.

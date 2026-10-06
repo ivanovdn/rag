@@ -169,6 +169,18 @@ def _rerank_impl(
         else:
             scored = _call_rerank(formatted_query, documents, n)
 
+        # What the backend actually gave back, before the trim. Between
+        # reranker.candidates_in (documents posted) and reranker.results_out
+        # (survivors of [:n]) sat the backend's own answer, unrecorded -- so when
+        # 12 of 61 eval questions returned 5 sources against RERANKER_TOP_N=6,
+        # the trace could not say whether /v1/score had scored fewer documents
+        # than it was sent. On the vllm-score path this should equal
+        # candidates_in; on llama-server the server honours top_n, so it should
+        # equal min(candidates_in, n). Set only on the success path: a fallback
+        # returns the original order unscored, and a 0 there would read as "the
+        # backend scored nothing" rather than "the backend never answered".
+        span.set_attribute("reranker.scores_returned", len(scored))
+
         # Sort by score desc and trim to top_n (score endpoint preserves input order)
         scored.sort(key=lambda x: x[1], reverse=True)
         scored = scored[:n]
