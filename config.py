@@ -298,10 +298,19 @@ def _warn_about_orphans() -> None:
     as environment variables indistinguishable from PATH and HOSTNAME, so there
     is no set of "keys the operator meant as settings" left to compare against.
 
-    The check belongs where `.env` is edited, which is the host — run any script
-    from the repo root (ingest_all, test_query, run_eval, an eval container with
-    the source mounted) and it fires. Do not read the deployed bot's silence as
-    a clean .env; read the host's.
+    It therefore needs both a Python environment with the deps AND `.env` on
+    disk. A dev machine has both. `srv-agent-01` has neither in one place --
+    everything runs in Docker, so the host has no pydantic -- and there the file
+    has to be handed to a container explicitly:
+
+        docker compose -f docker-compose-remote.yml run --rm $EVAL \
+          -v /home/sa.ivanov/rag/.env:/tmp/env.check:ro \
+          --entrypoint python bot -c \
+          "from config import unknown_env_keys; \
+           print(unknown_env_keys(open('/tmp/env.check').read()) or 'clean')"
+
+    which is why unknown_env_keys() takes text rather than a path. Do not read
+    the deployed bot's silence as a clean .env -- it has never looked.
     """
     try:
         orphans = unknown_env_keys(Path(".env").read_text(encoding="utf-8"))
