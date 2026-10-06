@@ -259,21 +259,34 @@ across 5 source files.
 
 ## Follow-ups, in priority order
 
-1. **12 of 61 questions return 5 sources, not `RERANKER_TOP_N=6`.** Not the
-   relevance floor — 6-source rows keep rerank scores as low as 0.0071, so
-   nothing is being cut client-side. `_last_search_results` neither dedupes nor
-   trims. On `vllm-score`, `_call_score` scores all 25 and takes `[:6]`, which
-   should be deterministic. That leaves `/v1/score` returning fewer entries than
-   documents sent.
+1. ~~**12 of 61 questions return 5 sources, not `RERANKER_TOP_N=6`**~~ —
+   **ANSWERED 2026-10-06: nothing was wrong.** `eval/run_experiment.py` dedupes
+   `search_results` by `(doc_title, section, clause)` before writing the output,
+   and twelve questions had two of the reranked top-6 sharing that triple.
 
-   **Instrumented 2026-10-06:** `reranker.scores_returned` now records what the
-   backend gave back, before the `[:top_n]` trim, between `candidates_in` (sent)
-   and `results_out` (kept). On `vllm-score` it should equal `candidates_in`.
-   The next eval run answers it: if a 5-source question shows
-   `scores_returned: 25`, the loss is downstream of the backend and in our code;
-   if it shows 24, vLLM scored fewer documents than it was posted. Set only on
-   the success path — a fallback returns the original order unscored, and a 0
-   there would read as "the backend scored nothing".
+   The reranker was never involved: `reranker.results_out` reads 6 on all 61
+   spans of both experiments, and the probe run (experiment 10, 2026-10-06)
+   measured `candidates_in → scores_returned → results_out` at **25 → 25 → 6 for
+   every one of 61 questions**, zero fallbacks. Falsification holds too — no
+   exported row contains a duplicate key, which must be true if the dedup ran.
+
+   **Production is unaffected.** `format_sources` shows the agent all six; the
+   dedup is eval-only.
+
+   The key is also right rather than merely harmless: `evaluators._match_result`
+   reads `doc_title`, `section` and `clause` and never `clause_number`, so two
+   chunks of one clause are indistinguishable to every retrieval metric.
+   `search_results_before_dedup` now records the pre-dedup count so the output
+   says what it did to itself, guarded by a test that pins the key to
+   `_match_result`'s fields.
+
+   **Worth recording about the method, not the bug:** `reranker.results_out`
+   already answered this and had existed all along. The detour — inferring the
+   wrong reranker backend, then adding `reranker.scores_returned` — came from
+   reasoning about the code instead of reading the span that was already there.
+   The new attribute is still worth having, since it separates "the backend
+   returned fewer" from "we trimmed", but it did not find this.
+
 2. **`RERANKER_MIN_SCORE` is undeclared in the deployed `.env`**, so the live
    relevance floor runs on the `config.py` default of 0.2. It gates every
    question. Declare it at the value you mean.
