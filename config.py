@@ -260,6 +260,15 @@ class Settings(BaseSettings):
     # The cost is that deleting a field silently demotes its .env key to
     # decoration. MIN_CONFIDENCE_SCORE, RERANKER_QUERY_TEMPLATE, BM25_AVG_LEN and
     # RETRIEVAL_TOP_K each survived that way long enough to be tuned by hand.
+    #
+    # The case that settles it: PIPELINE_MODE sat in the deployed .env for 109
+    # days after its field was deleted (73bb90a, 2026-06-19), found by the first
+    # run of the check below on 2026-10-06. The removal spec had listed the .env
+    # line explicitly and reasoned "a leftover env line is harmless -- but we
+    # remove it anyway to keep config honest". Knowing was never the problem. The
+    # .env is untracked and lives on a host no commit reaches, so the one step
+    # that mattered was the one nothing could verify.
+    #
     # unknown_env_keys() below is the counterweight: ignore the key, name it once.
     model_config = {
         "env_file": ".env",
