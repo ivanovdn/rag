@@ -1,4 +1,6 @@
 import logging
+import os
+from collections.abc import Callable, Mapping
 from functools import lru_cache
 from pathlib import Path
 
@@ -107,6 +109,19 @@ class Settings(BaseSettings):
     # Reranker (any /v1/rerank-compatible server: llama-server, vLLM, etc.)
     reranker_enabled: bool = False
     reranker_backend: str = "llama-server"  # "llama-server" or "vllm"
+
+    @property
+    def reranker_uses_chat_template(self) -> bool:
+        """Whether the backend builds the Qwen3 chat template in code.
+
+        True for `vllm` and `vllm-score`, which wrap both the query and each
+        document themselves and therefore never read `reranker_query_template`
+        -- `reranker_instruction` is the knob that reaches them. `llama-server`
+        takes the simple template instead. Defined here rather than in
+        rag/reranker.py because `_INERT_WHEN` below has to ask the same question
+        and config cannot import rag.
+        """
+        return self.reranker_backend in {"vllm", "vllm-score"}
     reranker_url: str = "http://localhost:8081"
     reranker_model: str = "qwen3-reranker-0.6b-q8"
     reranker_query_template: str = "<Instruct>: {instruction}\n<Query>: {query}"
@@ -330,6 +345,92 @@ def unknown_env_keys(env_text: str) -> list[str]:
     return orphans
 
 
+# Settings that exist, are read by real code, and are read only on a branch this
+# deployment does not take. The third shape of dead config, after the field
+# nothing reads and the .env key matching no field -- and the one neither of
+# those catches, because nothing here is wrong except the pairing of a value
+# with a configuration. Four have been found by hand so far; this is the table
+# that finds the fifth.
+#
+# WRITE-TIME settings are deliberately absent. BM25_AVG_LEN is inert at query
+# time and live during ingest, so its inertness is a property of which process
+# is running rather than of the configuration, and a warning that fires wrongly
+# during an ingest is worse than no warning at all.
+_INERT_WHEN: tuple[tuple[str, Callable[["Settings"], bool], str], ...] = (
+    (
+        "RERANKER_QUERY_TEMPLATE",
+        lambda s: s.reranker_uses_chat_template,
+        "it is read only on the llama-server backend, and this one builds a "
+        "Qwen3 chat template in code. RERANKER_INSTRUCTION is the knob that "
+        "applies here.",
+    ),
+    (
+        "MIN_CONFIDENCE_SCORE",
+        lambda s: not s.cosine_floor_applies,
+        "it is a cosine threshold, and the top score is not a cosine similarity "
+        "with the reranker or BM25 on. RERANKER_MIN_SCORE is the live floor.",
+    ),
+)
+
+
+def inert_env_keys(
+    settings: "Settings",
+    env_text: str = "",
+    environ: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Keys the operator has set that do nothing on `settings`, each with why.
+
+    Two sources, because the two deployments differ and checking either alone is
+    blind in the other. On a dev host pydantic-settings reads `.env` itself and
+    the keys never reach os.environ; in the container `.env` does not exist at
+    all and compose's `env_file:` has already injected them as real environment
+    variables.
+
+    This one works inside the container, where unknown_env_keys() structurally
+    cannot. That docstring is right that there is no set of "keys the operator
+    meant as settings" to enumerate there -- they arrive indistinguishable from
+    PATH. The difference is that this never enumerates: it asks after a fixed,
+    short list of keys by name, and nothing outside this project sets any of
+    them.
+
+    Takes `settings` rather than reading the global so a test can ask about a
+    configuration the machine is not running, and `env_text` rather than a path
+    for the same reason unknown_env_keys() does -- the real .env holds live
+    secrets.
+    """
+    environ = os.environ if environ is None else environ
+
+    set_in_file = set()
+    for line in env_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        set_in_file.add(line.split("=", 1)[0].strip().upper())
+
+    reports = []
+    for key, is_inert, why in _INERT_WHEN:
+        if key not in set_in_file and key not in environ:
+            continue
+        if is_inert(settings):
+            reports.append(f"{key} is set but does nothing here: {why}")
+    return reports
+
+
+def _warn_about_inert(settings: "Settings") -> None:
+    """Name set-but-inert settings once per process.
+
+    NOT host-side only, unlike _warn_about_orphans -- reading `.env` covers the
+    dev host and os.environ covers the container, and the deployed bot is the
+    place these keys actually cost something.
+    """
+    try:
+        env_text = Path(".env").read_text(encoding="utf-8")
+    except OSError:
+        env_text = ""
+    for report in inert_env_keys(settings, env_text):
+        logger.warning("%s", report)
+
+
 def _warn_about_orphans() -> None:
     """Name dead .env keys once per process. See the model_config comment.
 
@@ -371,6 +472,7 @@ def get_settings() -> Settings:
     """Cached, so the orphan warning is emitted once per process, not per lookup."""
     settings = Settings()
     _warn_about_orphans()
+    _warn_about_inert(settings)
     return settings
 
 

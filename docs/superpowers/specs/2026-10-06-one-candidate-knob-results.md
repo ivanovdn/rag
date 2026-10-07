@@ -354,21 +354,49 @@ across 5 source files.
    guard is an AST check in the shape of `test_no_undefined_names.py`: every
    `settings.<secret>` read is unwrapped or is the bare test of an `if`.
    Mutation-tested — removing the unwrap fails it by file and line.
-5. **Delete `compliance_policies`** once v2 is trusted. Carried from `2026-10-02`
-   #1; it remains the rollback.
-6. **`scripts/test_query.py` has no sparse preflight.** Carried from `2026-10-02`
-   #4. It is also the entry point that would actually exercise
-   `min_confidence_score`, which is now the only reason that setting is kept.
-7. **Extract `cosine_floor_applies()`.** The predicate
-   `not reranker_enabled and not bm25_enabled` is in three places since the eval
-   metadata mirrors shrank by one. Carried from `2026-10-02` #6.
-8. **`RERANKER_QUERY_TEMPLATE` is set in the deployed `.env` but inert** on the
-   `vllm-score` backend, where `RERANKER_INSTRUCTION` applies instead. Not an
-   orphan — the field exists — so `unknown_env_keys()` cannot catch it. The
-   family's remaining shape: a setting that is read, but only on a configuration
-   you do not run.
+5. **Delete `compliance_policies` on or after 2026-11-01**, provided no rollback
+   has been needed by then. Carried from `2026-10-02` #1, where the condition was
+   "once v2 is trusted" — which has no resolution, which is why it is still open.
+   A date has one. Until then it is the rollback: restore the two `.env` values
+   (`QDRANT_COLLECTION`, `BM25_ENABLED`) and redeploy. Deleting it costs disk on a
+   host this project does not own and buys nothing else, so the only reason to
+   hurry is if that host is short of space.
+6. ~~**`scripts/test_query.py` has no sparse preflight**~~ — **DONE 2026-10-07.**
+   Carried from `2026-10-02` #4. It was the last query entry point without one,
+   and the one a person reaches for when working out what is wrong: the error is
+   non-transient, so prefetch handed it a bare Qdrant traceback. Gated on a query
+   actually being requested, so `--help` stays offline.
+7. ~~**Extract `cosine_floor_applies()`**~~ — **DONE 2026-10-07.** Four places,
+   not three: the guard in `search_policies` and three eval metadata mirrors
+   (`run_eval` once, `run_experiment` twice). Now `Settings.cosine_floor_applies`,
+   with a source check pinning that nothing re-derives it inline. Carried from
+   `2026-10-02` #6.
+8. ~~**`RERANKER_QUERY_TEMPLATE` is set in the deployed `.env` but inert**~~ —
+   **DONE 2026-10-07**, as a detector rather than one deleted line, because this
+   is the fourth member of the family and there was nothing that would find a
+   fifth. `config.inert_env_keys()` holds a table of (key, when-it-is-inert, which
+   knob applies instead) and reports at startup beside the orphan warning.
+
+   It fires where `unknown_env_keys()` structurally cannot — inside the container.
+   That docstring is right that there is no set of "keys the operator meant as
+   settings" to enumerate there; the difference is that this never enumerates. It
+   asks after two keys by name, and checks both `.env` and `os.environ` because
+   the dev host has the file and the container has the variables.
+
+   Write-time settings are deliberately excluded: `BM25_AVG_LEN` is inert at query
+   time and live during ingest, so a warning would fire wrongly in `ingest_all.py`.
+
+   Extracting the backend predicate onto `Settings` turned up an unrelated hole —
+   nothing tested the reranker's wire format at all, and reverting `vllm-score` to
+   the llama-server path left the suite green while silently sending an unwrapped
+   query to a model that requires the chat template. `tests/unit/test_reranker_wire_format.py`
+   now pins it.
 9. **`PHOENIX_ENDPOINT` in the deployed `.env` points at `localhost`** and is
    overridden by compose. Harmless, and a line that states something untrue.
+   No code change available or wanted: `config.py`'s default is already that
+   value and compose overrides it regardless, so the line can simply be commented
+   out on the VM. Left open because it is a one-line edit on `srv-agent-01`,
+   not in this repo.
 10. **The model cites the wrong retrieved chunk.** Three of the 61 answers in the
     2026-10-06 probe named the wrong document, and all three named something that
     *was* retrieved — selection, not hallucination, and the check closed in #3
