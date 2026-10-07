@@ -937,7 +937,19 @@ class TeamsBot:
         if not my_user_id:
             return
 
-        url = f"{GRAPH_API}/me/chats?$top={_CHATS_PAGE_SIZE}"
+        # $expand carries each chat's newest message inline, which is what lets the
+        # per-chat fetch below be skipped; $orderby puts the recently active chats
+        # on page 1, so a chat list truncated by the page cap keeps the ones that
+        # matter. Verified together against live Graph (scripts/probe_graph_preview.py,
+        # 2026-10-07: HTTP 200 in 400 ms, every preview carrying id and
+        # createdDateTime) — the docs do not promise the three combine. requests
+        # percent-encodes the space in "desc".
+        url = (
+            f"{GRAPH_API}/me/chats"
+            f"?$expand=lastMessagePreview"
+            f"&$orderby=lastMessagePreview/createdDateTime desc"
+            f"&$top={_CHATS_PAGE_SIZE}"
+        )
         chats, fully_synced = self._get_all_pages(url)
         # Remembered past this point (fully_synced gets overwritten below) so the
         # force-advance warning can say WHICH kind of incompleteness this cycle
@@ -960,6 +972,29 @@ class TeamsBot:
                 continue
             chat_id = chat.get("id")
             if not chat_id:
+                continue
+
+            # The chat list already told us this chat's newest message. If it is one
+            # we have handled, the per-chat fetch can only return what we have seen —
+            # skip it. This is what stops Graph volume scaling with headcount: 13
+            # chats on 2026-10-07, one of them active that day, so 12 of 13 calls per
+            # cycle were asking dormant chats whether anything had changed.
+            #
+            # Three things this must NOT do, each of which loses a question:
+            #   - key on the bare message id. processed_messages holds
+            #     _message_key(chat_id, id); Graph ids are unique only within a chat
+            #     and are millisecond epochs, so two chats collide routinely.
+            #   - skip because the preview's sender is the bot. The worker answers
+            #     asynchronously, so a user's next question can sit UNDER the bot's
+            #     newer reply.
+            #   - `break` instead of `continue`. $orderby makes the list descend by
+            #     activity, but a chat whose fetch failed on an earlier cycle can hold
+            #     an older unprocessed message below chats that are fully handled.
+            #
+            # A missing or malformed preview falls through to the fetch: absence of
+            # evidence is not evidence the chat is quiet.
+            preview_id = safe_get_nested(chat, "lastMessagePreview", "id")
+            if preview_id and _message_key(chat_id, preview_id) in self.processed_messages:
                 continue
 
             messages, chat_complete = self._get_chat_messages(chat_id)
