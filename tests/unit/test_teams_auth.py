@@ -131,3 +131,195 @@ def test_refresh_token_file_is_written_atomically(tmp_path, monkeypatch):
     assert pathlib.Path(replaced["src"]).parent == token_file.parent, \
         "the temp file must share a directory with the target, or the rename is not atomic"
     assert json.loads(token_file.read_text())["refresh_token"] == "fake-refresh-token"
+
+
+# --- terminal credential failures ---------------------------------------------------
+#
+# 2026-10-06: the app registration's client secret expired. The one line that said so
+# (AADSTS7000222) was reprinted every 30s between a 401 per poll cycle, and reading the
+# log meant scrolling past dozens of identical "401 Client Error" lines to find it.
+# Retrying cannot fix either of these; a human has to act, and the two need DIFFERENT
+# actions, so each names its own.
+
+
+class _FailingResponse:
+    """A requests Response whose raise_for_status() fails the way AAD's does."""
+
+    def __init__(self, body):
+        self.text = body
+
+    def raise_for_status(self):
+        err = auth.requests.exceptions.HTTPError("401 Client Error: Unauthorized")
+        err.response = self
+        raise err
+
+
+# Trimmed from the real 2026-10-06 response. The app id is a placeholder: baking this
+# deployment's identifiers into the suite would make the test environment-specific for
+# no gain.
+_EXPIRED_SECRET_BODY = json.dumps(
+    {
+        "error": "invalid_client",
+        "error_description": (
+            "AADSTS7000222: The provided client secret keys for app "
+            "'00000000-0000-0000-0000-000000000000' are expired. Visit the Azure portal "
+            "to create new keys for your app: https://aka.ms/NewClientSecret"
+        ),
+        "error_codes": [7000222],
+    }
+)
+
+_DEAD_REFRESH_TOKEN_BODY = json.dumps(
+    {
+        "error": "invalid_grant",
+        "error_description": "AADSTS700082: The refresh token has expired due to inactivity.",
+        "error_codes": [700082],
+    }
+)
+
+
+def _refresher_that_fails_with(body, tmp_path, monkeypatch):
+    token_file = tmp_path / "refresh_token.json"
+    token_file.write_text(json.dumps({"refresh_token": "seed"}))
+    monkeypatch.setattr(auth, "TOKEN_FILE", token_file)
+    refresher = auth.TokenRefresher()
+    monkeypatch.setattr(auth.requests, "post", lambda *a, **k: _FailingResponse(body))
+    return refresher
+
+
+def test_an_expired_client_secret_says_so_and_says_what_to_do(tmp_path, monkeypatch, capsys):
+    refresher = _refresher_that_fails_with(_EXPIRED_SECRET_BODY, tmp_path, monkeypatch)
+
+    refresher._refresh_access_token()
+
+    out = capsys.readouterr().out
+    assert "AADSTS7000222" in out
+    assert "TEAMS_CLIENT_SECRET" in out
+    # The action, not just the diagnosis: a reader who has never seen this must not
+    # have to work out that the fix lives in the Azure portal.
+    assert "Certificates & secrets" in out
+
+
+def test_a_dead_refresh_token_points_at_the_device_code_recovery(tmp_path, monkeypatch, capsys):
+    """The other terminal credential failure, and it needs the OPPOSITE action --
+    a new client secret does nothing for a revoked refresh token. Naming only one
+    of the two would send the next reader to the portal for the wrong thing."""
+    refresher = _refresher_that_fails_with(_DEAD_REFRESH_TOKEN_BODY, tmp_path, monkeypatch)
+
+    refresher._refresh_access_token()
+
+    out = capsys.readouterr().out
+    assert "scripts/get_refresh_token.py" in out
+    assert "Certificates & secrets" not in out, "pointed at the client-secret fix instead"
+
+
+def test_the_terminal_notice_is_printed_once_not_every_retry(tmp_path, monkeypatch, capsys):
+    """Printing it per attempt would recreate the wall it exists to replace -- at a
+    30s cooldown that is 120 copies an hour."""
+    refresher = _refresher_that_fails_with(_EXPIRED_SECRET_BODY, tmp_path, monkeypatch)
+
+    for _ in range(5):
+        refresher._refresh_access_token()
+
+    assert capsys.readouterr().out.count("AADSTS7000222 is terminal") == 1
+
+
+def test_a_transient_failure_is_not_announced_as_terminal(tmp_path, monkeypatch, capsys):
+    """An AAD blip or a 5xx must not tell the operator to go rotate a working
+    credential. Crying wolf here is worse than silence: the recovery it names costs
+    an interactive sign-in and invalidates the live token."""
+    body = json.dumps({"error": "temporarily_unavailable", "error_codes": [50196]})
+    refresher = _refresher_that_fails_with(body, tmp_path, monkeypatch)
+
+    refresher._refresh_access_token()
+
+    out = capsys.readouterr().out
+    assert "terminal" not in out
+    assert "Error refreshing token" in out, "the ordinary failure log must still happen"
+
+
+def test_a_non_json_error_body_does_not_crash_the_refresh(tmp_path, monkeypatch, capsys):
+    """A proxy or gateway in front of AAD returns HTML, not JSON. The refresh path
+    runs under the auth lock held by the poll thread -- an exception escaping here
+    would take down polling, which is strictly worse than the failure it describes."""
+    refresher = _refresher_that_fails_with("<html>502 Bad Gateway</html>", tmp_path, monkeypatch)
+
+    assert refresher._refresh_access_token() is None
+    assert "Error refreshing token" in capsys.readouterr().out
+
+
+def test_a_successful_refresh_rearms_the_notice(tmp_path, monkeypatch, capsys):
+    """Once-per-process, not once-ever: a secret rotated in Azure while the bot runs
+    would otherwise silence the signal for the next, different failure."""
+    refresher = _refresher_that_fails_with(_EXPIRED_SECRET_BODY, tmp_path, monkeypatch)
+    refresher._refresh_access_token()
+
+    class _Ok:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "tok", "expires_in": 3600}
+
+    monkeypatch.setattr(auth.requests, "post", lambda *a, **k: _Ok())
+    refresher._refresh_access_token()
+
+    monkeypatch.setattr(
+        auth.requests, "post", lambda *a, **k: _FailingResponse(_EXPIRED_SECRET_BODY)
+    )
+    capsys.readouterr()
+    refresher._refresh_access_token()
+
+    assert "AADSTS7000222 is terminal" in capsys.readouterr().out
+
+
+# Measured 2026-10-06, 40 minutes after the expiry above: the first attempt at
+# recovery pasted the Secret ID. Azure shows it beside the Value, it is a GUID, and it
+# looks equally official. Both arrive as error="invalid_client".
+_WRONG_FIELD_BODY = json.dumps(
+    {
+        "error": "invalid_client",
+        "error_description": (
+            "AADSTS7000215: Invalid client secret provided. Ensure the secret being sent "
+            "in the request is the client secret value, not the client secret ID, for a "
+            "secret added to app '00000000-0000-0000-0000-000000000000'."
+        ),
+        "error_codes": [7000215],
+    }
+)
+
+
+def test_the_secret_id_mistake_is_named_rather_than_told_to_rotate_again(
+    tmp_path, monkeypatch, capsys
+):
+    """'Create a new client secret' is wrong advice for someone who just created one
+    and copied the field beside it -- and acting on it burns the Value a second time,
+    since Azure renders it once. The numeric code separates the two cases that the
+    `error` field alone cannot."""
+    refresher = _refresher_that_fails_with(_WRONG_FIELD_BODY, tmp_path, monkeypatch)
+
+    refresher._refresh_access_token()
+
+    out = capsys.readouterr().out
+    # " is terminal" is the announcement's own marker -- the raw AAD body printed
+    # above already contains the bare code, so matching that alone proves nothing.
+    assert "AADSTS7000215 is terminal" in out
+    assert "Secret ID" in out
+    assert "Create a new one in the Azure portal" not in out, (
+        "sent the reader back to create another secret for a copy-paste mistake"
+    )
+
+
+def test_a_second_distinct_terminal_code_is_still_announced(tmp_path, monkeypatch, capsys):
+    """The once-only guard is per code, not per process. Recovering from 7000222 by
+    pasting the wrong field is the exact sequence that happened on 2026-10-06, and
+    swallowing the second message would have left the operator with no signal at the
+    moment they most needed one."""
+    refresher = _refresher_that_fails_with(_EXPIRED_SECRET_BODY, tmp_path, monkeypatch)
+    refresher._refresh_access_token()
+    capsys.readouterr()
+
+    monkeypatch.setattr(auth.requests, "post", lambda *a, **k: _FailingResponse(_WRONG_FIELD_BODY))
+    refresher._refresh_access_token()
+
+    assert "AADSTS7000215 is terminal" in capsys.readouterr().out

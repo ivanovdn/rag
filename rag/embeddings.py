@@ -13,7 +13,7 @@ def _get_huggingface_model():
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
     if settings.hf_token:
-        os.environ["HF_TOKEN"] = settings.hf_token
+        os.environ["HF_TOKEN"] = settings.hf_token.get_secret_value()
     return HuggingFaceEmbedding(
         model_name=settings.embedding_model,
         trust_remote_code=True,

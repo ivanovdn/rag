@@ -16,6 +16,44 @@ _TOKEN_REFRESH_BUFFER = 300  # seconds before expiry to refresh
 _TOKEN_REFRESH_COOLDOWN = 30  # seconds to wait before retrying a refresh that failed
 TOKEN_FILE = Path("channels/teams/data/refresh_token.json")
 
+# AAD failures that no amount of retrying will fix, keyed by the OAuth `error` field.
+# Both produce the same symptom as a transient outage — a 401 per poll cycle — and on
+# 2026-10-06 an expired client secret cost an afternoon because the one line that said
+# so scrolled past between them, reprinted every 30s. The two need OPPOSITE actions, so
+# each names its own: rotating a secret does nothing for a revoked refresh token, and
+# the device-code flow invalidates the live token for nothing if the secret is the
+# problem. Anything not listed here is treated as transient and retried silently —
+# telling an operator to rotate a working credential is worse than saying nothing.
+_TERMINAL_AUTH_ERRORS = {
+    "invalid_client": (
+        "The app registration's client secret (TEAMS_CLIENT_SECRET) is expired or wrong. "
+        "Create a new one in the Azure portal under App registrations -> the app -> "
+        "Certificates & secrets -> New client secret, copy its Value (not the Secret ID) "
+        "into .env, then recreate the container with 'docker compose up -d' — 'restart' "
+        "reuses the environment the container was created with."
+    ),
+    "invalid_grant": (
+        "The refresh token is expired or revoked; a new client secret will not help. "
+        "Recover with an interactive device-code sign-in: "
+        "PYTHONPATH=. python scripts/get_refresh_token.py (SETUP.md Step 10)."
+    ),
+}
+
+# Checked first, by numeric code, where `error` alone is too coarse. A secret that
+# expired and a secret that was never valid both arrive as invalid_client, and the
+# fixes differ: measured 2026-10-06, the first recovery attempt after the expiry pasted
+# the Secret ID, and "create a new client secret" is wrong advice for someone who just
+# created one and copied the field beside it — acting on it burns the Value a second
+# time, since Azure renders it once.
+_TERMINAL_AUTH_CODES = {
+    7000215: (
+        "TEAMS_CLIENT_SECRET does not hold a client secret. Azure shows a Value and a "
+        "Secret ID side by side when a secret is created; the Secret ID is a GUID and "
+        "is not the credential. Re-copy the Value — and if it is no longer displayed, "
+        "it cannot be recovered, so create another secret."
+    ),
+}
+
 
 class TokenRefresher:
     def __init__(self):
@@ -27,7 +65,9 @@ class TokenRefresher:
                 print("Using refresh token from file")
         except (FileNotFoundError, KeyError, json.JSONDecodeError):
             if settings.teams_refresh_token:
-                self.refresh_token = settings.teams_refresh_token
+                # Unwrapped here, not stored as a SecretStr: self.refresh_token is
+                # POSTed to Azure and json.dump()ed to TOKEN_FILE, and both reject one.
+                self.refresh_token = settings.teams_refresh_token.get_secret_value()
                 print("Using refresh token from .env")
             else:
                 raise RuntimeError("No refresh token found. Set TEAMS_REFRESH_TOKEN in .env or run get_refresh_token.py")
@@ -35,6 +75,8 @@ class TokenRefresher:
         self.token_expires_at = None
         # Set after a failed refresh; blocks further attempts until it passes.
         self._retry_refresh_after = None
+        # The terminal error already announced, so it is said once rather than per retry.
+        self._terminal_auth_error = None
         # Both the poll thread and the RAG worker call get_access_token().
         self._lock = threading.Lock()
 
@@ -66,7 +108,7 @@ class TokenRefresher:
     def _refresh_access_token(self):
         data = {
             "client_id": settings.teams_client_id,
-            "client_secret": settings.teams_client_secret,
+            "client_secret": settings.teams_client_secret.get_secret_value(),
             "refresh_token": self.refresh_token,
             "grant_type": "refresh_token",
             "scope": _SCOPE,
@@ -83,6 +125,7 @@ class TokenRefresher:
             expires_in = token_data.get("expires_in", 3600)
             self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
             self._retry_refresh_after = None
+            self._terminal_auth_error = None
 
             if "refresh_token" in token_data:
                 self.refresh_token = token_data["refresh_token"]
@@ -96,12 +139,42 @@ class TokenRefresher:
             print(f"Error refreshing token: {e}")
             if hasattr(e, "response") and hasattr(e.response, "text"):
                 print(f"Response: {e.response.text}")
+            self._report_terminal_auth_error(e)
             # Cool off. Without this the token stays "expired", so every _get_headers()
             # on every Graph call retries the refresh under the lock at ~10s a time —
             # at 30 chats that is minutes of poll-thread stall per cycle during an AAD
             # outage. A dead credential is now retried every 30s instead.
             self._retry_refresh_after = datetime.now(timezone.utc) + timedelta(seconds=_TOKEN_REFRESH_COOLDOWN)
             return None
+
+    def _report_terminal_auth_error(self, exc):
+        """Name a credential failure retrying cannot fix, once per occurrence.
+
+        Runs inside the except block of _refresh_access_token, which the poll thread
+        reaches holding self._lock — so this swallows everything. An exception escaping
+        here would stop polling altogether, which is strictly worse than the failure it
+        is describing.
+        """
+        try:
+            body = json.loads(getattr(getattr(exc, "response", None), "text", "") or "")
+            codes = body.get("error_codes") or []
+            error = body.get("error", "")
+            action = _TERMINAL_AUTH_CODES.get(codes[0] if codes else None) or (
+                _TERMINAL_AUTH_ERRORS.get(error)
+            )
+            code = f"AADSTS{codes[0]}" if codes else error
+            # Remembered by code rather than by `error`: recovering from an expired
+            # secret by pasting the wrong field is two distinct invalid_client failures
+            # in a row, and swallowing the second leaves no signal at the moment one is
+            # most wanted.
+            if not action or self._terminal_auth_error == code:
+                return
+            self._terminal_auth_error = code
+            print(f"ERROR: {code} is terminal — retrying will not fix it. {action}")
+        except (AttributeError, TypeError, ValueError):
+            # Not JSON, or not the shape AAD documents (a proxy's HTML 502, say).
+            # The raw body is already printed above; nothing further to add.
+            return
 
     def get_access_token(self):
         """Get access token, refreshing only if expired.

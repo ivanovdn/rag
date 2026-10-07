@@ -197,6 +197,30 @@ TEAMS_CLIENT_SECRET=...
 TEAMS_REFRESH_TOKEN=...
 ```
 
+#### `TEAMS_CLIENT_SECRET` — it expires, and nothing warns you
+
+It comes from the Azure app registration: **App registrations → the app → Certificates
+& secrets → Client secrets → New client secret**. Copy the **Value** column the moment
+it appears — it is rendered once, and the **Secret ID** beside it is a different thing.
+`TEAMS_CLIENT_ID` and `TEAMS_TENANT_ID` are on the app's Overview page.
+
+The dialog defaults to a **6-month** lifetime. Prefer 24 months: it is the same amount
+of work and four times the runway.
+
+A secret's expiry is knowable the day it is created, but it lives only in the portal —
+`.env` holds the value and nothing about its lifetime, and the app cannot read its own
+registration without `Application.Read.All`, which it should not have for this. So
+**write the date in `.env.example` next to the key** when you rotate. That comment is
+the only place in this repo the date can live.
+
+When it does expire, the bot logs `AADSTS7000222 is terminal — retrying will not fix
+it` once, then keeps polling and failing with a 401 per cycle. Create a new secret, put
+it in `.env`, and recreate the container — `docker compose -f docker-compose-remote.yml
+up -d`, **not** `restart`, which reuses the environment the container was created with
+and would come back on the dead secret.
+
+#### `TEAMS_REFRESH_TOKEN`
+
 The refresh token is obtained via the device-code flow: `PYTHONPATH=. python scripts/get_refresh_token.py` (run from the repo root; sign in with the bot's Teams account when prompted). The bot then rotates and persists the token to `channels/teams/data/refresh_token.json` on every use.
 
 This same command is also the **recovery** procedure if `channels/teams/data/refresh_token.json` is ever lost or corrupted — not just a one-time setup step. Azure invalidates a refresh token as soon as it is used, so the `TEAMS_REFRESH_TOKEN` seed in `.env` is superseded after the bot's very first refresh; restoring an old copy of the token file does not work either, since that copy has already been rotated past too. Re-running the script and signing in again is the only way back.

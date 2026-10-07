@@ -34,8 +34,10 @@ def test_ollama_num_ctx_default_is_below_crash_threshold():
     # upstream crash matrix proved only 4096 safe; this guard fails the
     # suite if the default is ever raised back past that boundary.
     # Bind to a local first (not `assert settings.ollama_num_ctx < 8192`
-    # directly) so a failure's pytest introspection never prints the
-    # Settings repr, which carries live secrets (hf_token, smtp_password, …).
+    # directly) so a failure's pytest introspection never reprs the whole
+    # Settings object. Its three credentials are SecretStr and mask themselves
+    # now (tests/unit/test_secrets_are_masked.py); this stays as the habit that
+    # covers the next sensitive field someone adds as a plain str.
     value = settings.ollama_num_ctx
     assert value < 8192
 
@@ -55,8 +57,8 @@ def test_openai_like_disables_thinking(monkeypatch):
     # Proves the timeout fix landed: OpenAILike has no `request_timeout`
     # field and silently drops it, leaving the SDK's 60s default.
     # Bind first: `settings` is never a bare name inside an assert line in
-    # this file, since pytest's assertion introspection would repr the
-    # whole Settings object (hf_token et al.) into the failure message.
+    # this file. See tests/unit/test_secrets_are_masked.py for why, and for
+    # what enforces it at the type level.
     request_timeout = float(settings.active_request_timeout)
     assert llm.timeout == request_timeout
 
@@ -151,9 +153,8 @@ def test_the_dead_agent_settings_are_gone():
     ReActAgent has such a field. escalation_ticket_prefix had exactly one
     consumer, the deleted escalate tool."""
     # Bind first: `settings` as a bare hasattr() argument gets reprd by
-    # pytest's assertion introspection on failure, dumping the whole
-    # Settings object (hf_token is its first field, and -vv disables the
-    # truncation that would otherwise hide it).
+    # pytest's assertion introspection on failure. See
+    # tests/unit/test_secrets_are_masked.py.
     has_iterations = hasattr(settings, "agent_max_iterations")
     has_prefix = hasattr(settings, "escalation_ticket_prefix")
     assert not has_iterations

@@ -308,9 +308,27 @@ across 5 source files.
 3. **Citation provenance.** Nothing verifies cited chunks came from the retrieved
    set. Carried from `2026-09-25-search-first-results.md` #1 and
    `2026-10-02` #2 — still the largest correctness gap.
-4. **Three `Settings` fields should be `SecretStr`** — `hf_token`,
-   `teams_client_secret`, `teams_refresh_token`. Was four; `smtp_password` is
-   gone. One-line fix, repo-wide effect.
+4. ~~**Three `Settings` fields should be `SecretStr`**~~ — **DONE 2026-10-06**
+   (`fix/secrets-as-secretstr`). `hf_token`, `teams_client_secret` and
+   `teams_refresh_token` now mask themselves in both `repr()` and `str()`, so
+   the convention that kept `settings` off assert lines — three comments in
+   `tests/unit/test_llm_config.py`, enforced by nothing — became a property of
+   the type. Measured after the change: all three load from the real `.env`,
+   none appears in `repr(settings) + str(settings)`.
+
+   Two things checked rather than assumed. `bool(SecretStr(""))` is `False` on
+   pydantic 2.12.5 (it defines `__len__`), so the truthiness guards at
+   `rag/embeddings.py:15` and `channels/teams/auth.py:29` keep working — had it
+   been truthy, an unset refresh token would have silently seeded `""` instead
+   of raising `No refresh token found`. And a missed `.get_secret_value()`
+   raises rather than sending the mask: `TypeError` at `os.environ`, at
+   `requests`' urlencode, and at `json.dump`.
+
+   The call site with no behavioural cover is `rag/embeddings.py` (it only runs
+   on `EMBEDDING_SOURCE=huggingface`, which production does not use), so the
+   guard is an AST check in the shape of `test_no_undefined_names.py`: every
+   `settings.<secret>` read is unwrapped or is the bare test of an `if`.
+   Mutation-tested — removing the unwrap fails it by file and line.
 5. **Delete `compliance_policies`** once v2 is trusted. Carried from `2026-10-02`
    #1; it remains the rollback.
 6. **`scripts/test_query.py` has no sparse preflight.** Carried from `2026-10-02`
