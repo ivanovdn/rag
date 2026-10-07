@@ -693,3 +693,170 @@ def test_eviction_still_runs_on_a_normal_synced_cycle(monkeypatch, pbot):
     pbot.process_new_messages()
 
     assert len(pbot.processed_messages) < 10
+
+
+# --- Task 5: skip chats whose newest message is already processed ----------------
+#
+# Verified against live Graph on 2026-10-07 with scripts/probe_graph_preview.py
+# before any of this was written: $expand + $orderby + $top=50 combine on one
+# request (HTTP 200 in 400 ms), and every preview carried id, createdDateTime,
+# messageType and a sender. 13 chats, one active that day -- 12 of 13 per-chat
+# fetches per cycle were asking dormant chats whether anything had changed.
+
+
+def _chat_with_preview(chat_id, preview_id, created="2026-10-07T08:41:51.784Z"):
+    return {
+        "id": chat_id,
+        "lastMessagePreview": {
+            "id": preview_id,
+            "createdDateTime": created,
+            "messageType": "message",
+            "from": {"user": {"id": "someone"}},
+        },
+    }
+
+
+def test_the_chat_list_asks_graph_for_the_preview(monkeypatch, pbot):
+    """Without $expand the preview is absent from every chat, so the skip below
+    can never fire and silently does nothing at all."""
+    urls = []
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        urls.append(url)
+        return {"value": []}
+
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+    pbot.process_new_messages()
+
+    assert "$expand=lastMessagePreview" in urls[0], urls[0]
+    assert "$orderby=lastMessagePreview/createdDateTime desc" in urls[0], urls[0]
+
+
+def test_a_chat_whose_newest_message_is_processed_is_not_fetched(monkeypatch, pbot):
+    """The whole point: one expanded chat-list call replaces N per-chat calls."""
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    pbot.processed_messages = dict.fromkeys([bot._message_key("chatA", "m1")])
+
+    urls = []
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        urls.append(url)
+        if "/messages" not in url:
+            return {"value": [_chat_with_preview("chatA", "m1")]}
+        return {"value": []}
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+    pbot.process_new_messages()
+
+    assert not any("/messages" in u for u in urls), f"fetched anyway: {urls}"
+
+
+def test_a_chat_with_an_unseen_newest_message_is_still_fetched(monkeypatch, pbot):
+    """The non-regression half. A skip that fires too eagerly loses questions."""
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    pbot.processed_messages = dict.fromkeys([bot._message_key("chatA", "old")])
+
+    urls = []
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        urls.append(url)
+        if "/messages" not in url:
+            return {"value": [_chat_with_preview("chatA", "brand-new")]}
+        return {"value": []}
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+    pbot.process_new_messages()
+
+    assert any("chatA" in u and "/messages" in u for u in urls), urls
+
+
+def test_the_skip_is_keyed_per_chat_not_on_the_bare_message_id(monkeypatch, pbot):
+    """processed_messages holds _message_key(chat_id, message_id), never raw ids.
+
+    Graph documents chatMessage.id as unique only WITHIN its chat, and in
+    practice they are millisecond epochs -- two chats collide routinely. A bare
+    `preview_id in self.processed_messages` would skip chatB because a DIFFERENT
+    chat processed that millisecond, dropping a real question.
+
+    It also fails the other way, which is how this nearly shipped unnoticed: the
+    2026-09-16 plan's snippet compares the bare id, _message_key postdates that
+    plan, and a bare id can never match a composite key -- so the skip would
+    never fire, every chat would still be fetched, and the N+1 would look fixed
+    while Graph volume was unchanged.
+    """
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    pbot.processed_messages = dict.fromkeys([bot._message_key("chatA", "1791362511784")])
+
+    urls = []
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        urls.append(url)
+        if "/messages" not in url:
+            return {"value": [
+                _chat_with_preview("chatA", "1791362511784"),
+                # Same millisecond, different chat: unprocessed, must be fetched.
+                _chat_with_preview("chatB", "1791362511784"),
+            ]}
+        return {"value": []}
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+    pbot.process_new_messages()
+
+    fetched = [u for u in urls if "/messages" in u]
+    assert any("chatB" in u for u in fetched), f"collision dropped chatB: {urls}"
+    assert not any("chatA" in u for u in fetched), f"chatA re-fetched: {urls}"
+
+
+def test_a_chat_without_a_preview_is_fetched_rather_than_assumed_quiet(monkeypatch, pbot):
+    """Fail open. An absent or malformed preview is not evidence of quiet, and
+    guessing wrong here loses a question permanently."""
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+
+    urls = []
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        urls.append(url)
+        if "/messages" not in url:
+            return {"value": [{"id": "chatA"}, {"id": "chatB", "lastMessagePreview": None}]}
+        return {"value": []}
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+    pbot.process_new_messages()
+
+    fetched = [u for u in urls if "/messages" in u]
+    assert any("chatA" in u for u in fetched), urls
+    assert any("chatB" in u for u in fetched), urls
+
+
+def test_skipping_a_chat_is_not_treated_as_an_incomplete_fetch(monkeypatch, pbot):
+    """A skip is positive evidence (this chat's newest message is already
+    handled), not a failed read. If it marked the cycle incomplete the watermark
+    would never advance on a quiet day, and the hold would force-advance every
+    teams_max_state_age_minutes -- the one path that can permanently skip
+    messages. The quieter the deployment, the more often that would fire."""
+    monkeypatch.setattr(bot.settings, "teams_max_state_age_minutes", 60)
+    monkeypatch.setattr(pbot, "_get_my_user_id", lambda: "me")
+    monkeypatch.setattr(pbot, "_send_message", lambda *a, **k: True)
+    pbot.processed_messages = dict.fromkeys([bot._message_key("quiet", "m1")])
+    original_last_check = pbot.last_check
+    future = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+
+    def fake_api(url, method="GET", json_data=None, retry=False):
+        if "/messages" not in url:
+            return {"value": [
+                _chat_with_preview("quiet", "m1"),
+                _chat_with_preview("busy", "new"),
+            ]}
+        if "busy" in url:
+            return {"value": [{
+                "id": "new", "messageType": "message",
+                "from": {"user": {"id": "someone"}},
+                "createdDateTime": future, "body": {"content": "a real question"},
+            }]}
+        return {"value": []}
+
+    monkeypatch.setattr(pbot, "_api_request", fake_api)
+    pbot.process_new_messages()
+
+    assert pbot.last_check > original_last_check, "a skipped chat held the watermark"
