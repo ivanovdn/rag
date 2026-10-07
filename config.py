@@ -79,6 +79,31 @@ class Settings(BaseSettings):
     # Retrieval
     min_confidence_score: float = 0.45
 
+    @property
+    def cosine_floor_applies(self) -> bool:
+        """Whether retrieval's top score is a cosine similarity, and so whether
+        `min_confidence_score` -- a cosine threshold -- is allowed to judge it.
+
+        True only with the reranker off AND BM25 off, and both terms are
+        load-bearing. A reranked result carries a 0.0-1.0 rerank score, whose
+        floor is `reranker_min_score`, not this one. A fused result carries an
+        RRF score of about 1/(k + rank) ~ 0.016, with k pinned to 60 in
+        rag/vector_store.py -- so dropping the bm25 term compares 0.016 against
+        0.45 and returns NO_MATCH for every question in the corpus, with no
+        error raised anywhere.
+
+        That total failure is the diagnosable one. At Qdrant's default k of 2,
+        RRF scores land in the same range as cosine ones and the same mistake
+        would fail only for some questions. Same class as the
+        rerank_score-presence guard in search_policies Step 3b: the test is on
+        what the number MEANS, never on which component produced it.
+
+        One definition on purpose -- it was written out longhand in four places
+        and is pinned there by
+        test_nothing_rederives_the_cosine_floor_predicate_inline.
+        """
+        return not self.reranker_enabled and not self.bm25_enabled
+
     # Reranker (any /v1/rerank-compatible server: llama-server, vLLM, etc.)
     reranker_enabled: bool = False
     reranker_backend: str = "llama-server"  # "llama-server" or "vllm"

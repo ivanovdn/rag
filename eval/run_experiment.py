@@ -440,7 +440,7 @@ def main():
                      "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
-                     "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
+                     "min_confidence_score": settings.min_confidence_score if settings.cosine_floor_applies else None,
                      "candidates": candidates, "tier": "tier1"}
     else:
         task = make_agent_task(verbose=args.verbose)
@@ -456,7 +456,7 @@ def main():
                      "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
                      "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
                      "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
-                     "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
+                     "min_confidence_score": settings.min_confidence_score if settings.cosine_floor_applies else None,
                      "num_ctx": settings.ollama_num_ctx,
                      "temperature": settings.llm_temperature,
                      # The prompt is a parameter like any other, and the one most

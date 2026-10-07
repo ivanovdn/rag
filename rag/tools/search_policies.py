@@ -62,20 +62,11 @@ def search_policies(query: str, top_k: int = 6) -> str:
         _last_search_results = []
         return NO_MATCH
 
-    # min_confidence_score is a COSINE threshold (0.45). It may only judge a score
-    # that IS a cosine similarity — reranker off AND no RRF fusion. An RRF score is
-    # ~0.016 (1/(k + rank), with k pinned to 60 in rag/vector_store.py), so dropping
-    # the bm25 half of this condition would return NO_MATCH for every question in the
-    # corpus, with no error raised anywhere. That total failure is the diagnosable
-    # one: at Qdrant's default k of 2, RRF scores land in the same range as cosine
-    # ones and the same mistake would fail only for some questions. Same class of bug
-    # as the rerank_score-presence guard in Step 3b: the guard is on what the number
-    # MEANS, not on which component produced it.
-    if (
-        not settings.reranker_enabled
-        and not settings.bm25_enabled
-        and raw[0].score < settings.min_confidence_score
-    ):
+    # min_confidence_score is a COSINE threshold (0.45) and may only judge a score
+    # that IS a cosine similarity. Which configurations those are, and why both
+    # halves of the condition are load-bearing, is in Settings.cosine_floor_applies
+    # — read it before changing either side of this.
+    if settings.cosine_floor_applies and raw[0].score < settings.min_confidence_score:
         _last_search_results = []
         return NO_MATCH
 
