@@ -73,14 +73,11 @@ _VLLM_SYSTEM = (
 
 _VLLM_DOC_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
-_VLLM_BACKENDS = {"vllm", "vllm-score"}
-
-
 def _build_query(question: str) -> str:
     """Build the reranker query. Format depends on backend."""
     instruction = settings.reranker_instruction
 
-    if settings.reranker_backend in _VLLM_BACKENDS:
+    if settings.reranker_uses_chat_template:
         # vLLM Qwen3-Reranker: full chat template in query string
         return (
             f"<|im_start|>system\n{_VLLM_SYSTEM}<|im_end|>\n"
@@ -99,7 +96,7 @@ def _build_query(question: str) -> str:
 
 def _build_documents(texts: list[str]) -> list[str]:
     """Wrap document texts if backend requires it."""
-    if settings.reranker_backend in _VLLM_BACKENDS:
+    if settings.reranker_uses_chat_template:
         return [f"<Document>: {t}{_VLLM_DOC_SUFFIX}" for t in texts]
     return texts
 

@@ -305,9 +305,34 @@ across 5 source files.
    match its code default and none may ship disabled. The deployed `.env`
    declares it explicitly, so the live value is readable in the file instead of
    inferred from Python. No behaviour change — 0.2 is what was already running.
-3. **Citation provenance.** Nothing verifies cited chunks came from the retrieved
-   set. Carried from `2026-09-25-search-first-results.md` #1 and
-   `2026-10-02` #2 — still the largest correctness gap.
+3. ~~**Citation provenance**~~ — **CLOSED 2026-10-07: measured, not built.**
+   Carried from `2026-09-25-search-first-results.md` #1 and `2026-10-02` #2, and
+   called the largest correctness gap in both. It is not one.
+
+   Measured against the 2026-10-06 11:03–11:09 UTC probe — 61 questions, 354
+   retrieved chunks, 96 citations, BM25 and reranker both on — by checking every
+   citation against its own `search_results`, and every quote against a fresh
+   re-chunk of all 52 DOCX files (1,602 chunks, `ingest/docx_parser.py`):
+
+       location matched a retrieved chunk, exact on
+         doc_title + section + clause + clause_number   96/96
+       quote verbatim in the chunk it cites             92/96
+       quote verbatim but elided with "..."              4/96
+       quote fabricated or altered                       0/96
+
+   So the guard would have fired zero times. The four elided quotes split on the
+   ellipsis into 8 fragments, every one verbatim in the correct chunk — meaning a
+   naive verbatim check would have escalated 4% of *correct* answers and been a
+   net loss. **Any future quote check must split on the ellipsis before
+   comparing.** The strict location check is, separately, now measured safe: 0
+   false positives in 96.
+
+   0 of 96 bounds the fabrication rate below roughly 3% (rule of three), not at
+   zero — one run, one model, one day, and with BM25 on, which production does
+   not run. Re-measure after a model or retrieval change rather than inheriting
+   this result.
+
+   What the probe did expose is #10, which this guard would have passed in full.
 4. ~~**Three `Settings` fields should be `SecretStr`**~~ — **DONE 2026-10-06**
    (`fix/secrets-as-secretstr`). `hf_token`, `teams_client_secret` and
    `teams_refresh_token` now mask themselves in both `repr()` and `str()`, so
@@ -329,18 +354,59 @@ across 5 source files.
    guard is an AST check in the shape of `test_no_undefined_names.py`: every
    `settings.<secret>` read is unwrapped or is the bare test of an `if`.
    Mutation-tested — removing the unwrap fails it by file and line.
-5. **Delete `compliance_policies`** once v2 is trusted. Carried from `2026-10-02`
-   #1; it remains the rollback.
-6. **`scripts/test_query.py` has no sparse preflight.** Carried from `2026-10-02`
-   #4. It is also the entry point that would actually exercise
-   `min_confidence_score`, which is now the only reason that setting is kept.
-7. **Extract `cosine_floor_applies()`.** The predicate
-   `not reranker_enabled and not bm25_enabled` is in three places since the eval
-   metadata mirrors shrank by one. Carried from `2026-10-02` #6.
-8. **`RERANKER_QUERY_TEMPLATE` is set in the deployed `.env` but inert** on the
-   `vllm-score` backend, where `RERANKER_INSTRUCTION` applies instead. Not an
-   orphan — the field exists — so `unknown_env_keys()` cannot catch it. The
-   family's remaining shape: a setting that is read, but only on a configuration
-   you do not run.
+5. **Delete `compliance_policies` on or after 2026-11-01**, provided no rollback
+   has been needed by then. Carried from `2026-10-02` #1, where the condition was
+   "once v2 is trusted" — which has no resolution, which is why it is still open.
+   A date has one. Until then it is the rollback: restore the two `.env` values
+   (`QDRANT_COLLECTION`, `BM25_ENABLED`) and redeploy. Deleting it costs disk on a
+   host this project does not own and buys nothing else, so the only reason to
+   hurry is if that host is short of space.
+6. ~~**`scripts/test_query.py` has no sparse preflight**~~ — **DONE 2026-10-07.**
+   Carried from `2026-10-02` #4. It was the last query entry point without one,
+   and the one a person reaches for when working out what is wrong: the error is
+   non-transient, so prefetch handed it a bare Qdrant traceback. Gated on a query
+   actually being requested, so `--help` stays offline.
+7. ~~**Extract `cosine_floor_applies()`**~~ — **DONE 2026-10-07.** Four places,
+   not three: the guard in `search_policies` and three eval metadata mirrors
+   (`run_eval` once, `run_experiment` twice). Now `Settings.cosine_floor_applies`,
+   with a source check pinning that nothing re-derives it inline. Carried from
+   `2026-10-02` #6.
+8. ~~**`RERANKER_QUERY_TEMPLATE` is set in the deployed `.env` but inert**~~ —
+   **DONE 2026-10-07**, as a detector rather than one deleted line, because this
+   is the fourth member of the family and there was nothing that would find a
+   fifth. `config.inert_env_keys()` holds a table of (key, when-it-is-inert, which
+   knob applies instead) and reports at startup beside the orphan warning.
+
+   It fires where `unknown_env_keys()` structurally cannot — inside the container.
+   That docstring is right that there is no set of "keys the operator meant as
+   settings" to enumerate there; the difference is that this never enumerates. It
+   asks after two keys by name, and checks both `.env` and `os.environ` because
+   the dev host has the file and the container has the variables.
+
+   Write-time settings are deliberately excluded: `BM25_AVG_LEN` is inert at query
+   time and live during ingest, so a warning would fire wrongly in `ingest_all.py`.
+
+   Extracting the backend predicate onto `Settings` turned up an unrelated hole —
+   nothing tested the reranker's wire format at all, and reverting `vllm-score` to
+   the llama-server path left the suite green while silently sending an unwrapped
+   query to a model that requires the chat template. `tests/unit/test_reranker_wire_format.py`
+   now pins it.
 9. **`PHOENIX_ENDPOINT` in the deployed `.env` points at `localhost`** and is
    overridden by compose. Harmless, and a line that states something untrue.
+   No code change available or wanted: `config.py`'s default is already that
+   value and compose overrides it regardless, so the line can simply be commented
+   out on the VM. Left open because it is a one-line edit on `srv-agent-01`,
+   not in this repo.
+10. **The model cites the wrong retrieved chunk.** Three of the 61 answers in the
+    2026-10-06 probe named the wrong document, and all three named something that
+    *was* retrieved — selection, not hallucination, and the check closed in #3
+    would have passed every one. Sharpest case: *"Can I disable the 5-minute
+    auto-lock on my computer?"* had the correct chunk (Clear Desk and Clear Screen
+    Policy | Workplace Protection: Clear Screen | Computers) at **rank 1** of its
+    own prompt and cited rank 2 (Access Management Policy | Access Management |
+    Inactivity Logoff/Lockout). The other two differ in cause — one had the right
+    document retrieved under the wrong section, one never had it retrieved at all
+    — so this is not one defect with one fix. Whether the rank-1 case is the
+    prompt, reranker ordering, or `num_ctx` truncation is unknown. Largest known
+    correctness gap now that #3 is closed; needs its own investigation before any
+    fix.

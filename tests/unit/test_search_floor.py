@@ -114,3 +114,59 @@ def test_the_default_threshold_is_the_measured_one():
     assert value == 0.2
     # Must stay clear of the lowest top_score that produced a CORRECT retrieval.
     assert value < 0.8478
+
+
+# --- the predicate itself ----------------------------------------------------
+
+
+def test_the_cosine_floor_applies_only_with_reranker_and_bm25_both_off():
+    """min_confidence_score is a COSINE threshold, so it may judge the top score
+    only when that score IS a cosine similarity.
+
+    Both terms are load-bearing and neither is redundant: a reranked result
+    carries a 0.0-1.0 rerank score, and a fused one an RRF score of about
+    1/(60 + rank) ~ 0.016, which against 0.45 returns NO_MATCH for every
+    question in the corpus with no error raised anywhere.
+    """
+    from config import Settings
+
+    def applies(rerank, bm25):
+        # _env_file=None so a developer's own .env cannot decide the answer.
+        cfg = Settings(_env_file=None, reranker_enabled=rerank, bm25_enabled=bm25)
+        return cfg.cosine_floor_applies
+
+    assert applies(False, False) is True
+    assert applies(True, False) is False
+    assert applies(False, True) is False
+    assert applies(True, True) is False
+
+
+def test_nothing_rederives_the_cosine_floor_predicate_inline():
+    """One definition, because a drifting copy fails silently in both directions.
+
+    The condition was written out longhand in four places — the guard in
+    search_policies and three eval metadata mirrors — and it is exactly the
+    kind that rots: dropping the bm25 half compares an RRF score against a
+    cosine threshold and returns NO_MATCH for every question, while dropping
+    the reranker half re-enables a floor that production has never run. Both
+    are silent. Shaped after test_no_undefined_names.py: a source check,
+    because there is no behaviour to assert on a copy that merely exists.
+    """
+    import re
+    from pathlib import Path
+
+    # Whitespace-collapsed so the multi-line `if (...)` form matches too.
+    pattern = re.compile(r"not\s+\S*\.?reranker_enabled\s+and\s+not\s+\S*\.?bm25_enabled")
+
+    offenders = []
+    for path in sorted(Path(".").rglob("*.py")):
+        if any(part.startswith(".") or part in {"__pycache__", "tests"} for part in path.parts):
+            continue
+        # config.py holds the one definition.
+        if path.name == "config.py":
+            continue
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        if pattern.search(flat):
+            offenders.append(f"{path} re-derives the predicate; use settings.cosine_floor_applies")
+
+    assert offenders == [], "\n" + "\n".join(offenders)

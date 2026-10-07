@@ -62,7 +62,7 @@ def config_snapshot() -> dict:
         "bm25_enabled": settings.bm25_enabled,
         "embedding_model": settings.embedding_model,
         "llm_model": settings.llm_model,
-        "min_confidence_score": settings.min_confidence_score if (not settings.reranker_enabled and not settings.bm25_enabled) else None,
+        "min_confidence_score": settings.min_confidence_score if settings.cosine_floor_applies else None,
         "reranker_candidates": settings.reranker_candidates,
     }
 

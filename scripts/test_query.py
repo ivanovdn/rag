@@ -14,6 +14,7 @@ init_observability()  # Must be before any LlamaIndex imports
 
 from rag.agent import build_agent
 from rag.search_first import compose_agent_input, prefetch
+from rag.vector_store import preflight_sparse_config
 
 
 async def run_query(query: str) -> str:
@@ -60,6 +61,14 @@ def main():
         "-i", "--interactive", action="store_true", help="Interactive mode"
     )
     args = parser.parse_args()
+
+    if args.interactive or args.query:
+        # Before the first query, not after it. BM25 on against a collection with
+        # no sparse vector is not a transient error, so search_policies re-raises
+        # it and prefetch hands this CLI a bare "Not existing vector name error"
+        # traceback — from the entry point a person reaches for to find out what
+        # is wrong. Skipped on the --help path so that stays offline.
+        preflight_sparse_config()
 
     if args.interactive:
         asyncio.run(interactive_mode())
