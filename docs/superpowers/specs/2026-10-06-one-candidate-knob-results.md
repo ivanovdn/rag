@@ -305,9 +305,34 @@ across 5 source files.
    match its code default and none may ship disabled. The deployed `.env`
    declares it explicitly, so the live value is readable in the file instead of
    inferred from Python. No behaviour change — 0.2 is what was already running.
-3. **Citation provenance.** Nothing verifies cited chunks came from the retrieved
-   set. Carried from `2026-09-25-search-first-results.md` #1 and
-   `2026-10-02` #2 — still the largest correctness gap.
+3. ~~**Citation provenance**~~ — **CLOSED 2026-10-07: measured, not built.**
+   Carried from `2026-09-25-search-first-results.md` #1 and `2026-10-02` #2, and
+   called the largest correctness gap in both. It is not one.
+
+   Measured against the 2026-10-06 11:03–11:09 UTC probe — 61 questions, 354
+   retrieved chunks, 96 citations, BM25 and reranker both on — by checking every
+   citation against its own `search_results`, and every quote against a fresh
+   re-chunk of all 52 DOCX files (1,602 chunks, `ingest/docx_parser.py`):
+
+       location matched a retrieved chunk, exact on
+         doc_title + section + clause + clause_number   96/96
+       quote verbatim in the chunk it cites             92/96
+       quote verbatim but elided with "..."              4/96
+       quote fabricated or altered                       0/96
+
+   So the guard would have fired zero times. The four elided quotes split on the
+   ellipsis into 8 fragments, every one verbatim in the correct chunk — meaning a
+   naive verbatim check would have escalated 4% of *correct* answers and been a
+   net loss. **Any future quote check must split on the ellipsis before
+   comparing.** The strict location check is, separately, now measured safe: 0
+   false positives in 96.
+
+   0 of 96 bounds the fabrication rate below roughly 3% (rule of three), not at
+   zero — one run, one model, one day, and with BM25 on, which production does
+   not run. Re-measure after a model or retrieval change rather than inheriting
+   this result.
+
+   What the probe did expose is #10, which this guard would have passed in full.
 4. ~~**Three `Settings` fields should be `SecretStr`**~~ — **DONE 2026-10-06**
    (`fix/secrets-as-secretstr`). `hf_token`, `teams_client_secret` and
    `teams_refresh_token` now mask themselves in both `repr()` and `str()`, so
@@ -344,3 +369,16 @@ across 5 source files.
    you do not run.
 9. **`PHOENIX_ENDPOINT` in the deployed `.env` points at `localhost`** and is
    overridden by compose. Harmless, and a line that states something untrue.
+10. **The model cites the wrong retrieved chunk.** Three of the 61 answers in the
+    2026-10-06 probe named the wrong document, and all three named something that
+    *was* retrieved — selection, not hallucination, and the check closed in #3
+    would have passed every one. Sharpest case: *"Can I disable the 5-minute
+    auto-lock on my computer?"* had the correct chunk (Clear Desk and Clear Screen
+    Policy | Workplace Protection: Clear Screen | Computers) at **rank 1** of its
+    own prompt and cited rank 2 (Access Management Policy | Access Management |
+    Inactivity Logoff/Lockout). The other two differ in cause — one had the right
+    document retrieved under the wrong section, one never had it retrieved at all
+    — so this is not one defect with one fix. Whether the rank-1 case is the
+    prompt, reranker ordering, or `num_ctx` truncation is unknown. Largest known
+    correctness gap now that #3 is closed; needs its own investigation before any
+    fix.
