@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# The Python the production container runs (2026-10-08). A bare 3.12 tag floats
+# to each new patch release on a cache miss, same as the >= ranges did.
+FROM python:3.12.15-slim
 
 WORKDIR /app
 
@@ -10,8 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python deps first (better layer caching).
 # Slim runtime deps — no HuggingFace embeddings (production uses Ollama embeddings).
-COPY requirements-bot.txt .
-RUN pip install --no-cache-dir -r requirements-bot.txt
+# requirements-bot.lock pins every package to the versions proven in production;
+# -c constrains versions without adding packages. See the lock's header.
+COPY requirements-bot.txt requirements-bot.lock ./
+RUN pip install --no-cache-dir -r requirements-bot.txt -c requirements-bot.lock
 
 # Copy only runtime code
 COPY config.py .
