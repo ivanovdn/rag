@@ -405,19 +405,65 @@ across 5 source files.
    being tried — glued the old URL onto the end of the commented line; the second
    was tested on a copy of those lines first, which is the rule for anything run
    against a `.env` holding live secrets.
-10. **The model cites the wrong retrieved chunk.** Three of the 61 answers in the
-    2026-10-06 probe named the wrong document, and all three named something that
-    *was* retrieved — selection, not hallucination, and the check closed in #3
-    would have passed every one. Sharpest case: *"Can I disable the 5-minute
-    auto-lock on my computer?"* had the correct chunk (Clear Desk and Clear Screen
-    Policy | Workplace Protection: Clear Screen | Computers) at **rank 1** of its
-    own prompt and cited rank 2 (Access Management Policy | Access Management |
-    Inactivity Logoff/Lockout). The other two differ in cause — one had the right
-    document retrieved under the wrong section, one never had it retrieved at all
-    — so this is not one defect with one fix. Whether the rank-1 case is the
-    prompt, reranker ordering, or `num_ctx` truncation is unknown. Largest known
-    correctness gap now that #3 is closed; needs its own investigation before any
-    fix.
+10. **The model cites the wrong retrieved chunk — mostly a labelling problem;
+    one real defect, a role mismatch.** Parked 2026-10-08 as not critical.
+    Originally recorded from the 2026-10-06 probe as three wrong-document answers,
+    with the auto-lock question as the sharpest case. Re-measured on
+    `baseline-identity-v1` (2026-10-08, `01a235a`, prompt `42d2fec870f6`, input
+    `e4720ee79a85`, digest `07d35212591f`) by comparing every answer's citations
+    with its `expected_citations`, then reading the clause text of each mismatch:
+
+        cites the expected clause                              52/61
+        expected clause retrieved, model cited another          5
+        expected clause never retrieved (answer still sound)    3
+        escalated (expected section never retrieved)            1
+
+    Of the five selection cases, after reading the clauses:
+    - **Auto-lock — correct, better than the label.** Access Management 4.14
+      says *"Users are prohibited from modifying, disabling, or overriding…
+      automatic lock settings"*; the label's Clear Screen 5.2 only states the
+      5-minute rule. The headline example of this item was a right answer.
+    - **Teams chats private? — correct.** AUP 7.3 (*"chat messages solely between
+      Team Members are considered personal"*) is the direct clause; label 7.4.
+    - **Free productivity app — correct.** AUP 4.3 (unapproved software) plus the
+      Default Workstation approval route; the label's 4.7 is about *unlicensed*
+      software, which "free" is not.
+    - **Open source in a client project — incomplete.** Cites 3.2 (approval of
+      client + team lead) but omits 1.1, rank 3: client use is *"usually strictly
+      prohibited"*.
+    - **"If the data wasn't very sensitive, do we still need to report it?" —
+      wrong, and the harmful kind.** Cites Breach Procedure 6.3 (*"no
+      notification is required"*), which is the DPO notifying a supervisory
+      authority. The asker's duty is 5.1, retrieved at rank 2: *"Any Team Member
+      aware of… a suspected personal data breach must report"* to the SOC. The
+      answer reads as "no need to report".
+
+    **The defect is role mismatch:** the model picks the clause whose wording
+    matches the question but whose addressee (DPO, System Owner, controller) is
+    not the asker. Ranking and `num_ctx` are ruled out — the right clause was
+    at rank 2.
+
+    **Bigger gap found on the way: nothing measures citations.** The three
+    `citation_*` evaluators in `eval/evaluators.py` were dropped from the run
+    set 2026-09-25; `hit_evaluator` (0.934) is retrieval. A prompt change can
+    degrade citations today with every reported number unchanged.
+
+    When picked up, in this order:
+    1. Re-enable `citation_doc/section/clause_accuracy` (they ignore extra
+       citations, so the 19 answers citing more than expected are not punished).
+       No bot change.
+    2. Relabel with alternatives + `match_mode: any`: auto-lock, Teams chats,
+       productivity app, and "personal laptop to access company files" (whose
+       label contradicts the AUP 4.2 label on the neighbouring personal-laptop
+       question). Owner's sign-off — the dataset is ground truth.
+    3. Add 6-8 role-mismatch questions (a nearby clause addressed to the DPO /
+       System Owner / controller) — one failing case cannot show a fix worked.
+    4. Only then try one prompt rule ("the asker is a Team Member; prefer the
+       clause that says what they must do; if you cite one addressed to another
+       role, say so") and compare against `baseline-identity-v1` by its identity
+       metadata.
+    Analysis script: classify each run's citations against `expected_citations`
+    from `GET /v1/experiments/<id>/json` on Phoenix.
 11. **The startup clamp measures idle time, not downtime.** (Deploy audit,
     2026-10-08.) `_save_state` rewrites `bot_state.json` every poll but records
     only `last_check` and the processed ids — never *when* it saved. So
