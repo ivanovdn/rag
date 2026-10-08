@@ -45,6 +45,7 @@ rag/
   tools/             # search_policies (run BEFORE the agent, by rag/search_first.py)
                      #   (clarify.py exists but is NOT imported/used)
   search_first.py    # prefetch() + compose_agent_input() — retrieval front-end
+  run_identity.py    # content hashes of prompt + agent-input layout, LLM digest — shared by eval metadata and prod spans
 channels/teams/      # bot.py (poll→queue→1 worker; RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
 eval/                # evaluators.py, agent_wrapper.py, run_experiment.py
 scripts/             # ingest_all, test_query, run_eval, make_dataset, start_*.sh
@@ -60,7 +61,7 @@ tests/               # unit/ (pure-logic) + load/ (offline 30-chat poll-loop soa
 
 **Infra resilience:** transient backend failures (conn errors, timeouts, 5xx from embeddings/Qdrant/LLM) are retried (`retry_transient`, backoffs `(0.5,1,2)s` → up to 4 attempts) and, if still failing, become a clean **"service temporarily unavailable"** reply — never a content escalation, never a leaked raw error. Two interception points: retrieval (inside `search_policies` → sets `sp._retrieval_unavailable`, returns sentinel `POLICY_SEARCH_UNAVAILABLE`) and the LLM/agent boundary (in `_run_rag`, returns `{"status":"unavailable"}`). Each records a distinct `infra_unavailable` Phoenix span (`failed_component`, `error_type`, `retries_attempted`). The unavailable reply gets no rating prompt and creates no feedback row. Non-transient errors still propagate to escalation as before.
 
-**Eval tiers:** tier1 `retrieval-test-v1` (retrieval hit), tier2 `e2e-test-v1` (Q&A), chatbot `chatbot-test-v1` (realistic). Metadata captures infra (local/remote, urls, reranker backend).
+**Eval tiers:** tier1 `retrieval-test-v1` (retrieval hit), tier2 `e2e-test-v1` (Q&A), chatbot `chatbot-test-v1` (realistic). Metadata captures infra (local/remote, urls, reranker backend) and the run's identity from `rag/run_identity.py` — `git_commit`, LLM digest, `system_prompt_sha12`, `agent_input_sha12` (the question+sources layout) — which production also stamps on every `compliance_request` span as `identity.*`. Match an experiment to a trace by those values; on the VM pass `-e GIT_COMMIT` (SETUP.md Step 11).
 
 ## Config — `.env` (full list in `.env.example`)
 

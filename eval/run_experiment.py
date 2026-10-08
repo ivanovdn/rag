@@ -11,10 +11,12 @@ Usage:
 import argparse
 import hashlib
 import asyncio
+import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 # Safe at module level: config pulls no LlamaIndex or Ollama, so it does not
 # compete with the init_observability() ordering the local imports below protect.
@@ -228,12 +230,60 @@ def _prompt_meta() -> dict:
     the whole point of the audit this branch came out of.
     """
     from rag.agent import FIXED_OVERHEAD_TOKENS, SYSTEM_PROMPT
+    from rag.run_identity import prompt_identity
 
+    # prompt_identity also carries agent_input_sha12: the layout of the question
+    # and its [Source N] blocks, which the model reads as closely as the prompt.
+    # The production bot stamps the same two hashes on every compliance_request
+    # span, so an experiment and a trace can be matched by value.
     return {
-        "system_prompt_sha12": hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12],
+        **prompt_identity(),
         "system_prompt_chars": len(SYSTEM_PROMPT),
         "fixed_overhead_tokens": FIXED_OVERHEAD_TOKENS,
     }
+
+
+def _git_commit() -> str:
+    """The commit of the code this run executes.
+
+    Asks git first, because on the VM the eval container mounts a worktree's
+    source over the image, and the image's baked GIT_COMMIT names the DEPLOYED
+    commit, not the one being measured. Inside that container there is no .git
+    to ask, so it falls back to GIT_COMMIT -- which is right only when the
+    runbook's `-e GIT_COMMIT=...` override is passed (SETUP.md Step 11).
+    """
+    try:
+        out = subprocess.run(
+            ["git", "describe", "--always", "--dirty"],
+            cwd=REPO_ROOT,
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return settings.git_commit
+    return out.stdout.strip() or settings.git_commit
+
+
+def _llm_digest_meta() -> dict:
+    """The model's digest, plus a printed warning when it is not the expected one.
+
+    Closes follow-up #12: a run labelled only `qwen3.6:latest` names a tag that
+    moves on a host this project does not own, so the weights it measured could
+    not be recovered later.
+    """
+    from rag.run_identity import llm_digest12
+
+    digest = llm_digest12()
+    expected = settings.llm_model_digest.strip().lower()
+    print(f"  LLM digest:  {digest or 'unavailable'}"
+          + (f" (expected {expected})" if expected else ""))
+    if expected and not digest:
+        print("  WARNING: could not confirm the model digest -- the check did not "
+              "run, which is not the same as passing")
+    elif expected and not digest.startswith(expected[:12]):
+        print(f"  WARNING: {settings.llm_model} resolves to {digest}, not the expected "
+              f"{expected} (LLM_MODEL_DIGEST): this run measures different weights "
+              "from the ones production was verified against")
+    return {"llm_digest": digest}
 
 
 PROMPT_REGISTRY_NAME = "compliance-system-prompt"
@@ -417,7 +467,12 @@ def main():
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
     reranker_info = settings.reranker_model if settings.reranker_enabled else "none"
     infra = "remote" if settings.use_remote_ollama else "local"
+    git_commit = _git_commit()
+    print(f"  Commit:      {git_commit}")
     infra_meta = {
+        # Which code ran. The prompt hashes below are exact for the prompt; this
+        # covers everything else (retrieval, parsing, evaluators).
+        "git_commit": git_commit,
         "infra": infra,
         "llm_backend": settings.llm_backend,
         "llm_url": settings.active_ollama_url,
@@ -450,7 +505,8 @@ def main():
         # another six weeks later. reranker_min_score in particular gates retrieval
         # entirely when it fires, and embedding_model was missing from the agent
         # tiers although it decides what is retrievable at all.
-        metadata = {**infra_meta, "llm": settings.llm_model, "search_type": search_type,
+        metadata = {**infra_meta, "llm": settings.llm_model, **_llm_digest_meta(),
+                     "search_type": search_type,
                      "embedding_model": settings.embedding_model,
                      "reranker": reranker_info,
                      "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,

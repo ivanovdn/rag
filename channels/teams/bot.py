@@ -179,7 +179,7 @@ def _run_rag(question: str) -> dict:
     return parse_agent_response(str(response))
 
 
-def _identity_lines() -> list[str]:
+def _startup_identity() -> tuple[list[str], str]:
     """The startup banner's answer to "which code, and which model, is this?"
 
     Neither is visible anywhere else at runtime. The image bakes the code at build
@@ -191,6 +191,9 @@ def _identity_lines() -> list[str]:
     Diagnostic only: a model host that does not answer costs a line of text,
     never the start. Hence the broad except -- whatever goes wrong reading
     /api/tags, the bot still has to come up and poll.
+
+    Returns the banner lines and the 12-digit digest they reported ("" when none
+    was read), which run() keeps for the compliance_request span.
     """
     build = f"Build: {settings.git_commit}"
     if settings.git_commit == "unknown":
@@ -204,7 +207,7 @@ def _identity_lines() -> list[str]:
             f"LLM: {settings.openai_model} ({settings.openai_api_base}; "
             "openai-compatible, no digest to read)"
         )
-        return lines
+        return lines, ""
 
     url = settings.active_ollama_url
     expected = settings.llm_model_digest.strip().lower()
@@ -220,12 +223,12 @@ def _identity_lines() -> list[str]:
                 f"{expected} (LLM_MODEL_DIGEST) -- the check did not run, which is "
                 "not the same as passing."
             )
-        return lines
+        return lines, ""
 
     short = digest[:12]
     if expected and digest.startswith(expected):
         lines.append(f"LLM: {settings.llm_model} @ {short}, as expected ({url})")
-        return lines
+        return lines, short
     lines.append(f"LLM: {settings.llm_model} @ {short} ({url})")
     if expected:
         lines.append(
@@ -233,13 +236,21 @@ def _identity_lines() -> list[str]:
             f"{expected} (LLM_MODEL_DIGEST). The tag moved on the model host; "
             "anything measured against the old weights no longer describes production."
         )
-    return lines
+    return lines, short
+
+
+def _identity_lines() -> list[str]:
+    return _startup_identity()[0]
 
 
 class TeamsBot:
     def __init__(self, token_refresher):
         self.token_refresher = token_refresher
         self._my_user_id = None
+        # Set by run() from the startup banner's /api/tags read; "" until then, or
+        # when it could not be read. Read ONCE: per request it would add a network
+        # call to every answer, and the banner already warns when it has moved.
+        self._llm_digest_at_startup = ""
         state = self._load_state()
         self.last_check = state["last_check"]
         self.processed_messages = state["processed_messages"]
@@ -738,6 +749,25 @@ class TeamsBot:
             self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="rag-worker")
             self._worker.start()
 
+    def _identity_attributes(self) -> dict[str, str]:
+        """What this answer was made with, under the names eval records them by.
+
+        An experiment's metadata carries the same git_commit / system_prompt_sha12 /
+        agent_input_sha12 / llm digest (eval/run_experiment.py), so a trace can be
+        matched to the experiment that approved its configuration by comparing
+        strings. The prompt hashes are computed per request, not at startup: they
+        must describe the prompt this answer used, and they cost microseconds.
+        The digest is the one read at startup -- the banner says so if it moved.
+        """
+        from rag.run_identity import prompt_identity, router_prompt_sha12  # deferred: observability-first
+
+        return {
+            "identity.git_commit": settings.git_commit,
+            "identity.llm_digest_at_startup": self._llm_digest_at_startup,
+            "identity.router_prompt_sha12": router_prompt_sha12(),
+            **{f"identity.{k}": v for k, v in prompt_identity().items()},
+        }
+
     def _answer(self, chat_id, text, sender_name="Unknown", queued_at=None):
         """Worker thread: route, run RAG, reply. Never called from the poll loop.
 
@@ -774,6 +804,7 @@ class TeamsBot:
                 # those identify a person and the span does not need them.
                 "compliance_request.question": text,
                 "compliance_request.queue_wait_ms": queue_wait_ms,
+                **self._identity_attributes(),
             },
         ) as span:
             # Pre-retrieval classification: only in-scope questions reach policy search.
@@ -1328,7 +1359,8 @@ class TeamsBot:
             self._ensure_worker()
             print("Starting Compliance Teams Bot...")
             print("=" * 50)
-            for line in _identity_lines():
+            lines, self._llm_digest_at_startup = _startup_identity()
+            for line in lines:
                 print(line)
             print(
                 f"Polling every {settings.teams_poll_interval}s "

@@ -393,10 +393,19 @@ docker compose -f docker-compose-remote.yml run --rm $EVAL --entrypoint python b
 
 # 3. Run.
 docker compose -f docker-compose-remote.yml run --rm $EVAL \
+  -e GIT_COMMIT=$(git -C /home/sa.ivanov/rag-eval describe --always --dirty) \
   -e QDRANT_COLLECTION=compliance_policies_v2 -e BM25_ENABLED=true \
   --entrypoint python bot eval/run_experiment.py \
   --tier chatbot --name <run-name> --phoenix-url http://phoenix:6006
 ```
+
+**Pass `-e GIT_COMMIT` on every run.** The container has no `.git`, so the
+experiment's `git_commit` comes from that variable — and without the override it
+is the image's, i.e. the *deployed* commit, not the worktree being measured.
+Nothing can detect that from inside. The prompt hashes beside it
+(`system_prompt_sha12`, `agent_input_sha12`) are content hashes and are right
+either way; every production `compliance_request` span carries the same values
+as `identity.*`, so an experiment and a trace match by string comparison.
 
 `--phoenix-url` takes the compose network name `phoenix` — the same instance you
 reach at `172.20.1.10:6006` from outside. The `-e` overrides let one image
