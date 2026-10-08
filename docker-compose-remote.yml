@@ -1,6 +1,13 @@
 services:
   bot:
-    build: .
+    build:
+      context: .
+      args:
+        # The commit the image is built from, printed as "Build:" in the startup
+        # banner. Deploy with it set:
+        #   GIT_COMMIT=$(git describe --always --dirty) docker compose -f docker-compose-remote.yml up -d --build
+        # Without it the banner says "unknown" -- which is itself the signal.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: compliance-bot:latest
     env_file:
       - .env

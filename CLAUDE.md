@@ -19,7 +19,7 @@ python eval/run_experiment.py --tier chatbot --name baseline-v1
 # Serve
 PYTHONPATH=. python scripts/start_teams_bot.py    # Teams bot
 docker compose up -d                              # local dev: Qdrant :6333 + Phoenix :6006
-docker compose -f docker-compose-remote.yml up -d --build   # PRODUCTION: bot + Phoenix on Linux host
+GIT_COMMIT=$(git describe --always --dirty) docker compose -f docker-compose-remote.yml up -d --build   # PRODUCTION: code is baked at build, so `git pull` alone deploys nothing
 ```
 
 ## Architecture
@@ -65,7 +65,7 @@ tests/               # unit/ (pure-logic) + load/ (offline 30-chat poll-loop soa
 ## Config — `.env` (full list in `.env.example`)
 
 **Current production profile (remote Spark):**
-- **LLM:** `qwen3.6:35b` via **Ollama** (`LLM_BACKEND=ollama`, `USE_REMOTE_OLLAMA=true`, keep_alive 30m)
+- **LLM:** `qwen3.6:latest` @ `07d35212591f` via **Ollama** (`LLM_BACKEND=ollama`, `USE_REMOTE_OLLAMA=true`, keep_alive 30m) — the only tag on a host you don't own, so it can move under you; `LLM_MODEL_DIGEST` makes the startup banner warn when it has (verified 2026-10-08; `qwen3.6:35b`, documented here before, does not exist on the host)
 - **Embedding:** `embeddinggemma` 768-dim via **Ollama** (`EMBEDDING_SOURCE=ollama`, `QDRANT_VECTOR_DIM=768`)
 - **Reranker:** Qwen3-Reranker-4B via **vLLM**, enabled (`RERANKER_BACKEND=vllm`, `RERANKER_ENABLED=true`)
 - **Qdrant:** remote (`USE_REMOTE_QDRANT=true`)  •  **BM25:** off
@@ -73,7 +73,7 @@ tests/               # unit/ (pure-logic) + load/ (offline 30-chat poll-loop soa
 
 ```bash
 LLM_BACKEND=ollama|openai-compatible      USE_REMOTE_OLLAMA / USE_REMOTE_QDRANT
-LLM_MODEL=... (ollama) / OPENAI_MODEL=... (openai-compat)
+LLM_MODEL=... (ollama) / OPENAI_MODEL=... (openai-compat)   LLM_MODEL_DIGEST (banner warns if the tag moved)
 EMBEDDING_SOURCE=huggingface|ollama       EMBEDDING_MODEL / QDRANT_VECTOR_DIM must match (768 gemma / 2048 nemotron / 4096 qwen3)
 EMBEDDING_QUERY_PREFIX / EMBEDDING_PASSAGE_PREFIX   RERANKER_BACKEND=llama-server|vllm
 RERANKER_MIN_SCORE (0.0 = off; measure from Phoenix reranker.top_score before setting)

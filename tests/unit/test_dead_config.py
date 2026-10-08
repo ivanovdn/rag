@@ -181,3 +181,16 @@ def test_startup_reports_inert_keys_beside_the_orphans():
     getter = source[source.index("def get_settings()"):]
 
     assert "inert" in getter, "get_settings() does not report inert keys"
+
+
+def test_an_expected_model_digest_is_named_on_a_backend_that_has_no_digest():
+    """LLM_MODEL_DIGEST is compared against Ollama's /api/tags. On the
+    openai-compatible backend there is nothing to compare it with, so setting
+    it there is a check that silently never runs -- this file's whole subject."""
+    env = "LLM_MODEL_DIGEST=07d35212591f\n"
+
+    on_openai = inert_env_keys(Settings(_env_file=None, llm_backend="openai-compatible"), env, {})
+    on_ollama = inert_env_keys(Settings(_env_file=None, llm_backend="ollama"), env, {})
+
+    assert any("LLM_MODEL_DIGEST" in r for r in on_openai), on_openai
+    assert not any("LLM_MODEL_DIGEST" in r for r in on_ollama), on_ollama

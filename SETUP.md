@@ -460,9 +460,18 @@ git clone <repo> compliance-bot && cd compliance-bot
 # Copy a .env configured for remote stack (TEAMS_* + USE_REMOTE_*=true)
 scp local:/path/to/.env .env
 
-# Build & run
-docker compose -f docker-compose-remote.yml up -d --build
+# Build & run. The code is baked into the image, so `git pull` alone deploys
+# nothing -- always --build. GIT_COMMIT puts the commit in the startup banner.
+GIT_COMMIT=$(git describe --always --dirty) docker compose -f docker-compose-remote.yml up -d --build
 ```
+
+The first two banner lines say what is actually running: `Build: <commit>` — the
+image's commit, which is not the checkout's until you rebuild — and
+`LLM: <model> @ <digest>`. Set `LLM_MODEL_DIGEST` in `.env` to the digest you
+have tested against and the banner warns when the tag on the model host has
+moved; production's is `07d35212591f` (`qwen3.6:latest`, 2026-10-08). The check
+runs at startup only, so a re-pull while the bot is running shows up at the
+next restart.
 
 The compose file runs:
 - **bot** container (Python 3.12-slim) — code only, polls Graph API outbound

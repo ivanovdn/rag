@@ -22,4 +22,13 @@ COPY scripts/start_teams_bot.py ./scripts/start_teams_bot.py
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
+# The commit this image was built from, printed as "Build:" in the startup banner.
+# Declared down here, below the dependency layer, on purpose: every RUN below an
+# ARG sees it as an environment variable, so declared above `pip install` it would
+# bust that layer's cache on every commit -- reinstalling, and with
+# requirements-bot.txt's >= ranges re-resolving, every dependency on every deploy.
+# docker-compose-remote.yml passes it in; without it the banner says "unknown".
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
+
 CMD ["python", "scripts/start_teams_bot.py"]

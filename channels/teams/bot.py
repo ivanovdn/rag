@@ -14,6 +14,7 @@ from pathlib import Path
 import requests
 
 from config import settings
+from rag.model_digest import ollama_model_digest
 from channels.teams.utils import safe_get_nested, strip_html
 from channels.teams.renderer import (
     ACK_HTML,
@@ -176,6 +177,63 @@ def _run_rag(question: str) -> dict:
         }
 
     return parse_agent_response(str(response))
+
+
+def _identity_lines() -> list[str]:
+    """The startup banner's answer to "which code, and which model, is this?"
+
+    Neither is visible anywhere else at runtime. The image bakes the code at build
+    time, so `git pull` on the host changes nothing until a rebuild -- the
+    2026-10-08 audit found a day-old image still running after a merge, and could
+    tell only from the ABSENCE of a log line. And LLM_MODEL names a tag on a host
+    this project does not own, which moves whenever anyone there re-pulls it.
+
+    Diagnostic only: a model host that does not answer costs a line of text,
+    never the start. Hence the broad except -- whatever goes wrong reading
+    /api/tags, the bot still has to come up and poll.
+    """
+    build = f"Build: {settings.git_commit}"
+    if settings.git_commit == "unknown":
+        build += " (image built without GIT_COMMIT; see SETUP.md, Docker Deployment)"
+    lines = [build]
+
+    # That backend reads OPENAI_MODEL and OPENAI_API_BASE (rag/agent.py get_llm),
+    # and has no /api/tags to ask.
+    if settings.llm_backend == "openai-compatible":
+        lines.append(
+            f"LLM: {settings.openai_model} ({settings.openai_api_base}; "
+            "openai-compatible, no digest to read)"
+        )
+        return lines
+
+    url = settings.active_ollama_url
+    expected = settings.llm_model_digest.strip().lower()
+    try:
+        digest = ollama_model_digest(url, settings.llm_model).lower().removeprefix("sha256:")
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, LookupError) else type(exc).__name__
+        lines.append(f"LLM: {settings.llm_model} ({url}) -- digest unavailable: {reason}")
+        if expected:
+            # Silence would read as a pass.
+            lines.append(
+                f"WARNING: could not confirm {settings.llm_model} still resolves to "
+                f"{expected} (LLM_MODEL_DIGEST) -- the check did not run, which is "
+                "not the same as passing."
+            )
+        return lines
+
+    short = digest[:12]
+    if expected and digest.startswith(expected):
+        lines.append(f"LLM: {settings.llm_model} @ {short}, as expected ({url})")
+        return lines
+    lines.append(f"LLM: {settings.llm_model} @ {short} ({url})")
+    if expected:
+        lines.append(
+            f"WARNING: {settings.llm_model} now resolves to {short}, not the expected "
+            f"{expected} (LLM_MODEL_DIGEST). The tag moved on the model host; "
+            "anything measured against the old weights no longer describes production."
+        )
+    return lines
 
 
 class TeamsBot:
@@ -1270,7 +1328,8 @@ class TeamsBot:
             self._ensure_worker()
             print("Starting Compliance Teams Bot...")
             print("=" * 50)
-            print(f"LLM: {settings.llm_model} ({settings.active_ollama_url})")
+            for line in _identity_lines():
+                print(line)
             print(
                 f"Polling every {settings.teams_poll_interval}s "
                 f"({settings.teams_business_hours_start_utc:02d}-{settings.teams_business_hours_end_utc:02d} UTC Mon-Fri), "
