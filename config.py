@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
+    # Build identity. Set by the image (Dockerfile ARG/ENV GIT_COMMIT, passed in
+    # by docker-compose-remote.yml), never by .env. Printed in the startup banner
+    # so the log answers "which code is this?" without a trip to the host.
+    git_commit: str = "unknown"
+
     # The three live credentials are SecretStr, not str, so neither repr(settings)
     # nor str(settings) can carry them. pytest reprs the subexpressions of a
     # failing assert into its message, and monkeypatch.setattr interpolates
@@ -27,6 +32,12 @@ class Settings(BaseSettings):
     ollama_remote_url: str = "http://172.20.0.22:11434"
     use_remote_ollama: bool = False
     llm_model: str = "qwen3:14b"
+    # The digest LLM_MODEL is expected to resolve to on the Ollama host, as the
+    # startup banner prints it ("LLM: <model> @ <digest>"). Empty = no check. A
+    # tag is a name the host's owners can re-point at any time; this is how a
+    # re-pull there shows up here, at the next start, instead of never. Prefix
+    # match, so the banner's 12 characters are enough.
+    llm_model_digest: str = ""
     embedding_model: str = "nomic-embed-text"
     embedding_query_prefix: str = ""
     embedding_passage_prefix: str = ""
@@ -363,6 +374,12 @@ _INERT_WHEN: tuple[tuple[str, Callable[["Settings"], bool], str], ...] = (
         "it is read only on the llama-server backend, and this one builds a "
         "Qwen3 chat template in code. RERANKER_INSTRUCTION is the knob that "
         "applies here.",
+    ),
+    (
+        "LLM_MODEL_DIGEST",
+        lambda s: s.llm_backend != "ollama",
+        "it is compared against Ollama's /api/tags, and this backend has no "
+        "digest to read. Nothing checks the model's identity here.",
     ),
     (
         "MIN_CONFIDENCE_SCORE",
