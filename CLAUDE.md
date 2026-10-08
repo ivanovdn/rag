@@ -68,8 +68,9 @@ tests/               # unit/ (pure-logic) + load/ (offline 30-chat poll-loop soa
 **Current production profile (remote Spark):**
 - **LLM:** `qwen3.6:latest` @ `07d35212591f` via **Ollama** (`LLM_BACKEND=ollama`, `USE_REMOTE_OLLAMA=true`, keep_alive 30m) — the only tag on a host you don't own, so it can move under you; `LLM_MODEL_DIGEST` makes the startup banner warn when it has (verified 2026-10-08; `qwen3.6:35b`, documented here before, does not exist on the host)
 - **Embedding:** `embeddinggemma` 768-dim via **Ollama** (`EMBEDDING_SOURCE=ollama`, `QDRANT_VECTOR_DIM=768`)
-- **Reranker:** Qwen3-Reranker-4B via **vLLM**, enabled (`RERANKER_BACKEND=vllm`, `RERANKER_ENABLED=true`)
-- **Qdrant:** remote (`USE_REMOTE_QDRANT=true`)  •  **BM25:** off
+- **Reranker:** Qwen3-Reranker-4B (`qwen3-rerank-4b`) via **vLLM** `/score`, enabled (`RERANKER_BACKEND=vllm-score`), candidates 25 → top 6, `RERANKER_MIN_SCORE=0.2`
+- **Qdrant:** remote, collection `compliance_policies_v2`  •  **BM25:** on (hybrid RRF, `avg_len` 50)
+- Verified from trace `d57ec465…` 2026-10-08 — the `search_vectors`/`rerank` span attributes are the ground truth for this profile; re-read them rather than trusting this list.
 - `config.py` defaults are lighter dev fallbacks — the deployed `.env` is the source of truth.
 
 ```bash
