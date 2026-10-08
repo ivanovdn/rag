@@ -443,6 +443,13 @@ across 5 source files.
     `07d35212591f` can no longer be known. `rag/model_digest.py` now exists for the
     startup banner; one field in `eval/run_experiment.py`'s metadata would make
     every future measurement say which weights it measured.
+    **Done 2026-10-08** (`feat/run-identity`), widened: `rag/run_identity.py`
+    gives eval metadata and every production `compliance_request` span the same
+    identity — `git_commit`, the LLM digest, `system_prompt_sha12`, and the new
+    `agent_input_sha12`, a hash of the question+`[Source N]` layout the model
+    reads, which the prompt hash could not see and which #10's fix will likely
+    change. Eval warns when the digest is not `LLM_MODEL_DIGEST`. Past runs stay
+    unrecoverable.
 13. **qdrant-client 1.19.1 against server 1.17.1.** (Deploy audit.) Outside
     Qdrant's supported window of one minor version, and in the VM logs since at
     least 2026-09-21. Nobody chose it: `requirements-bot.txt` says

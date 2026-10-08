@@ -175,7 +175,13 @@ def test_the_openai_compatible_backend_names_its_own_model_and_asks_ollama_nothi
 
 
 def test_run_prints_the_identity_lines():
-    assert "_identity_lines()" in inspect.getsource(bot.TeamsBot.run)
+    src = inspect.getsource(bot.TeamsBot.run)
+    assert "_startup_identity()" in src and "for line in lines:" in src
+
+
+def test_the_digest_the_banner_printed_is_the_one_kept(ollama, tags):
+    lines, digest = bot._startup_identity()
+    assert digest == "07d35212591f" and digest in lines[1]
 
 
 # --- getting the commit into the image -----------------------------------------
