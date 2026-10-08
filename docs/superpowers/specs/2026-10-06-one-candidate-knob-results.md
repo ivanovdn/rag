@@ -391,12 +391,20 @@ across 5 source files.
    the llama-server path left the suite green while silently sending an unwrapped
    query to a model that requires the chat template. `tests/unit/test_reranker_wire_format.py`
    now pins it.
-9. **`PHOENIX_ENDPOINT` in the deployed `.env` points at `localhost`** and is
-   overridden by compose. Harmless, and a line that states something untrue.
-   No code change available or wanted: `config.py`'s default is already that
-   value and compose overrides it regardless, so the line can simply be commented
-   out on the VM. Left open because it is a one-line edit on `srv-agent-01`,
-   not in this repo.
+
+   **Verified in production 2026-10-08**, a day late. The first deploy ran
+   `git pull` without `--build`, so the container kept the previous image and the
+   warning simply never appeared — which is how the deploy audit found it. After a
+   rebuild it fired for `RERANKER_QUERY_TEMPLATE` alone (the deployed `.env` never
+   set `MIN_CONFIDENCE_SCORE`). That line is now commented out on the VM, and the
+   warning is gone.
+9. ~~**`PHOENIX_ENDPOINT` in the deployed `.env` points at `localhost`**~~ —
+   **DONE 2026-10-08.** Replaced on the VM by a comment saying compose sets it.
+   No code change was available or wanted: `config.py`'s default is that value and
+   compose overrides it regardless. The first attempt — a `sed` given without
+   being tried — glued the old URL onto the end of the commented line; the second
+   was tested on a copy of those lines first, which is the rule for anything run
+   against a `.env` holding live secrets.
 10. **The model cites the wrong retrieved chunk.** Three of the 61 answers in the
     2026-10-06 probe named the wrong document, and all three named something that
     *was* retrieved — selection, not hallucination, and the check closed in #3
@@ -410,3 +418,47 @@ across 5 source files.
     prompt, reranker ordering, or `num_ctx` truncation is unknown. Largest known
     correctness gap now that #3 is closed; needs its own investigation before any
     fix.
+11. **The startup clamp measures idle time, not downtime.** (Deploy audit,
+    2026-10-08.) `_save_state` rewrites `bot_state.json` every poll but records
+    only `last_check` and the processed ids — never *when* it saved. So
+    `_load_state` judges downtime by the watermark's age, and the watermark only
+    advances when a newer message arrives: through a quiet spell it sits at the
+    last message. A 4-second restart at 11:03:58 after a quiet morning clamped a
+    09:21 watermark and warned of a backlog that did not exist. Two costs. The
+    false alarm fires on nearly every deploy at current volume, which teaches the
+    operator to ignore the one warning that matters on a real outage. And a narrow
+    loss: idle for an hour, then down for longer than
+    `TEAMS_INITIAL_LOOKBACK_MINUTES` (5) — a crash or host reboot, not a deploy,
+    since compose builds before it swaps — and messages from the early part of the
+    downtime land below the clamped watermark and are marked seen without being
+    answered, where a busy bot with the same outage loses none. Fix shape: persist
+    `saved_at` on every save and clamp on `now − saved_at`, which is true downtime
+    even after a crash because the save runs every poll; keep the watermark-age
+    test only for state files that predate the field. Watermark code — mutation
+    tests and a `tests/load/` run, not a quick patch.
+12. **Eval runs do not record the model digest.** (Deploy audit.) Production's
+    model is `qwen3.6:latest`, the only tag on a host this project does not own,
+    and no measurement here recorded what it resolved to — so whether the
+    2026-10-06 probe, the 571-token prompt budget or the crash matrix ran on
+    `07d35212591f` can no longer be known. `rag/model_digest.py` now exists for the
+    startup banner; one field in `eval/run_experiment.py`'s metadata would make
+    every future measurement say which weights it measured.
+13. **qdrant-client 1.19.1 against server 1.17.1.** (Deploy audit.) Outside
+    Qdrant's supported window of one minor version, and in the VM logs since at
+    least 2026-09-21. Nobody chose it: `requirements-bot.txt` says
+    `qdrant-client>=1.17`, so the image got whatever was newest when Docker last
+    rebuilt its dependency layer, while the local suite runs 1.17.0. Pinning the
+    image's dependencies freezes 1.19.1 — the version proven in production — and
+    turns staying outside the window, or moving to `~=1.17.0` to match the server
+    and the tests, into a deliberate choice. The server is on the shared host, so
+    upgrading it is not ours to do.
+14. **Phoenix exports every span synchronously** — `SimpleSpanProcessor`, as its
+    own startup warning says. (Deploy audit.) For answers that happens on the one
+    worker thread, so a Phoenix container that hangs rather than refuses would
+    stall replies. Never observed. `register(..., batch=True)` moves export to a
+    background thread; arize-phoenix-otel 0.15.0 supports it.
+15. **`[worker] Reply sent` does not say what was sent.** (Deploy audit.) It
+    prints identically for an answer and an escalation, so a container log cannot
+    say how a question went — the audit could confirm two replies, not two
+    answers. Phoenix's `compliance_request.outcome` has it; the log line could
+    carry it.
