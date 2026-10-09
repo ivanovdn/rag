@@ -407,6 +407,31 @@ Nothing can detect that from inside. The prompt hashes beside it
 either way; every production `compliance_request` span carries the same values
 as `identity.*`, so an experiment and a trace match by string comparison.
 
+### Query-rewrite comparison (design 2026-10-09)
+
+Retrieval only, over the chatbot questions, once per mode — no answering model:
+
+```bash
+for MODE in off multi multi_titles hyde; do
+  docker compose -f docker-compose-remote.yml run --rm $EVAL \
+    -e GIT_COMMIT=$(git -C /home/sa.ivanov/rag-eval describe --always --dirty) \
+    -e QUERY_REWRITE=$MODE \
+    --entrypoint python bot eval/run_experiment.py \
+    --tier tier1 --dataset chatbot-test-v1 --name rewrite-$MODE --phoenix-url http://phoenix:6006
+done
+```
+
+Then compare each against `rewrite-off` (ids from Phoenix → Datasets & Experiments):
+
+```bash
+docker compose -f docker-compose-remote.yml run --rm $EVAL --entrypoint python bot \
+  eval/compare_runs.py <rewrite-off id> <rewrite-multi id> --phoenix-url http://phoenix:6006
+```
+
+Decide on the RECOVERED / LOST lists, not the means. Stop rule: no mode that
+recovers ≥ 2 of the 4 misses without losing a working question → rewriting is
+not worth its latency on this corpus.
+
 `--phoenix-url` takes the compose network name `phoenix` — the same instance you
 reach at `172.20.1.10:6006` from outside. The `-e` overrides let one image
 measure several configurations without an edit or a rebuild, which is how a

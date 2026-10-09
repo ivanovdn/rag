@@ -113,8 +113,10 @@ pipeline that does not ship.
 5. **Sizing invariant kept.** `RERANKER_CANDIDATES` sizes every prefetch and the
    fused limit. Six prefetches make the union larger; the limit is unchanged, so
    the reranker's workload is unchanged.
-6. **Recorded.** The rephrasings go on the `search_vectors` span
-   (`query_rewrite.mode`, `.queries`, `.fallback`, `.latency_ms`);
+6. **Recorded.** The rephrasings go on their own `query_rewrite` span
+   (`query_rewrite.mode`, `.queries`, `.fallback`, `.latency_ms`, `.error`),
+   which also parents the rewrite's LLM span; `search_vectors` gains
+   `qdrant.query_count`;
    `rewrite_prompt_sha12` joins `rag/run_identity.py`, so it lands in experiment
    metadata and on every `compliance_request` span; `QUERY_REWRITE` is in the
    experiment metadata.
