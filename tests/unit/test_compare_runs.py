@@ -41,3 +41,30 @@ def test_questions_are_matched_by_text_not_position():
     c = compare(base, cand)
     assert [q for q, *_ in c["recovered"]] == ["b"]
     assert [q for q, *_ in c["same"]] == ["a"]
+
+
+def test_a_failed_run_is_errored_not_lost_or_recovered():
+    """One embedder blip must not read as "the rewrite lost a working question"."""
+    failed = {"input": {"question": "q"}, "reference_output": REF, "output": None, "error": "RuntimeError: retrieval unavailable"}
+    c = compare([_run("q", ["Doc A"])], [failed])
+    assert c["lost"] == [] and [q for q, *_ in c["errored"]] == ["q"]
+
+    c = compare([failed], [_run("q", ["Doc A"])])
+    assert c["recovered"] == [] and [q for q, *_ in c["errored"]] == ["q"]
+
+
+def test_repetitions_are_compared_pairwise_not_overwritten():
+    def rep(q, docs, n):
+        r = _run(q, docs)
+        r["repetition_number"] = n
+        return r
+
+    base = [rep("q", ["Doc A"], 1), rep("q", ["X"], 2)]
+    cand = [rep("q", ["Doc A"], 1), rep("q", ["Doc A"], 2)]
+    c = compare(base, cand)
+    assert len(c["same"]) == 1 and len(c["recovered"]) == 1
+
+
+def test_unmatched_questions_are_counted():
+    c = compare([_run("a", ["Doc A"])], [_run("a", ["Doc A"]), _run("only in candidate", ["Doc A"])])
+    assert c["unmatched"] == 1

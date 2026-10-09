@@ -32,31 +32,52 @@ def first_match_rank(output: dict | None, reference: dict) -> int | None:
     return None
 
 
+def _key(run: dict) -> tuple[str, int]:
+    return run["input"]["question"], run.get("repetition_number") or 1
+
+
+def _failed(run: dict) -> bool:
+    return bool(run.get("error")) or run.get("output") is None
+
+
 def compare(baseline: list[dict], candidate: list[dict]) -> dict:
-    base = {r["input"]["question"]: r for r in baseline}
-    out = {k: [] for k in ("recovered", "lost", "better", "worse", "same")}
-    latency, fallbacks = [], 0
+    """Classify each candidate question against its baseline counterpart.
+
+    A run that raised (tier1 raises on a retrieval outage) is ERRORED on either
+    side, never "lost" or "recovered": an embedder blip must not decide the stop
+    rule. Pairs are keyed by question AND repetition, so repetitions are
+    compared pairwise instead of silently overwriting each other.
+    """
+    base = {_key(r): r for r in baseline}
+    out = {k: [] for k in ("recovered", "lost", "better", "worse", "same", "errored")}
+    latency, fallbacks, unmatched = [], 0, 0
     for run in candidate:
-        q = run["input"]["question"]
-        if q not in base:
+        key = _key(run)
+        if key not in base:
+            unmatched += 1
             continue
-        b = first_match_rank(base[q]["output"], base[q]["reference_output"])
+        q = key[0]
+        if _failed(base[key]) or _failed(run):
+            out["errored"].append((q, base[key].get("error"), run.get("error")))
+            continue
+        b = first_match_rank(base[key]["output"], base[key]["reference_output"])
         c = first_match_rank(run["output"], run["reference_output"])
-        rewrite = (run["output"] or {}).get("rewrite") or {}
+        rewrite = run["output"].get("rewrite") or {}
         if "latency_ms" in rewrite:
             latency.append(rewrite["latency_ms"])
         fallbacks += bool(rewrite.get("fallback"))
         if b is None and c is not None:
-            key = "recovered"
+            kind = "recovered"
         elif b is not None and c is None:
-            key = "lost"
+            kind = "lost"
         elif b == c:
-            key = "same"
+            kind = "same"
         else:
-            key = "better" if c < b else "worse"
-        out[key].append((q, b, c))
+            kind = "better" if c < b else "worse"
+        out[kind].append((q, b, c))
     out["latency_ms"] = latency
     out["fallbacks"] = fallbacks
+    out["unmatched"] = unmatched
     return out
 
 
@@ -78,7 +99,11 @@ def main():
         print(f"\n{key.upper()} ({len(c[key])})")
         for q, b, n in c[key]:
             print(f"  {str(b):>4} -> {str(n):<4} {q}")
-    print(f"\nSAME: {len(c['same'])}   rewrite fallbacks: {c['fallbacks']}")
+    print(f"\nERRORED ({len(c['errored'])}) -- excluded from the decision; re-run them")
+    for q, b_err, c_err in c["errored"]:
+        print(f"  baseline: {b_err or 'ok'} | candidate: {c_err or 'ok'} | {q}")
+    print(f"\nSAME: {len(c['same'])}   rewrite fallbacks: {c['fallbacks']}   "
+          f"candidate questions not in baseline: {c['unmatched']}")
     if c["latency_ms"]:
         lat = sorted(c["latency_ms"])
         p95 = lat[min(len(lat) - 1, round(0.95 * (len(lat) - 1)))]
