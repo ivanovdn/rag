@@ -163,3 +163,20 @@ def test_the_prompts_forbid_answering_and_inventing():
     for mode in ("multi", "multi_titles"):
         assert "Do not answer" in qr.REWRITE_PROMPTS[mode]
         assert "Do not add" in qr.REWRITE_PROMPTS[mode]
+
+
+def test_parse_drops_an_echo_that_differs_only_in_punctuation():
+    raw = "Can I disable the 5-minute auto-lock on my computer\nAre Team Members permitted to disable automatic screen lock?"
+    assert qr.parse_rephrasings(raw, Q) == ("Are Team Members permitted to disable automatic screen lock?",)
+
+
+def test_parse_strips_labels_and_emphasis_and_drops_a_chatty_preamble():
+    raw = (
+        "Sure, here are two alternative versions.\n"
+        "Version 1: Are Team Members permitted to disable automatic screen lock?\n"
+        "**May a user override the inactivity lockout setting?**"
+    )
+    assert qr.parse_rephrasings(raw, Q) == (
+        "Are Team Members permitted to disable automatic screen lock?",
+        "May a user override the inactivity lockout setting?",
+    )

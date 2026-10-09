@@ -125,6 +125,9 @@ def search_policies(query: str, top_k: int = 6) -> str:
             "clause_number": r.get("clause_number", ""),
             "rerank_score": round(r.get("rerank_score", 0), 4),
             "retrieval_score": round(r.get("retrieval_score", 0), 4),
+            # Rank in the fused list before the reranker moved it: how a run
+            # shows that a rewrite widened the pool the reranker chose from.
+            "original_rank": r.get("original_rank"),
             "score_type": r.get("score_type", ""),
         }
         for r in results

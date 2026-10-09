@@ -105,3 +105,11 @@ def test_embedding_outage_with_rewrite_on_is_still_unavailable(monkeypatch, wire
     assert sp.search_policies("orig question") == sp.UNAVAILABLE
     assert sp._retrieval_unavailable is True
     assert recorded[0][0] == "embeddings"
+
+
+def test_the_pre_rerank_rank_is_kept_for_eval(monkeypatch, wired):
+    """original_rank is how a run shows that a rewrite widened the reranker's
+    pool: the clause it promoted came from deep in the fused list."""
+    monkeypatch.setattr(sp, "rerank", lambda q, results, top_n: [dict(results[0], rerank_score=0.9, original_rank=7)])
+    sp.search_policies("orig question")
+    assert sp._last_search_results[0]["original_rank"] == 7

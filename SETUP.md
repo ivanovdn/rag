@@ -428,6 +428,12 @@ docker compose -f docker-compose-remote.yml run --rm $EVAL --entrypoint python b
   eval/compare_runs.py <rewrite-off id> <rewrite-multi id> --phoenix-url http://phoenix:6006
 ```
 
+Tier1 retrieves through `search_policies` since 2026-10-09, so it applies the
+relevance floors as production does. Run it on the production profile (reranker
+ON): with reranker and BM25 both off, the cosine floor judges `off` but not the
+rewrite modes (their scores are RRF), and floor lifts would read as recoveries.
+Tier1 runs from before that date skipped the floors.
+
 Decide on the RECOVERED / LOST lists, not the means. Stop rule: no mode that
 recovers ≥ 2 of the 4 misses without losing a working question → rewriting is
 not worth its latency on this corpus.

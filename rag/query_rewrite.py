@@ -57,7 +57,15 @@ REWRITE_PROMPTS = {
 _MAX_REPHRASINGS = 2
 _MAX_QUERY_CHARS = 300
 _MAX_PASSAGE_CHARS = 1000
-_MARKER = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s*")
+_MARKER = re.compile(r"^\s*(?:\d+[.)]|[-•]|\*(?!\*))\s*")  # not "**": that is emphasis
+_EMPHASIS = re.compile(r"^(\*\*|__)(.*)\1$")
+_LABEL = re.compile(r"^(?:version|rephrasing|alternative|option)\s*\d*\s*[:.)-]\s*", re.IGNORECASE)
+_PREAMBLE = re.compile(r"^(?:sure|certainly|okay|ok|here (?:are|is))\b", re.IGNORECASE)
+
+
+def _dedup_key(text: str) -> str:
+    """Words only: an echo that differs by a question mark is still the original."""
+    return re.sub(r"\W+", " ", text).strip().casefold()
 
 
 @dataclass(frozen=True)
@@ -75,14 +83,17 @@ class RewriteResult:
 
 
 def parse_rephrasings(raw: str, original: str) -> tuple[str, ...]:
-    """At most 2 distinct lines, minus list markers, quotes, preambles and the original."""
-    seen = {original.strip().casefold()}
+    """At most 2 distinct lines, minus list markers, labels, emphasis, quotes,
+    preambles and anything that is the original again."""
+    seen = {_dedup_key(original)}
     out = []
     for line in raw.splitlines():
-        line = _MARKER.sub("", line).strip().strip("\"'“”‘’").strip()
-        if not line or line.endswith(":"):
+        line = _MARKER.sub("", line.strip()).strip()
+        line = _EMPHASIS.sub(r"\2", line).strip()
+        line = _LABEL.sub("", line).strip().strip("\"'“”‘’").strip()
+        if not line or line.endswith(":") or _PREAMBLE.match(line):
             continue
-        key = line.casefold()
+        key = _dedup_key(line)
         if key in seen:
             continue
         seen.add(key)
