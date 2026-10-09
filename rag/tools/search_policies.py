@@ -3,14 +3,18 @@ import asyncio
 from llama_index.core.tools import FunctionTool
 
 from config import settings
-from rag.embeddings import embed_query
+from rag.embeddings import embed_queries, embed_query
 from rag.observability import record_floor_rejection, record_infra_unavailable
+from rag.query_rewrite import rewrite_query
 from rag.reranker import rerank
 from rag.resilience import RETRY_BACKOFFS, is_transient, retry_transient
 from rag.vector_store import search_chunks
 
 _last_search_results: list[dict] = []
 _retrieval_unavailable: bool = False
+# The latest call's rewrite (RewriteResult.as_dict()), read by eval like
+# _last_search_results. Same single-worker reset-then-read contract.
+_last_rewrite: dict = {}
 
 NO_MATCH = "NO_RELEVANT_POLICY_FOUND"
 UNAVAILABLE = "POLICY_SEARCH_UNAVAILABLE"
@@ -30,16 +34,29 @@ def search_policies(query: str, top_k: int = 6) -> str:
         Formatted policy excerpts with document name, section, clause, clause number,
         and full text. Returns "NO_RELEVANT_POLICY_FOUND" if no policies match.
     """
-    global _last_search_results, _retrieval_unavailable
+    global _last_search_results, _retrieval_unavailable, _last_rewrite
     _retrieval_unavailable = False
 
     # How many candidates to retrieve (more when the reranker will rescore)
     retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
 
+    # Step 0: Rephrase for retrieval (QUERY_REWRITE; off by default). The result
+    # only ever ADDS queries -- the original is searched regardless -- and a
+    # failed rewrite has already fallen back to "no extras" inside rewrite_query.
+    rewrite = rewrite_query(query)
+    _last_rewrite = rewrite.as_dict()
+
     # Step 1: Retrieve candidates — dense only, or dense + sparse fused by Qdrant.
     # One path for both: fusion is server-side, so both return ScoredPoints.
+    # With no extras this is exactly the pre-rewrite call shape, call for call.
     try:
-        query_vector = retry_transient(lambda: embed_query(query))
+        if rewrite.queries:
+            vectors = retry_transient(lambda: embed_queries([query, *rewrite.queries]))
+            query_vector = vectors[0]
+            extra_queries = list(zip(rewrite.queries, vectors[1:]))
+        else:
+            query_vector = retry_transient(lambda: embed_query(query))
+            extra_queries = []
     except Exception as exc:
         if is_transient(exc):
             _last_search_results = []
@@ -49,7 +66,12 @@ def search_policies(query: str, top_k: int = 6) -> str:
         raise
 
     try:
-        raw = retry_transient(lambda: search_chunks(query, query_vector, top_k=retrieve_k))
+        if extra_queries:
+            raw = retry_transient(
+                lambda: search_chunks(query, query_vector, top_k=retrieve_k, extra_queries=extra_queries)
+            )
+        else:
+            raw = retry_transient(lambda: search_chunks(query, query_vector, top_k=retrieve_k))
     except Exception as exc:
         if is_transient(exc):
             _last_search_results = []
@@ -79,7 +101,8 @@ def search_policies(query: str, top_k: int = 6) -> str:
             "clause_number": r.payload.get("clause_number", ""),
             "text": r.payload["text"],
             "retrieval_score": r.score,
-            "score_type": "rrf" if settings.bm25_enabled else "cosine",
+            # Fused whenever there is more than one query, BM25 or not.
+            "score_type": "rrf" if settings.bm25_enabled or extra_queries else "cosine",
         }
         for r in raw
     ]
