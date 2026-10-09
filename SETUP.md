@@ -434,6 +434,11 @@ ON): with reranker and BM25 both off, the cosine floor judges `off` but not the
 rewrite modes (their scores are RRF), and floor lifts would read as recoveries.
 Tier1 runs from before that date skipped the floors.
 
+Each mode's prompt is mirrored into Phoenix → Prompts as
+`compliance-rewrite-prompt-<mode>` (read-only; edit `rag/query_rewrite.py`), and
+the experiment metadata carries its `rewrite_prompt_version_id` and
+`rewrite_prompt_sha12` — edit a prompt, rerun, and Phoenix diffs the two versions.
+
 Decide on the RECOVERED / LOST lists, not the means. Stop rule: no mode that
 recovers ≥ 2 of the 4 misses without losing a working question → rewriting is
 not worth its latency on this corpus.

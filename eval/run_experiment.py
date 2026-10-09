@@ -274,54 +274,90 @@ def _mirror_prompt_to_registry(client) -> dict:
     What it buys: the actual text visible beside each experiment, and Phoenix's
     diff between versions — so when a sweep moves a number you can see what the
     prompt change was, instead of diffing 2,350 characters by hand.
+    """
+    from rag.agent import SYSTEM_PROMPT
 
-    Idempotent: versions are tagged with the prompt's sha12, so re-running with an
+    return _mirror_to_registry(
+        client,
+        name=PROMPT_REGISTRY_NAME,
+        text=SYSTEM_PROMPT,
+        source="rag/agent.py SYSTEM_PROMPT",
+        id_key="system_prompt_version_id",
+    )
+
+
+REWRITE_REGISTRY_PREFIX = "compliance-rewrite-prompt-"
+
+
+def _mirror_rewrite_prompt_to_registry(client) -> dict:
+    """Mirror the active QUERY_REWRITE prompt template; {} when the rewrite is off.
+
+    One registry entry per mode, so Phoenix's version diff compares edits of one
+    prompt and never `multi` against `hyde`. The TEMPLATE is mirrored -- the same
+    text rewrite_prompt_sha12 hashes -- so `multi_titles` keeps its literal
+    {titles} placeholder (template_format NONE) rather than one day's titles.
+    """
+    from rag.query_rewrite import REWRITE_PROMPTS
+
+    mode = settings.query_rewrite
+    if mode not in REWRITE_PROMPTS:
+        return {}
+    return _mirror_to_registry(
+        client,
+        name=f"{REWRITE_REGISTRY_PREFIX}{mode}",
+        text=REWRITE_PROMPTS[mode],
+        source=f"rag/query_rewrite.py REWRITE_PROMPTS['{mode}']",
+        id_key="rewrite_prompt_version_id",
+    )
+
+
+def _mirror_to_registry(client, *, name: str, text: str, source: str, id_key: str) -> dict:
+    """Store `text` as a version of registry prompt `name`; return {id_key: version id}.
+
+    Idempotent: versions are tagged with the text's sha12, so re-running with an
     unchanged prompt reuses the existing version instead of piling up duplicates.
 
     Never raises. An eval run costs real GPU time on a shared host; a registry
     hiccup must degrade to "no version id in the metadata", not lose the run.
     """
-    from rag.agent import SYSTEM_PROMPT
-
-    sha = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12]
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
     try:
-        existing = client.prompts.get(prompt_identifier=PROMPT_REGISTRY_NAME, tag=sha)
-        return {"system_prompt_version_id": existing.id}
+        existing = client.prompts.get(prompt_identifier=name, tag=sha)
+        return {id_key: existing.id}
     except Exception:
         pass  # not registered yet (or the registry is unreachable) — try to create
 
     try:
-        from config import settings
         from phoenix.client.types import PromptVersion
 
         version = client.prompts.create(
-            name=PROMPT_REGISTRY_NAME,
+            name=name,
             prompt_description=(
-                "Read-only mirror of rag/agent.py SYSTEM_PROMPT. Nothing reads this at "
-                "runtime — editing it here changes nothing. Edit rag/agent.py."
+                f"Read-only mirror of {source}. Nothing reads this at runtime — "
+                "editing it here changes nothing. Edit the source file."
             ),
             version=PromptVersion(
-                [{"role": "system", "content": SYSTEM_PROMPT}],
+                [{"role": "system", "content": text}],
                 model_name=settings.llm_model,
                 model_provider="OLLAMA",
-                # NONE, not MUSTACHE/F_STRING: the prompt embeds a literal JSON
-                # block with { } braces. Any templating format would try to
-                # interpolate them and mangle the output contract.
+                # NONE, not MUSTACHE/F_STRING: SYSTEM_PROMPT embeds a literal JSON
+                # block and the rewrite template a literal {titles}. Any
+                # templating format would try to interpolate them.
                 template_format="NONE",
-                description=f"sha12={sha} · {len(SYSTEM_PROMPT)} chars",
+                description=f"sha12={sha} · {len(text)} chars",
             ),
         )
         try:
             client.prompts.tags.create(
                 prompt_version_id=version.id,
                 name=sha,
-                description="sha12 of rag/agent.py SYSTEM_PROMPT at the time of this run",
+                description=f"sha12 of {source} at the time of this run",
             )
         except Exception:
             pass  # the version exists either way; the tag is only for idempotency
-        return {"system_prompt_version_id": version.id}
+        return {id_key: version.id}
     except Exception as exc:
-        print(f"  WARNING: could not mirror the prompt into Phoenix "
+        print(f"  WARNING: could not mirror {source} into Phoenix "
               f"({type(exc).__name__}: {str(exc)[:80]}); the run continues without it")
         return {}
 
@@ -452,6 +488,7 @@ def main():
         # Applies to every tier: tier1 now retrieves through search_policies,
         # which is where the rewrite runs.
         **rewrite_identity(),
+        **_mirror_rewrite_prompt_to_registry(client),
         "infra": infra,
         "llm_backend": settings.llm_backend,
         "llm_url": settings.active_ollama_url,

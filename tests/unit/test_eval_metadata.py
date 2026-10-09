@@ -140,3 +140,78 @@ def test_no_eval_entry_point_still_imports_the_deleted_hybrid_module():
     for path in ("eval/run_experiment.py", "scripts/run_eval.py"):
         source = Path(path).read_text(encoding="utf-8")
         assert "hybrid_search" not in source, f"{path} still imports hybrid_search"
+
+
+# --- rewrite prompt mirror ----------------------------------------------------------
+
+
+class _RecordingPrompts:
+    def __init__(self, existing=None, boom=False):
+        self.existing, self.boom = existing, boom
+        self.gets, self.created = [], []
+        self.tags = self
+
+    def get(self, **kw):
+        self.gets.append(kw)
+        if self.existing is None:
+            raise LookupError("not registered")
+        return self.existing
+
+    def create(self, *, version=None, name=None, prompt_description=None, prompt_metadata=None,
+               prompt_version_id=None, description=None):
+        if self.boom:
+            raise RuntimeError("registry write failed")
+        self.created.append({"version": version, "name": name})
+        return type("V", (), {"id": "rw-version-1"})()
+
+
+def test_rewrite_off_mirrors_nothing(monkeypatch):
+    from eval.run_experiment import _mirror_rewrite_prompt_to_registry
+
+    monkeypatch.setattr("eval.run_experiment.settings.query_rewrite", "off")
+    prompts = _RecordingPrompts()
+    assert _mirror_rewrite_prompt_to_registry(_FakeClient(prompts)) == {}
+    assert prompts.gets == [] and prompts.created == []
+
+
+def test_each_rewrite_mode_has_its_own_registry_entry_tagged_by_hash(monkeypatch):
+    """Per mode, so Phoenix's version diff compares edits of ONE prompt, never
+    multi against hyde."""
+    from eval.run_experiment import _mirror_rewrite_prompt_to_registry
+    from rag.query_rewrite import REWRITE_PROMPTS
+    from rag.run_identity import sha12
+
+    monkeypatch.setattr("eval.run_experiment.settings.query_rewrite", "multi")
+    prompts = _RecordingPrompts()
+
+    assert _mirror_rewrite_prompt_to_registry(_FakeClient(prompts)) == {"rewrite_prompt_version_id": "rw-version-1"}
+    assert prompts.gets[0] == {"prompt_identifier": "compliance-rewrite-prompt-multi",
+                               "tag": sha12(REWRITE_PROMPTS["multi"])}
+    assert prompts.created[0]["name"] == "compliance-rewrite-prompt-multi"
+    assert prompts.created[0]["version"]._template_format == "NONE"  # {titles} must stay literal
+
+
+def test_an_unchanged_rewrite_prompt_reuses_its_version(monkeypatch):
+    from eval.run_experiment import _mirror_rewrite_prompt_to_registry
+
+    monkeypatch.setattr("eval.run_experiment.settings.query_rewrite", "hyde")
+    prompts = _RecordingPrompts(existing=type("V", (), {"id": "already"})())
+    assert _mirror_rewrite_prompt_to_registry(_FakeClient(prompts)) == {"rewrite_prompt_version_id": "already"}
+    assert prompts.created == []
+
+
+def test_a_registry_failure_costs_the_id_not_the_run(monkeypatch):
+    from eval.run_experiment import _mirror_rewrite_prompt_to_registry
+
+    monkeypatch.setattr("eval.run_experiment.settings.query_rewrite", "multi")
+    assert _mirror_rewrite_prompt_to_registry(_FakeClient(_RecordingPrompts(boom=True))) == {}
+
+
+def test_every_tier_records_the_rewrite_prompt_version():
+    import inspect
+
+    import eval.run_experiment as rx
+
+    src = inspect.getsource(rx.main)
+    assert "**_mirror_rewrite_prompt_to_registry(client)" in src
+    assert src.index("**_mirror_rewrite_prompt_to_registry(client)") < src.index('if args.tier == "tier1"')
