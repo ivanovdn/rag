@@ -1,6 +1,6 @@
 # Query rephrasing for retrieval — design
 
-**Date:** 2026-10-09 · **Status:** agreed design, not built · **Baseline:**
+**Date:** 2026-10-09 · **Status:** built and measured (`feat/query-rewrite`, `1a3af31`) — all three modes fail the stop rule; ships `off`. Results at the end. · **Baseline:**
 `baseline-identity-v1` (chatbot-test-v1, `01a235a`, prompt `42d2fec870f6`, input
 `e4720ee79a85`, LLM `07d35212591f`)
 
@@ -162,3 +162,86 @@ deployed behaviour does not change until a measurement says it should.
 Translation; history-aware rewriting; decomposition of multi-part questions
 (revisit if the messy set shows them failing); folding into the router;
 re-embedding with EmbeddingGemma prompts (measured above).
+
+## Results (2026-10-09)
+
+Four tier1 runs on `chatbot-test-v1` (61 questions), commit `1a3af31`, the
+production profile: `compliance_policies_v2`, BM25 on, reranker
+`qwen3-rerank-4b` 25 → 6, floor 0.2, LLM `qwen3.6:latest` @ `07d35212591f`.
+Retrieval only — no answering model. Compared with `eval/compare_runs.py`
+against `rewrite-off`.
+
+| Phoenix experiment | id | prompt sha12 |
+|---|---|---|
+| `rewrite-off` | `RXhwZXJpbWVudDoxMg==` | — |
+| `rewrite-multi` | `RXhwZXJpbWVudDoxMw==` | `e270ed7a00e0` |
+| `rewrite-multi_titles` | `RXhwZXJpbWVudDoxNA==` | `a911c01c0809` |
+| `rewrite-hyde` | `RXhwZXJpbWVudDoxNQ==` | `5ffca5a1bbaa` |
+
+**Control first.** `rewrite-off` reproduces `baseline-identity-v1` (chatbot
+tier, `01a235a`): identical aggregates, and the first expected clause at the
+same rank for all 61 questions — the new tier1 path is the production path.
+Its top-6 lists differ from the baseline's in 14 places, all explained: 12 are
+the chatbot tier collapsing split chunks of one clause before recording
+(`search_results` there is deduplicated, tier1's is not — compare tier1 only
+with tier1), and 2 are a swap at positions 5-6 between borderline candidates.
+That is the run-to-run noise floor: about 2/61 lists change at the tail, and
+expected-clause ranks do not move.
+
+| mode | recovered (of 4) | lost | better / worse | hit | MRR | section hit | added latency p50 / p95 |
+|---|---|---|---|---|---|---|---|
+| `off` | — | — | — | 0.934 | 0.770 | 0.951 | — |
+| `multi` | 1 — thank-you fee | **0** | 2 / 3 | 0.951 | 0.769 | 0.951 | 0.65s / 0.86s |
+| `multi_titles` | 1 — vendor without contract | **0** | 1 / 3 | 0.951 | 0.768 | 0.967 | 0.84s / 1.19s |
+| `hyde` | 1 — thank-you fee | **1** | 0 / 2 | 0.934 | 0.752 | 0.934 | 0.86s / 1.03s |
+
+No fallbacks in any run (0/61 each); one cold-load outlier of 5.8s in `multi`.
+Every better/worse move is 1-3 ranks.
+
+**Stop rule (≥ 2 of 4 misses recovered, no working question lost): all three
+fail.** Each recovers exactly one miss, and not the same one — which miss is
+recovered depends on the wording the model happened to write, so a single
+recovery is not evidence of a dependable effect.
+
+What the rephrasings showed, read question by question:
+
+- **`multi` rephrasings are faithful and formal**, 122 of 122: no answers, no
+  added facts. The recovery came from clause vocabulary — *"accept a personal
+  gratuity … in exchange for approving"* reached *Rules and Measures*. The only
+  mode with a clean record (0 lost) and the cheapest.
+- **`multi_titles` names a policy in 59 of 122 rephrasings** (`multi`: 0),
+  despite the prompt telling it not to. That turns a rephrasing into a title
+  match: *"… permitted under the Anti-Bribery And Anti-Corruption Policy?"*
+  finds the right document and not the clause, losing the thank-you-fee
+  recovery `multi` had; *"… under the Mobile Device And Teleworking Policy?"*
+  names the expected document and still does not reach its clause. Its one
+  recovery came from clause-like wording (*"disclosure of Team Member personal
+  data … third-party supplier"*), not from a title. Rejected.
+- **`hyde` invents organisational detail** absent from the corpus — *"the
+  Compliance Department or via the Ethics Hotline"*, *"the Chief Information
+  Security Officer"*, *"a signed Data Processing Agreement … Record of
+  Processing Activities"* — and that vocabulary steers retrieval: it lost AUP
+  *Reporting* on "colleague sharing confidential files, should I report it?"
+  (rank 2 → gone) and moved "is my data shared with external vendors?" from
+  rank 1 to 4. The one mode that lost a working question. Rejected.
+- **Misses no mode reached:** "what happens if I don't report a breach?"
+  (*Non-Compliance Implications*) and "personal laptop to access company files"
+  (*Device Usage and Encryption*; follow-up #10 records that this label
+  contradicts its neighbour's, so it may not be a retrieval miss at all).
+
+## Decision and what stays open
+
+- **Ships `QUERY_REWRITE=off`.** On well-formed questions there is almost
+  nothing for a rewrite to fix: the clean set's misses are few, partly label
+  noise, and recovered by luck of wording.
+- **`multi` is the only candidate** if rewriting is revisited; `multi_titles`
+  and `hyde` are rejected for the reasons above.
+- **The question this was for is unanswered.** The motivation was users less
+  precise than the dataset, and the dataset contains none. Per the stop rule
+  the invented messy dataset is not built. The better evidence will be real:
+  every production `compliance_request` span records the question verbatim,
+  so once real traffic exists, the questions that escalated or retrieved
+  poorly are the test set for `multi` — via `compare_runs` on a dataset built
+  from them.
+- Kept regardless of the decision: tier1 now measures the shipped retrieval
+  path; `compare_runs.py`; the rewrite identity and its prompt-registry mirror.
