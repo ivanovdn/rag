@@ -229,6 +229,42 @@ What the rephrasings showed, read question by question:
   (*Device Usage and Encryption*; follow-up #10 records that this label
   contradicts its neighbour's, so it may not be a retrieval miss at all).
 
+### Is reranking against the original what limits recovery? No.
+
+Rule 2 scores every candidate against the original question only, which raised
+the question whether that was why so little was recovered: a rephrasing might
+pull the right clause into the pool and the reranker then drop it against the
+user's informal wording. Checked read-only for the 4 misses: each mode's
+25-candidate pool rebuilt from the rephrasings recorded in its experiment (no
+LLM calls), with the repo's own retrieval code against the production
+endpoints, then reranked. Reconstruction validated against the recorded `off`
+run first — same final top 6 and rerank scores within 0.001 on 8 questions;
+the only differences are ±1 swaps of fused rank between RRF-tied candidates.
+
+| missed question | expected clause in the 25-pool? | rerank vs original | vs each rephrasing |
+|---|---|---|---|
+| thank-you fee | `off` no; `multi` #10, `multi_titles` #7, `hyde` #3 | 0.911 — top 6 in `multi`/`hyde`, misses by 0.009 in `multi_titles` | 0.843 / 0.582 |
+| don't report a breach | **yes, already in `off`** (#12) | 0.564 → #10 (6th 0.700) | 0.048 / 0.066 |
+| vendor without contract | only `multi_titles` (#4) | 0.708 → top 6 | 0.621 |
+| personal laptop | only `multi_titles` (#22) | 0.343 → #14 | 0.203 |
+
+- **Scoring against the rephrasings would never have helped**: in every case
+  the expected clause scored *lower* against them than against the original,
+  so even a max(original, rephrasing) score reproduces today's outcome. Rule 2
+  stands.
+- **When a rephrasing gets the clause into the pool, the reranker almost always
+  takes it** — both recoveries happened that way. The rewrite's whole job is
+  recall into the 25, and it achieves that on some wordings and not others.
+- **"Don't report a breach" is not a recall problem**: the clause is in the pool
+  with no rewrite and the reranker places it 10th. No rewrite can fix it; it is
+  a reranker judgement or a labelling question (it prefers *Initial Reporting*,
+  which arguably answers "what happens if I don't report" too).
+- **Personal laptop** scores 0.343 even when found — consistent with
+  follow-up #10's finding that its label contradicts its neighbour's.
+
+So of the 4 misses, 2 are recall (rewriting can reach them, by luck of
+wording), 1 is reranker-or-label, 1 is label.
+
 ## Decision and what stays open
 
 - **Ships `QUERY_REWRITE=off`.** On well-formed questions there is almost
