@@ -150,9 +150,13 @@ def get_llm(model: str | None = None, timeout: float | None = None):
     first.
 
     `timeout` overrides the request timeout for callers whose output is small
-    and whose failure has a cheap fallback (the query rewrite).
+    and whose failure has a cheap fallback (the query rewrite). Such a call is
+    also not retried by the OpenAI client: its default of 3 retries plus
+    llama-index's own retry on timeouts would turn a 20s bound into ~80s on a
+    hung server. Ollama's client does not retry, so it needs nothing.
     """
-    timeout = float(timeout if timeout is not None else settings.active_request_timeout)
+    bounded = timeout is not None
+    timeout = float(timeout if bounded else settings.active_request_timeout)
     if settings.llm_backend == "openai-compatible":
         from llama_index.llms.openai_like import OpenAILike
 
@@ -162,6 +166,7 @@ def get_llm(model: str | None = None, timeout: float | None = None):
             api_key=settings.openai_api_key,
             temperature=settings.llm_temperature,
             timeout=timeout,
+            **({"max_retries": 0} if bounded else {}),
             is_chat_model=True,
             is_function_calling_model=True,
             additional_kwargs={"extra_body": _NO_THINKING_BODY},

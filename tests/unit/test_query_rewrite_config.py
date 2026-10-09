@@ -68,3 +68,15 @@ def test_several_queries_cost_one_embedding_call(monkeypatch):
 
     assert embeddings_mod.embed_queries(["a", "b", "c"]) == [[0.0], [1.0], [2.0]]
     assert calls == [(["a", "b", "c"], "Q: ")]
+
+
+def test_a_bounded_call_is_not_retried_by_the_openai_client(monkeypatch):
+    """OpenAILike defaults to max_retries=3 plus a tenacity retry on timeouts: a
+    20s rewrite timeout would cost ~80s on a hung vLLM before the fallback."""
+    monkeypatch.setattr("rag.agent.settings.llm_backend", "openai-compatible")
+    assert get_llm(timeout=20).max_retries == 0
+
+
+def test_an_answer_call_keeps_the_openai_client_retries(monkeypatch):
+    monkeypatch.setattr("rag.agent.settings.llm_backend", "openai-compatible")
+    assert get_llm().max_retries > 0
