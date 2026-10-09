@@ -58,49 +58,21 @@ def setup_async():
 
 
 def make_tier1_task(top_k: int):
-    # Local imports: init_observability() must run before any LlamaIndex/Ollama
-    # import, and this module is imported by the CLI entry point below.
-    from config import settings
-    from rag.embeddings import embed_query
-    from rag.vector_store import search_chunks
-
-    retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
+    # Local import: init_observability() must run before any LlamaIndex/Ollama
+    # import, and search_policies pulls llama_index.
+    import rag.tools.search_policies as sp
 
     def retrieval_task(input):
-        # One path for both modes: Qdrant fuses server-side, so dense-only and
-        # dense+sparse both come back as ScoredPoints with the same payload.
-        vector = embed_query(input["question"])
-        raw = search_chunks(input["question"], vector, top_k=retrieve_k)
-        results = [
-            {
-                "doc_title": r.payload.get("doc_title", ""),
-                "section": r.payload.get("section", ""),
-                "clause": r.payload.get("clause", ""),
-                "clause_number": r.payload.get("clause_number", ""),
-                "text": r.payload.get("text", ""),
-                "retrieval_score": round(r.score, 4),
-            }
-            for r in raw
-        ]
-
-        if settings.reranker_enabled and results:
-            from rag.reranker import rerank
-
-            results = rerank(input["question"], results, top_n=settings.reranker_top_n)
-
+        # The same call production makes -- rewrite, embed, fused search, rerank,
+        # floors. Tier1 used to carry its own copy of that path, which stopped
+        # being the shipped one the moment a step (the query rewrite) was added
+        # inside search_policies. `top_k` only matters with the reranker off.
+        sp.search_policies(input["question"], top_k=top_k)
+        if sp._retrieval_unavailable:
+            raise RuntimeError("retrieval unavailable (embeddings/qdrant) -- not a retrieval miss")
         return {
-            "search_results": [
-                {
-                    "doc_title": r["doc_title"],
-                    "section": r["section"],
-                    "clause": r.get("clause", ""),
-                    "clause_number": r.get("clause_number", ""),
-                    "retrieval_score": r.get("retrieval_score", 0),
-                    "rerank_score": r.get("rerank_score"),
-                    "original_rank": r.get("original_rank"),
-                }
-                for r in results
-            ]
+            "search_results": [dict(r) for r in sp._last_search_results],
+            "rewrite": dict(sp._last_rewrite),
         }
 
     return retrieval_task
@@ -134,6 +106,7 @@ def make_agent_task(verbose: bool = False):
             # ever had — the tool that used to be counted here was never called.
             return {
                 "search_queries": search_queries,
+                "rewrite": next((c.get("rewrite", {}) for c in tool_calls if c["tool"] == "search_policies"), {}),
                 "num_searches": len(search_queries),
                 "escalated": bool(escalation.get("needed")),
                 "escalation_reason": escalation.get("reason") or None,
