@@ -463,16 +463,22 @@ def main():
     print(f"  Candidates:  {candidates} (from {'--candidates' if args.candidates is not None else 'RERANKER_CANDIDATES in .env'}) — sizes both prefetches and the fused limit")
     print(f"  BM25:        {'on' if settings.bm25_enabled else 'off'}")
     print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (top_n={settings.reranker_top_n})" if settings.reranker_enabled else ""))
+    print(f"  Rewrite:     {settings.query_rewrite}")
 
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
     reranker_info = settings.reranker_model if settings.reranker_enabled else "none"
     infra = "remote" if settings.use_remote_ollama else "local"
+    from rag.run_identity import rewrite_identity
+
     git_commit = _git_commit()
     print(f"  Commit:      {git_commit}")
     infra_meta = {
         # Which code ran. The prompt hashes below are exact for the prompt; this
         # covers everything else (retrieval, parsing, evaluators).
         "git_commit": git_commit,
+        # Applies to every tier: tier1 now retrieves through search_policies,
+        # which is where the rewrite runs.
+        **rewrite_identity(),
         "infra": infra,
         "llm_backend": settings.llm_backend,
         "llm_url": settings.active_ollama_url,

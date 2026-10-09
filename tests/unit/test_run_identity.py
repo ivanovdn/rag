@@ -16,6 +16,7 @@ import channels.teams.bot as bot
 import eval.run_experiment as rx
 import rag.agent as agent
 import rag.model_digest as md
+import rag.query_rewrite as qr
 import rag.router as router
 import rag.run_identity as ri
 import rag.search_first as search_first
@@ -193,3 +194,42 @@ def test_eval_is_quiet_when_the_digest_matches(monkeypatch, capsys):
 
     rx._llm_digest_meta()
     assert "WARNING" not in capsys.readouterr().out
+
+
+# --- query rewrite -----------------------------------------------------------------
+
+
+def test_rewrite_off_has_no_prompt_hash(monkeypatch):
+    monkeypatch.setattr(ri.settings, "query_rewrite", "off")
+    assert ri.rewrite_identity() == {"query_rewrite": "off", "rewrite_prompt_sha12": ""}
+
+
+@pytest.mark.parametrize("mode", ["multi", "multi_titles", "hyde"])
+def test_each_rewrite_mode_is_identified_by_its_own_prompt(monkeypatch, mode):
+    monkeypatch.setattr(ri.settings, "query_rewrite", mode)
+    assert ri.rewrite_identity() == {
+        "query_rewrite": mode,
+        "rewrite_prompt_sha12": ri.sha12(qr.REWRITE_PROMPTS[mode]),
+    }
+
+
+def test_editing_the_rewrite_prompt_changes_its_hash(monkeypatch):
+    monkeypatch.setattr(ri.settings, "query_rewrite", "multi")
+    before = ri.rewrite_identity()["rewrite_prompt_sha12"]
+    monkeypatch.setitem(qr.REWRITE_PROMPTS, "multi", qr.REWRITE_PROMPTS["multi"] + " ")
+    assert ri.rewrite_identity()["rewrite_prompt_sha12"] != before
+
+
+def test_production_spans_carry_the_rewrite_identity(monkeypatch):
+    monkeypatch.setattr(ri.settings, "query_rewrite", "multi")
+    b = object.__new__(bot.TeamsBot)
+    b._llm_digest_at_startup = ""
+    attrs = b._identity_attributes()
+    assert attrs["identity.query_rewrite"] == "multi"
+    assert attrs["identity.rewrite_prompt_sha12"] == ri.rewrite_identity()["rewrite_prompt_sha12"]
+
+
+def test_experiments_record_the_rewrite_identity_on_every_tier():
+    src = inspect.getsource(rx.main)
+    assert "**rewrite_identity()" in src
+    assert src.index("**rewrite_identity()") < src.index('if args.tier == "tier1"')

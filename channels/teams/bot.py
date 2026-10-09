@@ -759,13 +759,14 @@ class TeamsBot:
         must describe the prompt this answer used, and they cost microseconds.
         The digest is the one read at startup -- the banner says so if it moved.
         """
-        from rag.run_identity import prompt_identity, router_prompt_sha12  # deferred: observability-first
+        from rag.run_identity import prompt_identity, rewrite_identity, router_prompt_sha12  # deferred: observability-first
 
         return {
             "identity.git_commit": settings.git_commit,
             "identity.llm_digest_at_startup": self._llm_digest_at_startup,
             "identity.router_prompt_sha12": router_prompt_sha12(),
             **{f"identity.{k}": v for k, v in prompt_identity().items()},
+            **{f"identity.{k}": v for k, v in rewrite_identity().items()},
         }
 
     def _answer(self, chat_id, text, sender_name="Unknown", queued_at=None):
