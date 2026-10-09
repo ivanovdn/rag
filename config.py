@@ -3,6 +3,7 @@ import os
 from collections.abc import Callable, Mapping
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings
@@ -111,11 +112,29 @@ class Settings(BaseSettings):
         rerank_score-presence guard in search_policies Step 3b: the test is on
         what the number MEANS, never on which component produced it.
 
+        Query rewriting is the third term for the same reason as BM25: several
+        queries are fused by RRF even with BM25 off, so the score stops being a
+        cosine. When a rewrite falls back to the original alone the score is a
+        cosine again and the floor is skipped anyway -- the safe direction, since
+        skipping a floor can never turn an answer into "no policy exists".
+
         One definition on purpose -- it was written out longhand in four places
         and is pinned there by
         test_nothing_rederives_the_cosine_floor_predicate_inline.
         """
-        return not self.reranker_enabled and not self.bm25_enabled
+        return not self.reranker_enabled and not self.bm25_enabled and self.query_rewrite == "off"
+
+    # Query rephrasing before retrieval -- the design and its measurement plan are
+    # docs/superpowers/specs/2026-10-09-query-rephrasing-design.md. "multi" adds two
+    # LLM rephrasings to the original question, "multi_titles" gives that prompt
+    # the corpus's policy titles, "hyde" adds one hypothetical policy passage. The
+    # original is always searched too, and the reranker and the agent only ever
+    # see the original. Off until a per-question measurement says otherwise.
+    query_rewrite: Literal["off", "multi", "multi_titles", "hyde"] = "off"
+    # Bounds what one rewrite can add to an answer's latency. The main LLM's
+    # timeout (300s remote) is sized for a full answer; a rewrite is ~50 tokens,
+    # and on timeout the search simply runs with the original question.
+    query_rewrite_timeout: int = 20
 
     # Reranker (any /v1/rerank-compatible server: llama-server, vLLM, etc.)
     reranker_enabled: bool = False
@@ -386,6 +405,11 @@ _INERT_WHEN: tuple[tuple[str, Callable[["Settings"], bool], str], ...] = (
         lambda s: not s.cosine_floor_applies,
         "it is a cosine threshold, and the top score is not a cosine similarity "
         "with the reranker or BM25 on. RERANKER_MIN_SCORE is the live floor.",
+    ),
+    (
+        "QUERY_REWRITE_TIMEOUT",
+        lambda s: s.query_rewrite == "off",
+        "it bounds the query-rewrite LLM call, and QUERY_REWRITE is off.",
     ),
 )
 

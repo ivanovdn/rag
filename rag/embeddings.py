@@ -82,6 +82,16 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
 def embed_query(query: str) -> list[float]:
     """Embed a single query (query prefix applied automatically)."""
+    return embed_queries([query])[0]
+
+
+def embed_queries(queries: list[str]) -> list[list[float]]:
+    """Embed several queries in ONE backend call (query prefix applied).
+
+    The query-rewrite path searches the original question plus its rephrasings;
+    one /api/embed call for all of them keeps rewriting from multiplying the
+    embedding round trips.
+    """
     tracer = get_tracer()
     with tracer.start_as_current_span(
         "embed_query",
@@ -89,13 +99,13 @@ def embed_query(query: str) -> list[float]:
             SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.EMBEDDING.value,
             SpanAttributes.EMBEDDING_MODEL_NAME: settings.embedding_model,
             "embedding.backend": settings.embedding_source,
-            "embedding.text_count": 1,
+            "embedding.text_count": len(queries),
         },
     ) as span:
         model = get_embedding_model()
         if model == "ollama":
-            result = _ollama_embed([query], prefix=settings.embedding_query_prefix)[0]
+            result = _ollama_embed(queries, prefix=settings.embedding_query_prefix)
         else:
-            result = model.get_query_embedding(query)
-        span.set_attribute("embedding.vector_dim", len(result))
+            result = [model.get_query_embedding(q) for q in queries]
+        span.set_attribute("embedding.vector_dim", len(result[0]) if result else 0)
         return result
