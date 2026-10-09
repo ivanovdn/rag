@@ -1,4 +1,6 @@
 import json
+from collections.abc import Sequence
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from openinference.semconv.trace import (
@@ -243,7 +245,12 @@ def delete_document(doc_id: str) -> None:
     )
 
 
-def search_chunks(query_text: str, query_vector: list[float], top_k: int) -> list:
+def search_chunks(
+    query_text: str,
+    query_vector: list[float],
+    top_k: int,
+    extra_queries: Sequence[tuple[str, list[float]]] = (),
+) -> list:
     """Retrieve candidate chunks: dense only, or dense + sparse fused by Qdrant.
 
     Returns list[ScoredPoint] in BOTH modes, because fusion happens server-side —
@@ -259,6 +266,13 @@ def search_chunks(query_text: str, query_vector: list[float], top_k: int) -> lis
     the two branches, so a branch smaller than the limit caps the pool — and the
     shortfall grows as the branches agree, which is the opposite of a signal you
     would notice. Equal sizing makes the union >= the limit by construction.
+
+    `extra_queries` are (text, vector) pairs from query rewriting, searched
+    beside the original in the SAME request: each adds its own dense prefetch
+    (and sparse, when BM25 is on), all sized `top_k`, all fused by RRF. More
+    queries widen the union; the fused limit -- and so the reranker's workload --
+    does not change. With extras the result is fused even when BM25 is off, so
+    its score is RRF, not cosine (see Settings.cosine_floor_applies).
     """
     tracer = get_tracer()
     limit = top_k
@@ -272,12 +286,14 @@ def search_chunks(query_text: str, query_vector: list[float], top_k: int) -> lis
             "qdrant.collection": settings.qdrant_collection,
             "qdrant.limit": limit,
             "qdrant.bm25_enabled": settings.bm25_enabled,
+            "qdrant.query_count": 1 + len(extra_queries),
         },
     ) as span:
-        if settings.bm25_enabled:
+        if settings.bm25_enabled or extra_queries:
             span.set_attribute("qdrant.fusion", "rrf")
             span.set_attribute("qdrant.rrf_k", RRF_K)
-            span.set_attribute("qdrant.bm25_avg_len", settings.bm25_avg_len)
+            if settings.bm25_enabled:
+                span.set_attribute("qdrant.bm25_avg_len", settings.bm25_avg_len)
             # Equal to qdrant.limit in correct code, which is the point of
             # recording it. The prefetch limits were separately configured until
             # 2026-10-02 and ran at 20 against a fused limit of 25, capping the
@@ -288,19 +304,20 @@ def search_chunks(query_text: str, query_vector: list[float], top_k: int) -> lis
             # have answered it. Only set when fusing: with bm25 off there is no
             # prefetch, and a 0 would read as "prefetched nothing".
             span.set_attribute("qdrant.prefetch_limit", limit)
+            prefetch = []
+            for text, vector in [(query_text, query_vector), *extra_queries]:
+                prefetch.append(Prefetch(query=vector, limit=limit))
+                if settings.bm25_enabled:
+                    prefetch.append(
+                        Prefetch(
+                            query=bm25_document(text),
+                            using=SPARSE_VECTOR_NAME,
+                            limit=limit,
+                        )
+                    )
             response = client.query_points(
                 collection_name=settings.qdrant_collection,
-                prefetch=[
-                    Prefetch(
-                        query=query_vector,
-                        limit=limit,
-                    ),
-                    Prefetch(
-                        query=bm25_document(query_text),
-                        using=SPARSE_VECTOR_NAME,
-                        limit=limit,
-                    ),
-                ],
+                prefetch=prefetch,
                 query=RrfQuery(rrf=Rrf(k=RRF_K)),
                 limit=limit,
                 with_payload=True,
@@ -318,6 +335,34 @@ def search_chunks(query_text: str, query_vector: list[float], top_k: int) -> lis
             span.set_attribute("qdrant.top_score", points[0].score)
         span.set_attributes(_document_span_attributes(points))
         return points
+
+
+def policy_titles() -> list[str]:
+    """Distinct document titles in the active collection, sorted.
+
+    The `multi_titles` rewrite prompt hands these to the LLM as the corpus's
+    vocabulary. Cached per collection for the process: titles change only on
+    ingest, and a restart follows any ingest that matters. Raises on any Qdrant
+    error -- the caller treats that as a rewrite fallback, never a failed search.
+    """
+    return list(_policy_titles(settings.qdrant_collection))
+
+
+@lru_cache(maxsize=4)
+def _policy_titles(collection: str) -> tuple[str, ...]:
+    client = get_qdrant_client()
+    titles, offset = set(), None
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection,
+            limit=512,
+            offset=offset,
+            with_payload=["doc_title"],
+            with_vectors=False,
+        )
+        titles.update(p.payload["doc_title"] for p in points if p.payload.get("doc_title"))
+        if offset is None:
+            return tuple(sorted(titles))
 
 
 def scroll_by_filter(filter_conditions: Filter, limit: int = 10) -> list:
