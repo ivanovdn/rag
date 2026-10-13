@@ -26,6 +26,7 @@ from openinference.semconv.trace import (
 )
 
 from config import settings
+from rag.chunk_header import with_header
 from rag.observability import get_tracer
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,17 @@ def _build_documents(texts: list[str]) -> list[str]:
     return texts
 
 
+def _scored_texts(results: list[dict]) -> list[str]:
+    """The text each candidate is judged on. Never what is returned: results
+    keep their bare `text`, so the agent's sources and the span are unchanged."""
+    if not settings.reranker_doc_header:
+        return [r.get("text", "") for r in results]
+    return [
+        with_header(r.get("text", ""), r.get("doc_title", ""), r.get("section", ""), r.get("clause", ""))
+        for r in results
+    ]
+
+
 def rerank(
     query: str,
     results: list[dict],
@@ -128,6 +140,7 @@ def rerank(
             RerankerAttributes.RERANKER_MODEL_NAME: settings.reranker_model,
             "reranker.backend": settings.reranker_backend,
             "reranker.candidates_in": len(results),
+            "reranker.doc_header": settings.reranker_doc_header,
             # Set here so the success path is explicitly False and the attribute is
             # always present to filter on. _rerank_impl flips it when it degrades.
             "reranker.fallback": False,
@@ -154,7 +167,7 @@ def _rerank_impl(
     n = top_n or settings.reranker_top_n
     span.set_attribute(RerankerAttributes.RERANKER_TOP_K, n)
     formatted_query = _build_query(query)
-    documents = _build_documents([r.get("text", "") for r in results])
+    documents = _build_documents(_scored_texts(results))
 
     # Tag original ranks before reranking
     for i, r in enumerate(results):

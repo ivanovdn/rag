@@ -193,6 +193,13 @@ class Settings(BaseSettings):
     # distinct questions, one of them repeated 23 times during load testing.
     reranker_min_score: float = 0.2
     reranker_instruction: str = "Given an employee compliance question, retrieve the internal policy clause that answers it"
+    # Score each candidate as "Document: … | Section: … | Clause: …\n<text>",
+    # the text its dense vector was built from, instead of the bare text. The
+    # agent and the span still get the bare text. Off until measured end to end:
+    # the read-only A/B (design 2026-10-09) recovered 1 of 61 and lost none, but
+    # also reordered 7 inside the top 6 by lifting sibling clauses of a
+    # title-matched document.
+    reranker_doc_header: bool = False
 
     # Hybrid search
     bm25_enabled: bool = True
@@ -410,6 +417,11 @@ _INERT_WHEN: tuple[tuple[str, Callable[["Settings"], bool], str], ...] = (
         "QUERY_REWRITE_TIMEOUT",
         lambda s: s.query_rewrite == "off",
         "it bounds the query-rewrite LLM call, and QUERY_REWRITE is off.",
+    ),
+    (
+        "RERANKER_DOC_HEADER",
+        lambda s: not s.reranker_enabled,
+        "it changes what the reranker scores, and RERANKER_ENABLED is off.",
     ),
 )
 
