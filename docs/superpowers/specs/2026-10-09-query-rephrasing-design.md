@@ -265,6 +265,48 @@ the only differences are ±1 swaps of fused rank between RRF-tied candidates.
 So of the 4 misses, 2 are recall (rewriting can reach them, by luck of
 wording), 1 is reranker-or-label, 1 is label.
 
+### Does the reranker do better when it sees the chunk's header? Slightly.
+
+The three retrieval stages read different text. The dense embedding was built
+from `Document: … | Section: … | Clause: …\n<text>` (`ingest/pipeline.py`); BM25
+encodes the bare text (`rag/vector_store.py`); the reranker scores the bare text
+(`rag/reranker.py`, `_build_documents`), so it never sees that a clause is
+called *Disciplinary Action* in a section called *Non-Compliance
+Implications*. Checked read-only on all 61 questions: the production `off` pool
+of 25 per question, reranked twice — bare text, and the same text behind the
+embedding's header. No LLM calls. Sanity: the bare rerank reproduced the
+recorded production top 6 on 60/61 questions.
+
+| | bare text (production) | with header |
+|---|---|---|
+| expected clause in top 6 | 57/61 (0.934) | **58/61 (0.951)** |
+| MRR@6 | 0.770 | **0.783** |
+| recovered / lost | — | **1 / 0** |
+| better / worse inside the top 6 | — | 9 / 7 |
+| median top rerank score | 0.994 | 0.996 |
+
+- **Recovered: "what happens if I don't report a breach?"**, 10 → 3, the miss the
+  pool check above attributed to the reranker. Its clause is reached through
+  the section name *Non-Compliance Implications*, which the bare text lacks.
+- **Follow-up #10's harmful case moves the right way**: on "if the data wasn't
+  very sensitive, do we still need to report it?", *Initial Reporting* — the
+  clause the answer should have cited — goes 2 → 1. Retrieval only; the model
+  still chooses what to cite.
+- **The 7 worse are all reorders inside the top 6, none leave it.** The header
+  lets a matching document title lift *sibling* clauses: on the Kyiv air alert,
+  *Natural Phenomena* (same Business Continuity policy) scores 0.998 above
+  *Air Alert Procedure* (1 → 4); suspicious activity puts *InfoSec General
+  Responsibilities* above *Incident Response Reporting*; a deletion request puts
+  the *Exhibit A/B* request forms above *Initiating* (arguably also useful).
+  Scores bunch above 0.99, so small differences reorder.
+- **Same size of gain as `multi`, without its cost**: no LLM call, no latency,
+  and it fixes a different class of miss (in the pool, ranked low) than a
+  rewrite can.
+
+Not shipped from this check: one dataset, retrieval only. Next is a setting
+(`RERANKER_DOC_HEADER`, default off) on its own branch, measured with tier1 and
+one full chatbot run with answers read.
+
 ## Decision and what stays open
 
 - **Ships `QUERY_REWRITE=off`.** On well-formed questions there is almost
