@@ -317,6 +317,52 @@ Not shipped from this check: one dataset, retrieval only. Next is a setting
 (`RERANKER_DOC_HEADER`, default off) on its own branch, measured with tier1 and
 one full chatbot run with answers read.
 
+#### End to end on the VM (2026-10-13, `223d511`, branch `feat/reranker-doc-header`)
+
+Four runs on `chatbot-test-v1`, same day, production profile; the only
+difference between each pair is `RERANKER_DOC_HEADER`. All 244 rows: no
+errors, no reranker fallbacks, all JSON parsed, no escalations.
+
+| run | experiment id | top 6 | MRR@6 | answer cites expected clause |
+|---|---|---|---|---|
+| `header-false-tier1` | `RXhwZXJpbWVudDoxNg==` | 0.934 | 0.764 | — |
+| `header-true-tier1` | `RXhwZXJpbWVudDoxNw==` | **0.951** | **0.783** | — |
+| `header-false-chatbot` | `RXhwZXJpbWVudDoxOA==` | 0.934 | 0.764 | 52/61 |
+| `header-true-chatbot` | `RXhwZXJpbWVudDoxOQ==` | **0.951** | **0.783** | 52/61 |
+
+- **Retrieval reproduces the read-only A/B question for question**: recovered 1
+  (breach), lost 0, better 8 / worse 7, identical lists in tier1 and chatbot.
+  The `false` tier1 run matched the 2026-10-09 `off` run on 59/61 (two ±1
+  swaps), consistent with the reranker drift above.
+- **Answers: a tie on citations, 2 gained and 2 lost.**
+  - *What happens if I don't report a breach?* — off cites a generic
+    "all breaches will be investigated"; on cites *Disciplinary Action* and
+    *Regulatory Action* (termination, fines). Clearly better.
+  - *Open source library to speed up development?* — on cites *Scope*
+    ("usually strictly prohibited") plus *Approval*. Better.
+  - *The client didn't mention AI — can I still use it?* — on cites
+    *Prohibited Use* ("strictly forbidden … unless explicitly allowed") instead
+    of *Client-Approved AI Use*. Same substance, arguably more direct, but that
+    chunk has an empty clause name, so the answer prints "Clause Number: (No
+    clause number provided)" — a corpus/chunking defect visible either way.
+  - *The client didn't mention open source — can I still use it?* — on cites
+    the license-colour *Description* instead of *Approval*. Still correct
+    (client approval required), less direct. The one answer that reads weaker.
+- **The 7 retrieval "worse" cases did not degrade the answers**: air alert and
+  deletion request are word-for-word identical; suspicious activity still
+  cites *Reporting*.
+- **Follow-up #10's case is unchanged**: *Initial Reporting* is now ranked 1st,
+  yet both runs cite 6.3. The role mismatch is the model's citation choice,
+  not retrieval.
+- Answer text differs on 33/61 questions, because the header reorders sources
+  2–6 on all but one question; the agent's input differs, so its wording does.
+- Latency: median 5.0s off, 5.5s on, within run-to-run variation (no extra call).
+
+Strictly, the stop rule ("no chatbot answer reads worse") is missed by one
+answer that stays correct. Recommendation recorded: turn it on — one clearly
+better answer and one better, against one less direct, at zero latency. The
+decision is the product owner's.
+
 ## Decision and what stays open
 
 - **Ships `QUERY_REWRITE=off`.** On well-formed questions there is almost
