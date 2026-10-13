@@ -9,6 +9,7 @@ pinned here.
 import hashlib
 from pathlib import Path
 
+from config import settings
 from eval.run_experiment import _prompt_meta
 
 
@@ -215,3 +216,41 @@ def test_every_tier_records_the_rewrite_prompt_version():
     src = inspect.getsource(rx.main)
     assert "**_mirror_rewrite_prompt_to_registry(client)" in src
     assert src.index("**_mirror_rewrite_prompt_to_registry(client)") < src.index('if args.tier == "tier1"')
+
+
+# --- reranker parameters ----------------------------------------------------
+#
+# Both tiers record the same reranker keys from one helper; RERANKER_DOC_HEADER
+# changes what the reranker scores, so a run that omits it cannot be told apart
+# from one without it.
+
+
+def test_the_reranker_header_setting_is_recorded(monkeypatch):
+    from eval.run_experiment import _reranker_meta
+
+    monkeypatch.setattr(settings, "reranker_enabled", True)
+    monkeypatch.setattr(settings, "reranker_doc_header", True)
+    assert _reranker_meta()["reranker_doc_header"] is True
+    monkeypatch.setattr(settings, "reranker_doc_header", False)
+    assert _reranker_meta()["reranker_doc_header"] is False
+
+
+def test_reranker_keys_are_none_with_the_reranker_off(monkeypatch):
+    from eval.run_experiment import _reranker_meta
+
+    monkeypatch.setattr(settings, "reranker_enabled", False)
+    monkeypatch.setattr(settings, "reranker_doc_header", True)
+    meta = _reranker_meta()
+    assert meta["reranker"] == "none"
+    assert meta["reranker_doc_header"] is None
+    assert meta["reranker_top_n"] is None
+
+
+def test_the_auto_name_marks_the_header(monkeypatch):
+    from eval.run_experiment import _auto_name
+
+    monkeypatch.setattr(settings, "reranker_enabled", True)
+    monkeypatch.setattr(settings, "reranker_doc_header", False)
+    plain = _auto_name("tier1", 25)
+    monkeypatch.setattr(settings, "reranker_doc_header", True)
+    assert _auto_name("tier1", 25) == plain + "_hdr"

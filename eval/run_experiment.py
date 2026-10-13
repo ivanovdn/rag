@@ -191,6 +191,30 @@ def make_agent_task(verbose: bool = False):
     return e2e_task
 
 
+def _reranker_meta() -> dict:
+    """The reranker parameters both tiers record; None/"none" with it off."""
+    on = settings.reranker_enabled
+    return {
+        "reranker": settings.reranker_model if on else "none",
+        "reranker_top_n": settings.reranker_top_n if on else None,
+        "reranker_candidates": settings.reranker_candidates if on else None,
+        "reranker_min_score": settings.reranker_min_score if on else None,
+        "reranker_doc_header": settings.reranker_doc_header if on else None,
+    }
+
+
+def _auto_name(tier: str, candidates: int) -> str:
+    embed_short = settings.embedding_model.split("/")[-1]
+    search = "hybrid" if settings.bm25_enabled else "vector"
+    name = f"agentic_{tier}_{embed_short}_{search}_cand{candidates}"
+    if settings.reranker_enabled:
+        reranker_short = settings.reranker_model.replace("/", "-")
+        name += f"_{reranker_short}_top{settings.reranker_top_n}"
+        if settings.reranker_doc_header:
+            name += "_hdr"
+    return name
+
+
 def _prompt_meta() -> dict:
     """Identify the exact SYSTEM_PROMPT this run used.
 
@@ -438,13 +462,7 @@ def main():
 
     # Auto-generate experiment name from config if not provided
     if not args.name:
-        embed_short = settings.embedding_model.split("/")[-1]
-        search = "hybrid" if settings.bm25_enabled else "vector"
-        if settings.reranker_enabled:
-            reranker_short = settings.reranker_model.replace("/", "-")
-            args.name = f"agentic_{args.tier}_{embed_short}_{search}_cand{candidates}_{reranker_short}_top{settings.reranker_top_n}"
-        else:
-            args.name = f"agentic_{args.tier}_{embed_short}_{search}_cand{candidates}"
+        args.name = _auto_name(args.tier, candidates)
 
     client_kwargs = {}
     if args.phoenix_url:
@@ -471,11 +489,10 @@ def main():
     print(f"  Ollama:      {settings.active_ollama_url} ({'remote' if settings.use_remote_ollama else 'local'}, timeout={settings.active_request_timeout}s)")
     print(f"  Candidates:  {candidates} (from {'--candidates' if args.candidates is not None else 'RERANKER_CANDIDATES in .env'}) — sizes both prefetches and the fused limit")
     print(f"  BM25:        {'on' if settings.bm25_enabled else 'off'}")
-    print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (top_n={settings.reranker_top_n})" if settings.reranker_enabled else ""))
+    print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (top_n={settings.reranker_top_n}{', doc header' if settings.reranker_doc_header else ''})" if settings.reranker_enabled else ""))
     print(f"  Rewrite:     {settings.query_rewrite}")
 
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
-    reranker_info = settings.reranker_model if settings.reranker_enabled else "none"
     infra = "remote" if settings.use_remote_ollama else "local"
     from rag.run_identity import rewrite_identity
 
@@ -508,9 +525,7 @@ def main():
         task = make_tier1_task(top_k=candidates)
         evaluators = TIER1_EVALUATORS
         metadata = {**infra_meta, "search_type": search_type, "embedding_model": settings.embedding_model,
-                     "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
-                     "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
-                     "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
+                     **_reranker_meta(),
                      "min_confidence_score": settings.min_confidence_score if settings.cosine_floor_applies else None,
                      "candidates": candidates, "tier": "tier1"}
     else:
@@ -524,10 +539,7 @@ def main():
         metadata = {**infra_meta, "llm": settings.llm_model, **_llm_digest_meta(),
                      "search_type": search_type,
                      "embedding_model": settings.embedding_model,
-                     "reranker": reranker_info,
-                     "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
-                     "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
-                     "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
+                     **_reranker_meta(),
                      "min_confidence_score": settings.min_confidence_score if settings.cosine_floor_applies else None,
                      "num_ctx": settings.ollama_num_ctx,
                      "temperature": settings.llm_temperature,
