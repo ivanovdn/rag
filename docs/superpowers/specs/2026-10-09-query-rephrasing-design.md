@@ -363,6 +363,31 @@ answer that stays correct. Recommendation recorded: turn it on — one clearly
 better answer and one better, against one less direct, at zero latency. The
 decision is the product owner's.
 
+#### Header on + `QUERY_REWRITE=multi` (2026-10-13, one change against header on)
+
+| run | experiment id | top 6 | MRR@6 | answer cites expected |
+|---|---|---|---|---|
+| `header-true-multi-tier1` | `RXhwZXJpbWVudDoyMA==` | **0.967** | 0.782 | — |
+| `header-true-multi-chatbot` | `RXhwZXJpbWVudDoyMQ==` | **0.967** | 0.782 | **54/61** |
+
+- **The two fixes add up**: the header recovers the breach question (in pool,
+  ranked low), `multi` recovers *thank-you fee* (not in pool until a
+  rephrasing pulls it in). Against header on: recovered 1, lost 0, worse 3
+  (one place each, all inside the top 6). Rewrite p50 638 ms, p95 850 ms, no
+  fallbacks.
+- **Answers**: 2 gained, 0 lost — *thank-you fee* now cites *Rules and
+  Measures* instead of a generic bribery definition; *free productivity app*
+  gains its expected clause. Of the 3 rank drops, two answers are word-for-word
+  the same and *sent personal data to the wrong person* adds *Team Members*
+  ("report … without delay") beside *Initial Reporting*.
+- **Cumulative against production today** (`RXhwZXJpbWVudDoxNg==` /
+  `RXhwZXJpbWVudDoxOA==`): top 6 57 → 59/61, cited 52 → 54/61, lost 0 at every
+  step, cost ~0.8 s median per answer (5.5 → 6.3 s).
+- On this combination `multi` clears the original stop rule (≥ 2 of the 4
+  misses recovered, none lost) that it missed alone. Still missed: *vendor
+  without contract* (only `multi_titles` reached it) and *personal laptop*
+  (label, follow-up #10).
+
 ## Decision and what stays open
 
 - **Ships `QUERY_REWRITE=off`.** On well-formed questions there is almost
