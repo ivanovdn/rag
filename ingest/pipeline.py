@@ -2,6 +2,7 @@ from pathlib import Path
 
 from config import settings
 from ingest.docx_parser import parse_docx
+from rag.chunk_header import with_header
 from rag.embeddings import embed_texts
 from rag.vector_store import (
     assert_sparse_vector,
@@ -34,17 +35,7 @@ def ingest_document(filepath: Path, doc_link: str) -> int:
 
     # Build embedding text: prepend metadata so doc/section/clause
     # participate in cosine similarity (not just the chunk body)
-    embed_inputs = []
-    for c in chunks:
-        prefix_parts = []
-        if c.doc_title:
-            prefix_parts.append(f"Document: {c.doc_title}")
-        if c.section:
-            prefix_parts.append(f"Section: {c.section}")
-        if c.clause:
-            prefix_parts.append(f"Clause: {c.clause}")
-        prefix = " | ".join(prefix_parts)
-        embed_inputs.append(f"{prefix}\n{c.text}" if prefix else c.text)
+    embed_inputs = [with_header(c.text, c.doc_title, c.section, c.clause) for c in chunks]
 
     embeddings = embed_texts(embed_inputs)
     upsert_chunks(chunks, embeddings)
