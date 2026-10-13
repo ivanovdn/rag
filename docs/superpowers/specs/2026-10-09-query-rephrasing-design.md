@@ -303,6 +303,16 @@ recorded production top 6 on 60/61 questions.
   and it fixes a different class of miss (in the pool, ranked low) than a
   rewrite can.
 
+Re-run 2026-10-13, after the reranker endpoint had been briefly unreachable
+and came back: same headline (recovered 1, lost 0, top 6 0.934 → 0.951, header
+MRR@6 0.783), better 8 / worse 7. The bare arm now differs from the recorded
+production top 6 on 11/61 questions (1/61 before), because the server's scores
+moved a little — median |Δ| 0.001, p90 0.009, max 0.034, mean signed 0.000 on
+306 matched chunks — which reorders near-ties. No systematic shift, and both
+arms run against the same server in one pass, so the comparison holds; but the
+VM runs should take their own `off` baseline the same day rather than reuse
+the 2026-10-09 one.
+
 Not shipped from this check: one dataset, retrieval only. Next is a setting
 (`RERANKER_DOC_HEADER`, default off) on its own branch, measured with tier1 and
 one full chatbot run with answers read.
