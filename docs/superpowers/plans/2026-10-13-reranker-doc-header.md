@@ -373,7 +373,7 @@ git commit -m "feat(eval): record RERANKER_DOC_HEADER in experiment metadata and
 - Modify: `SETUP.md` Step 11 (beside the rewrite comparison runbook)
 - Modify: `CLAUDE.md` (Config block: one line)
 
-- [ ] **Step 1: SETUP.md** — add a "Reranker header comparison" block mirroring the rewrite runbook: tier1 with `-e RERANKER_DOC_HEADER=false`, then `=true`, each with `-e GIT_COMMIT`; then `python eval/compare_runs.py <off_id> <on_id> --phoenix-url http://phoenix:6006`; then one chatbot run with the header on, compared against the existing `baseline-identity-v1` chatbot run, reading the answers of every question compare_runs lists as better/worse. Stop rule: ship on only if tier1 recovers ≥1 and loses 0, and no chatbot answer gets worse on reading.
+- [ ] **Step 1: SETUP.md** — add a "Reranker header comparison" block mirroring the rewrite runbook: tier1 with `-e RERANKER_DOC_HEADER=false`, then `=true`, each with `-e GIT_COMMIT`; then `python eval/compare_runs.py <off_id> <on_id> --phoenix-url http://phoenix:6006`; then two chatbot runs the same day, header off and on (not the 2026-10-09 `baseline-identity-v1`: the reranker's scores drifted when it restarted on 2026-10-13, see the design doc), compared with compare_runs, reading the answers of every question compare_runs lists as better/worse. Stop rule: ship on only if tier1 recovers ≥1 and loses 0, and no chatbot answer gets worse on reading.
 
 - [ ] **Step 2: CLAUDE.md** — in the Config code block, after the `QUERY_REWRITE` line:
 
