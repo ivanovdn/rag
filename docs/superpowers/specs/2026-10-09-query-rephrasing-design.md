@@ -426,6 +426,50 @@ From the recorded header + `multi` chatbot run (`RXhwZXJpbWVudDoyMQ==`):
   `source_number` today; a range check would belong with the citation
   evaluators (follow-up #10).
 
+#### `RERANKER_INSTRUCTION` (one change against header + `multi`)
+
+Seven wordings swept read-only on the header + `multi` pools rebuilt from the
+VM run's recorded rephrasings (no LLM calls; the current instruction reproduced
+the VM ranks on 61/61):
+
+| instruction | top 6 | MRR@6 | rank 1 | vs current up/down/lost |
+|---|---|---|---|---|
+| current | 0.967 | 0.782 | 40 | — |
+| **`use_header`** | 0.967 | **0.802** | **42** | 9 / 6 / **0** |
+| `employee_action` | 0.951 | 0.816 | 44 | 9 / 5 / 1 |
+| `answers_directly` | 0.967 | 0.781 | 39 | 5 / 3 / 0 |
+| `not_general` | 0.967 | 0.781 | 40 | 6 / 6 / 0 |
+| `direct_rule` | 0.967 | 0.759 | 37 | 7 / 8 / 0 |
+| `yes_no` | 0.967 | 0.735 | 36 | 3 / 10 / 0 |
+| Qwen default (web search) | 0.918 | 0.733 | 37 | 8 / 14 / 3 |
+
+`use_header` = *"Given an employee compliance question, retrieve the internal
+policy clause that answers it; use the document, section and clause names to
+judge what the clause is about"* — the current wording plus a pointer to the
+header. Best of seven on the same 61 questions, so part of the gain may be
+selection; the VM runs below are the check.
+
+| run | experiment id | top 6 | MRR@6 | answer cites expected |
+|---|---|---|---|---|
+| `header-true-multi-instr-tier1` | `RXhwZXJpbWVudDoyNA==` | 0.967 | **0.802** | — |
+| `header-true-multi-instr-chatbot` | `RXhwZXJpbWVudDoyNQ==` | 0.967 | **0.802** | **55/61** |
+
+- Tier1 matched the local prediction on 61/61; recovered 0, lost 0, better 9 /
+  worse 6, all inside the top 6.
+- Answers: 2 gained — exactly the two that weakened when the header went on
+  (*client didn't mention AI* now cites *Client-Approved AI Use* 6.5, so the
+  empty-clause-name citation is gone; *client didn't mention open source* now
+  cites *Approval* 3.2). 1 lost by label — *colleague sharing confidential
+  files* cites *Responsibilities of Team Members* ("report … to the SOC")
+  instead of *Reporting* (team lead / HR); still "yes, report it".
+  *Thank-you fee* (3 → 4) and *why wasn't all my data deleted* (3 → 6) both
+  kept their expected citation. Latency unchanged (median 6.3 s).
+
+**Best configuration measured (2026-10-13):** `RERANKER_DOC_HEADER=true`,
+`QUERY_REWRITE=multi`, `RERANKER_INSTRUCTION=<use_header>`, candidates 25,
+top 6. Against production today: top 6 57 → 59/61, MRR 0.764 → 0.802, cited
+52 → 55/61, no answer worse on substance, ~0.8 s median added per answer.
+
 ## Decision and what stays open
 
 - **Ships `QUERY_REWRITE=off`.** On well-formed questions there is almost
