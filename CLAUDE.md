@@ -79,7 +79,7 @@ LLM_BACKEND=ollama|openai-compatible      USE_REMOTE_OLLAMA / USE_REMOTE_QDRANT
 LLM_MODEL=... (ollama) / OPENAI_MODEL=... (openai-compat)   LLM_MODEL_DIGEST (banner warns if the tag moved)
 EMBEDDING_SOURCE=huggingface|ollama       EMBEDDING_MODEL / QDRANT_VECTOR_DIM must match (768 gemma / 2048 nemotron / 4096 qwen3)
 EMBEDDING_QUERY_PREFIX / EMBEDDING_PASSAGE_PREFIX   RERANKER_BACKEND=llama-server|vllm
-RERANKER_MIN_SCORE (0.0 = off; measure from Phoenix reranker.top_score before setting)
+RERANKER_MIN_SCORE (0.0 = off; measure from Phoenix reranker.top_score before setting)   RERANKER_DOC_HEADER (false; reranker scores Document|Section|Clause + text, agent sees bare text)
 BM25_ENABLED (off)                        PHOENIX_ENDPOINT (Docker: http://phoenix:6006/v1/traces)
 TEAMS_TENANT_ID / CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN
 TEAMS_IDLE_POLL_INTERVAL (30s outside business hours) / TEAMS_BUSINESS_HOURS_START_UTC / _END_UTC (07-19 UTC Mon-Fri) / TEAMS_MESSAGES_PAGE_SIZE (5, $top per chat)

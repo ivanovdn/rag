@@ -443,6 +443,31 @@ Decide on the RECOVERED / LOST lists, not the means. Stop rule: no mode that
 recovers ≥ 2 of the 4 misses without losing a working question → rewriting is
 not worth its latency on this corpus.
 
+### Reranker-header comparison (design 2026-10-09, plan 2026-10-13)
+
+`RERANKER_DOC_HEADER=true` makes the reranker score `Document | Section | Clause`
++ text instead of the bare text; the agent still sees the bare text. Take BOTH
+arms the same day: the reranker's scores moved slightly when it restarted on
+2026-10-13, so a baseline from before then is not a clean control.
+
+```bash
+for HDR in false true; do
+  for TIER in tier1 chatbot; do
+    docker compose -f docker-compose-remote.yml run --rm $EVAL \
+      -e GIT_COMMIT=$(git -C /home/sa.ivanov/rag-eval describe --always --dirty) \
+      -e RERANKER_DOC_HEADER=$HDR \
+      --entrypoint python bot eval/run_experiment.py \
+      --tier $TIER --dataset chatbot-test-v1 --name header-$HDR-$TIER --phoenix-url http://phoenix:6006
+  done
+done
+```
+
+Compare each tier's `false` against its `true` with `eval/compare_runs.py` (as
+above), then read the chatbot answers of every question it lists as RECOVERED,
+LOST, BETTER or WORSE. The experiment metadata carries `reranker_doc_header`,
+and every `rerank` span carries `reranker.doc_header`. Stop rule: turn it on only
+if tier1 recovers ≥ 1 and loses 0, and no chatbot answer reads worse.
+
 `--phoenix-url` takes the compose network name `phoenix` — the same instance you
 reach at `172.20.1.10:6006` from outside. The `-e` overrides let one image
 measure several configurations without an edit or a rebuild, which is how a
