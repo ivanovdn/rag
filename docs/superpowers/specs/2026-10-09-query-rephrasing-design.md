@@ -388,6 +388,44 @@ decision is the product owner's.
   without contract* (only `multi_titles` reached it) and *personal laptop*
   (label, follow-up #10).
 
+#### + `RERANKER_CANDIDATES=40` (one change against header + `multi`)
+
+| run | experiment id | top 6 | MRR@6 | answer cites expected | median latency |
+|---|---|---|---|---|---|
+| `header-true-multi-cand40-tier1` | `RXhwZXJpbWVudDoyMg==` | **0.984** | 0.781 | — | 1.44 s (retrieval) |
+| `header-true-multi-cand40-chatbot` | `RXhwZXJpbWVudDoyMw==` | **0.984** | 0.782 | 53/61 | 6.6 s |
+
+- **Retrieval improves**: *vendor without a contract* recovered (→ 4/5), lost 0;
+  document and section hit both 1.000. Cost +0.27 s retrieval, +0.3 s per answer.
+- **Answers do not**: 1 gained (vendor, now citing *Disclosure of Personal Data
+  to Third Parties*), 2 lost — *thank-you fee* (expected 3 → 4, answer falls
+  back to the generic Code of Ethics line) and *emergency bypass of privacy
+  controls* (2 → 3, cites *ERMT* instead of *Emergency Access Rights*). Both
+  still say no; both less on point. Net 54 → 53, inside one reorder each way.
+- **Not adopted**: candidates stay 25. The lesson is that top-6 hit is the
+  wrong stopping metric for answers: a correct clause one place lower can lose
+  the citation while every source still contains it.
+
+#### Would `RERANKER_TOP_N=4` help? No — counted, not run
+
+From the recorded header + `multi` chatbot run (`RXhwZXJpbWVudDoyMQ==`):
+
+- Where the expected clause first appears: rank 1: 40, 2: 10, 3: 6, 4: 2,
+  **5: 1**, 6: 0, absent: 2. Correct citations are taken from source 1 in
+  37/54 answers; from 5–6 only once (*air alert*, at 5).
+- The 7 answers that miss the expected clause while it is in the sources have it
+  at rank **1 or 2** in 6 of 7, and cite sources 2–4 instead. Cutting to 4 removes
+  none of those distractors.
+- So `TOP_N=4` would lose *air alert* and fix nothing. The remaining citation
+  misses are the model choosing a neighbouring source over a top-ranked
+  correct one — follow-up #10's pattern — not a ranking or pool problem.
+  Further gains are in the answer prompt or the labels, not retrieval knobs.
+- Seen in passing: *Can I use AI to improve my email to a client?* cites
+  `source_number` 7 with 6 sources; its metadata and quote are source 6's, so
+  the content is grounded and only the number is wrong. Nothing reads
+  `source_number` today; a range check would belong with the citation
+  evaluators (follow-up #10).
+
 ## Decision and what stays open
 
 - **Ships `QUERY_REWRITE=off`.** On well-formed questions there is almost
