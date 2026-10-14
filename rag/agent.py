@@ -137,7 +137,7 @@ ALL_TOOLS = []
 _NO_THINKING_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
 
 
-def get_llm(model: str | None = None):
+def get_llm(model: str | None = None, timeout: float | None = None):
     """Build a fresh LLM client. Deliberately NOT cached.
 
     _run_rag runs each request under its own asyncio.run() loop. llama-index's
@@ -148,7 +148,15 @@ def get_llm(model: str | None = None):
     Construction is cheap (see scripts/bench_llm_construction.py). If a shared
     client is ever wanted, the worker thread must own one persistent event loop
     first.
+
+    `timeout` overrides the request timeout for callers whose output is small
+    and whose failure has a cheap fallback (the query rewrite). Such a call is
+    also not retried by the OpenAI client: its default of 3 retries plus
+    llama-index's own retry on timeouts would turn a 20s bound into ~80s on a
+    hung server. Ollama's client does not retry, so it needs nothing.
     """
+    bounded = timeout is not None
+    timeout = float(timeout if bounded else settings.active_request_timeout)
     if settings.llm_backend == "openai-compatible":
         from llama_index.llms.openai_like import OpenAILike
 
@@ -157,7 +165,8 @@ def get_llm(model: str | None = None):
             api_base=settings.openai_api_base,
             api_key=settings.openai_api_key,
             temperature=settings.llm_temperature,
-            timeout=float(settings.active_request_timeout),
+            timeout=timeout,
+            **({"max_retries": 0} if bounded else {}),
             is_chat_model=True,
             is_function_calling_model=True,
             additional_kwargs={"extra_body": _NO_THINKING_BODY},
@@ -168,7 +177,7 @@ def get_llm(model: str | None = None):
         return Ollama(
             model=model or settings.llm_model,
             base_url=settings.active_ollama_url,
-            request_timeout=float(settings.active_request_timeout),
+            request_timeout=timeout,
             temperature=settings.llm_temperature,
             thinking=False,
             keep_alive=settings.ollama_keep_alive,

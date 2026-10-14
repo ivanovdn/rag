@@ -407,6 +407,73 @@ Nothing can detect that from inside. The prompt hashes beside it
 either way; every production `compliance_request` span carries the same values
 as `identity.*`, so an experiment and a trace match by string comparison.
 
+### Query-rewrite comparison (design 2026-10-09)
+
+Retrieval only, over the chatbot questions, once per mode — no answering model:
+
+```bash
+for MODE in off multi multi_titles hyde; do
+  docker compose -f docker-compose-remote.yml run --rm $EVAL \
+    -e GIT_COMMIT=$(git -C /home/sa.ivanov/rag-eval describe --always --dirty) \
+    -e QUERY_REWRITE=$MODE \
+    --entrypoint python bot eval/run_experiment.py \
+    --tier tier1 --dataset chatbot-test-v1 --name rewrite-$MODE --phoenix-url http://phoenix:6006
+done
+```
+
+Then compare each against `rewrite-off` (ids from Phoenix → Datasets & Experiments):
+
+```bash
+docker compose -f docker-compose-remote.yml run --rm $EVAL --entrypoint python bot \
+  eval/compare_runs.py <rewrite-off id> <rewrite-multi id> --phoenix-url http://phoenix:6006
+```
+
+Tier1 retrieves through `search_policies` since 2026-10-09, so it applies the
+relevance floors as production does. Run it on the production profile (reranker
+ON): with reranker and BM25 both off, the cosine floor judges `off` but not the
+rewrite modes (their scores are RRF), and floor lifts would read as recoveries.
+Tier1 runs from before that date skipped the floors.
+
+Each mode's prompt is mirrored into Phoenix → Prompts as
+`compliance-rewrite-prompt-<mode>` (read-only; edit `rag/query_rewrite.py`), and
+the experiment metadata carries its `rewrite_prompt_version_id` and
+`rewrite_prompt_sha12` — edit a prompt, rerun, and Phoenix diffs the two versions.
+
+Decide on the RECOVERED / LOST lists, not the means. Stop rule: no mode that
+recovers ≥ 2 of the 4 misses without losing a working question → rewriting is
+not worth its latency on this corpus.
+
+### Reranker-header comparison (design 2026-10-09, plan 2026-10-13)
+
+`RERANKER_DOC_HEADER=true` makes the reranker score `Document | Section | Clause`
++ text instead of the bare text; the agent still sees the bare text. Take BOTH
+arms the same day: the reranker's scores moved slightly when it restarted on
+2026-10-13, so a baseline from before then is not a clean control.
+
+```bash
+for HDR in false true; do
+  for TIER in tier1 chatbot; do
+    docker compose -f docker-compose-remote.yml run --rm $EVAL \
+      -e GIT_COMMIT=$(git -C /home/sa.ivanov/rag-eval describe --always --dirty) \
+      -e RERANKER_DOC_HEADER=$HDR \
+      --entrypoint python bot eval/run_experiment.py \
+      --tier $TIER --dataset chatbot-test-v1 --name header-$HDR-$TIER --phoenix-url http://phoenix:6006
+  done
+done
+```
+
+Compare each tier's `false` against its `true` with `eval/compare_runs.py` (as
+above), then read the chatbot answers of every question it lists as RECOVERED,
+LOST, BETTER or WORSE. The experiment metadata carries `reranker_doc_header`,
+and every `rerank` span carries `reranker.doc_header`. Stop rule: turn it on only
+if tier1 recovers ≥ 1 and loses 0, and no chatbot answer reads worse.
+
+`RERANKER_INSTRUCTION` is set in `.env`, not in the repo, so experiments record
+it both verbatim (`reranker_instruction`) and by hash (`reranker_prompt_sha12`,
+the instruction plus the backend's wrapper as sent); production spans carry
+`identity.reranker_prompt_sha12` and `identity.reranker_doc_header`. Quote an
+instruction that contains `;` or spaces: `-e "RERANKER_INSTRUCTION=…"`.
+
 `--phoenix-url` takes the compose network name `phoenix` — the same instance you
 reach at `172.20.1.10:6006` from outside. The `-e` overrides let one image
 measure several configurations without an edit or a rebuild, which is how a

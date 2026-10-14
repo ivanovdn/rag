@@ -43,6 +43,7 @@ def prefetch_logged(question: str):
             "query": question,
             "status": result.status,
             "results": list(sp._last_search_results),
+            "rewrite": dict(sp._last_rewrite),
         }
     )
     return result

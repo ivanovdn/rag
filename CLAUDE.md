@@ -45,6 +45,7 @@ rag/
   tools/             # search_policies (run BEFORE the agent, by rag/search_first.py)
                      #   (clarify.py exists but is NOT imported/used)
   search_first.py    # prefetch() + compose_agent_input() — retrieval front-end
+  query_rewrite.py   # QUERY_REWRITE: LLM rephrasings for retrieval only — off by default; never blocks
   run_identity.py    # content hashes of prompt + agent-input layout, LLM digest — shared by eval metadata and prod spans
 channels/teams/      # bot.py (poll→queue→1 worker; RAG+feedback), auth.py, renderer.py, feedback.py, utils.py
 eval/                # evaluators.py, agent_wrapper.py, run_experiment.py
@@ -53,7 +54,7 @@ tests/               # unit/ (pure-logic) + load/ (offline 30-chat poll-loop soa
 # stubs / not implemented: notification/ db/ frontend/ (empty React scaffold), notebooks/ (gitignored)
 ```
 
-**Search flow:** `prefetch()` (rag/search_first.py) runs `search_policies` BEFORE the agent — `embed_query → search_chunks (one Qdrant Query API call: dense, or dense+sparse `bm25` fused server-side by RRF, `k=60` pinned in `rag/vector_store.py`; `RERANKER_CANDIDATES` sizes both prefetches AND the fused limit — one knob, never per-branch) → [rerank → top RERANKER_TOP_N] → relevance floor (RERANKER_MIN_SCORE, 0.0 = off) → format_sources()` with `[Source N]` headers — and its sources are appended to the agent's user message. The agent is **tool-free**: retrieval is no longer something it can skip. `POLICY_SEARCH_UNAVAILABLE` and `NO_RELEVANT_POLICY_FOUND` short-circuit before any LLM call.
+**Search flow:** `prefetch()` (rag/search_first.py) runs `search_policies` BEFORE the agent — `[rewrite_query → +2 rephrasings searched beside the original, QUERY_REWRITE, off by default] → embed_query → search_chunks (one Qdrant Query API call: dense, or dense+sparse `bm25` fused server-side by RRF, `k=60` pinned in `rag/vector_store.py`; `RERANKER_CANDIDATES` sizes both prefetches AND the fused limit — one knob, never per-branch) → [rerank → top RERANKER_TOP_N] → relevance floor (RERANKER_MIN_SCORE, 0.0 = off) → format_sources()` with `[Source N]` headers — and its sources are appended to the agent's user message. The agent is **tool-free**: retrieval is no longer something it can skip. `POLICY_SEARCH_UNAVAILABLE` and `NO_RELEVANT_POLICY_FOUND` short-circuit before any LLM call.
 
 **Message flow (Teams):** the poll thread runs `_handle_inbound` (commands, ratings, an immediate `ACK_HTML`) and enqueues onto `_work_q`; **exactly one** worker thread runs `_answer` (router + RAG + reply), so detection never blocks on the ~16s pipeline. `_ensure_worker()` restarts the worker if it dies. The persisted `last_check` is held behind in-flight messages so a restart re-delivers unanswered questions — at-least-once, bounded by the `TEAMS_MAX_STATE_AGE_MINUTES` clamp. The answer and its rating prompt go out as **one** Graph send (`<hr>`-joined), so rating capture can only be armed for a user who actually saw the prompt. On SIGTERM the bot drains the in-flight answer (`TEAMS_SHUTDOWN_GRACE_SECONDS`), saves state and exits 0 instead of being SIGKILLed — see the gotcha row for the two graces that must stay ordered. Escalation is decided in three layers: retrieval returning no match escalates in code with no LLM call; the model sets `escalation.needed` when sources do not answer the question; and a grounding backstop refuses to render an answer whose parse failed or whose citations are empty (outcomes `escalated_parse_failure` / `escalated_ungrounded`).
 
@@ -61,7 +62,7 @@ tests/               # unit/ (pure-logic) + load/ (offline 30-chat poll-loop soa
 
 **Infra resilience:** transient backend failures (conn errors, timeouts, 5xx from embeddings/Qdrant/LLM) are retried (`retry_transient`, backoffs `(0.5,1,2)s` → up to 4 attempts) and, if still failing, become a clean **"service temporarily unavailable"** reply — never a content escalation, never a leaked raw error. Two interception points: retrieval (inside `search_policies` → sets `sp._retrieval_unavailable`, returns sentinel `POLICY_SEARCH_UNAVAILABLE`) and the LLM/agent boundary (in `_run_rag`, returns `{"status":"unavailable"}`). Each records a distinct `infra_unavailable` Phoenix span (`failed_component`, `error_type`, `retries_attempted`). The unavailable reply gets no rating prompt and creates no feedback row. Non-transient errors still propagate to escalation as before.
 
-**Eval tiers:** tier1 `retrieval-test-v1` (retrieval hit), tier2 `e2e-test-v1` (Q&A), chatbot `chatbot-test-v1` (realistic). Metadata captures infra (local/remote, urls, reranker backend) and the run's identity from `rag/run_identity.py` — `git_commit`, LLM digest, `system_prompt_sha12`, `agent_input_sha12` (the question+sources layout) — which production also stamps on every `compliance_request` span as `identity.*`. Match an experiment to a trace by those values; on the VM pass `-e GIT_COMMIT` (SETUP.md Step 11).
+**Eval tiers:** tier1 `retrieval-test-v1` (retrieval hit), tier2 `e2e-test-v1` (Q&A), chatbot `chatbot-test-v1` (realistic). Metadata captures infra (local/remote, urls, reranker backend) and the run's identity from `rag/run_identity.py` — `git_commit`, LLM digest, `system_prompt_sha12`, `agent_input_sha12` (the question+sources layout), `reranker_prompt_sha12` (instruction + backend wrapper as sent) — which production also stamps on every `compliance_request` span as `identity.*`. Match an experiment to a trace by those values; on the VM pass `-e GIT_COMMIT` (SETUP.md Step 11).
 
 ## Config — `.env` (full list in `.env.example`)
 
@@ -78,12 +79,13 @@ LLM_BACKEND=ollama|openai-compatible      USE_REMOTE_OLLAMA / USE_REMOTE_QDRANT
 LLM_MODEL=... (ollama) / OPENAI_MODEL=... (openai-compat)   LLM_MODEL_DIGEST (banner warns if the tag moved)
 EMBEDDING_SOURCE=huggingface|ollama       EMBEDDING_MODEL / QDRANT_VECTOR_DIM must match (768 gemma / 2048 nemotron / 4096 qwen3)
 EMBEDDING_QUERY_PREFIX / EMBEDDING_PASSAGE_PREFIX   RERANKER_BACKEND=llama-server|vllm
-RERANKER_MIN_SCORE (0.0 = off; measure from Phoenix reranker.top_score before setting)
+RERANKER_MIN_SCORE (0.0 = off; measure from Phoenix reranker.top_score before setting)   RERANKER_DOC_HEADER (false; reranker scores Document|Section|Clause + text, agent sees bare text)
 BM25_ENABLED (off)                        PHOENIX_ENDPOINT (Docker: http://phoenix:6006/v1/traces)
 TEAMS_TENANT_ID / CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN
 TEAMS_IDLE_POLL_INTERVAL (30s outside business hours) / TEAMS_BUSINESS_HOURS_START_UTC / _END_UTC (07-19 UTC Mon-Fri) / TEAMS_MESSAGES_PAGE_SIZE (5, $top per chat)
 TEAMS_SHUTDOWN_GRACE_SECONDS (12, SIGTERM drain; must stay under the bot service's stop_grace_period — 30s in docker-compose-remote.yml)
 ROUTER_ENABLED (kill switch) / ROUTER_LLM_MODEL (blank=main LLM) / ROUTER_CONFIDENCE_FLOOR (0.6)
+QUERY_REWRITE=off|multi|multi_titles|hyde (off)  QUERY_REWRITE_TIMEOUT (20s) — reranker + agent always see the original question
 ```
 
 ## Critical Constraints — never violate

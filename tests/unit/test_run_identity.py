@@ -16,6 +16,8 @@ import channels.teams.bot as bot
 import eval.run_experiment as rx
 import rag.agent as agent
 import rag.model_digest as md
+import rag.query_rewrite as qr
+import rag.reranker as rr
 import rag.router as router
 import rag.run_identity as ri
 import rag.search_first as search_first
@@ -193,3 +195,109 @@ def test_eval_is_quiet_when_the_digest_matches(monkeypatch, capsys):
 
     rx._llm_digest_meta()
     assert "WARNING" not in capsys.readouterr().out
+
+
+# --- query rewrite -----------------------------------------------------------------
+
+
+def test_rewrite_off_has_no_prompt_hash(monkeypatch):
+    monkeypatch.setattr(ri.settings, "query_rewrite", "off")
+    assert ri.rewrite_identity() == {"query_rewrite": "off", "rewrite_prompt_sha12": ""}
+
+
+@pytest.mark.parametrize("mode", ["multi", "multi_titles", "hyde"])
+def test_each_rewrite_mode_is_identified_by_its_own_prompt(monkeypatch, mode):
+    monkeypatch.setattr(ri.settings, "query_rewrite", mode)
+    assert ri.rewrite_identity() == {
+        "query_rewrite": mode,
+        "rewrite_prompt_sha12": ri.sha12(qr.REWRITE_PROMPTS[mode]),
+    }
+
+
+def test_editing_the_rewrite_prompt_changes_its_hash(monkeypatch):
+    monkeypatch.setattr(ri.settings, "query_rewrite", "multi")
+    before = ri.rewrite_identity()["rewrite_prompt_sha12"]
+    monkeypatch.setitem(qr.REWRITE_PROMPTS, "multi", qr.REWRITE_PROMPTS["multi"] + " ")
+    assert ri.rewrite_identity()["rewrite_prompt_sha12"] != before
+
+
+def test_production_spans_carry_the_rewrite_identity(monkeypatch):
+    monkeypatch.setattr(ri.settings, "query_rewrite", "multi")
+    b = object.__new__(bot.TeamsBot)
+    b._llm_digest_at_startup = ""
+    attrs = b._identity_attributes()
+    assert attrs["identity.query_rewrite"] == "multi"
+    assert attrs["identity.rewrite_prompt_sha12"] == ri.rewrite_identity()["rewrite_prompt_sha12"]
+
+
+def test_experiments_record_the_rewrite_identity_on_every_tier():
+    src = inspect.getsource(rx.main)
+    assert "**rewrite_identity()" in src
+    assert src.index("**rewrite_identity()") < src.index('if args.tier == "tier1"')
+
+
+# --- reranker ----------------------------------------------------------------------
+
+
+def test_reranker_off_has_no_prompt_hash(monkeypatch):
+    monkeypatch.setattr(ri.settings, "reranker_enabled", False)
+    assert ri.reranker_identity() == {"reranker_prompt_sha12": ""}
+
+
+def test_the_reranker_hash_is_of_the_query_as_sent(monkeypatch):
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_backend", "vllm-score")
+    assert ri.reranker_identity() == {"reranker_prompt_sha12": ri.sha12(rr._build_query(""))}
+
+
+def test_editing_the_instruction_changes_the_hash(monkeypatch):
+    """The 2026-10-13 instruction change moved MRR 0.782 -> 0.802 and was
+    recorded only in a run name."""
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_backend", "vllm-score")
+    before = ri.reranker_identity()["reranker_prompt_sha12"]
+    monkeypatch.setattr(ri.settings, "reranker_instruction", ri.settings.reranker_instruction + " ")
+    assert ri.reranker_identity()["reranker_prompt_sha12"] != before
+
+
+def test_changing_the_backend_changes_the_hash(monkeypatch):
+    """Same instruction, different wrapper: the model reads a different text."""
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_backend", "vllm-score")
+    vllm = ri.reranker_identity()["reranker_prompt_sha12"]
+    monkeypatch.setattr(ri.settings, "reranker_backend", "llama-server")
+    assert ri.reranker_identity()["reranker_prompt_sha12"] != vllm
+
+
+def test_experiments_record_the_reranker_identity_on_every_tier():
+    src = inspect.getsource(rx.main)
+    assert "**reranker_identity()" in src
+    assert src.index("**reranker_identity()") < src.index('if args.tier == "tier1"')
+
+
+def test_production_spans_carry_the_reranker_identity(monkeypatch):
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_doc_header", True)
+    b = object.__new__(bot.TeamsBot)
+    b._llm_digest_at_startup = ""
+    attrs = b._identity_attributes()
+    assert attrs["identity.reranker_prompt_sha12"] == ri.reranker_identity()["reranker_prompt_sha12"]
+    assert attrs["identity.reranker_doc_header"] == "true"
+
+
+def test_the_header_flag_is_empty_with_the_reranker_off(monkeypatch):
+    monkeypatch.setattr(ri.settings, "reranker_enabled", False)
+    b = object.__new__(bot.TeamsBot)
+    b._llm_digest_at_startup = ""
+    attrs = b._identity_attributes()
+    assert attrs["identity.reranker_prompt_sha12"] == ""
+    assert attrs["identity.reranker_doc_header"] == ""
+
+
+def test_a_malformed_template_costs_the_hash_not_the_message(monkeypatch):
+    """_identity_attributes runs on every message, greetings included. A template
+    with a stray brace must label the span, not stop the reply."""
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_backend", "llama-server")
+    monkeypatch.setattr(ri.settings, "reranker_query_template", '{"q": "{query}"}')
+    assert ri.reranker_identity() == {"reranker_prompt_sha12": "error:KeyError"}

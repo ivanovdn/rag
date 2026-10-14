@@ -58,49 +58,21 @@ def setup_async():
 
 
 def make_tier1_task(top_k: int):
-    # Local imports: init_observability() must run before any LlamaIndex/Ollama
-    # import, and this module is imported by the CLI entry point below.
-    from config import settings
-    from rag.embeddings import embed_query
-    from rag.vector_store import search_chunks
-
-    retrieve_k = settings.reranker_candidates if settings.reranker_enabled else top_k
+    # Local import: init_observability() must run before any LlamaIndex/Ollama
+    # import, and search_policies pulls llama_index.
+    import rag.tools.search_policies as sp
 
     def retrieval_task(input):
-        # One path for both modes: Qdrant fuses server-side, so dense-only and
-        # dense+sparse both come back as ScoredPoints with the same payload.
-        vector = embed_query(input["question"])
-        raw = search_chunks(input["question"], vector, top_k=retrieve_k)
-        results = [
-            {
-                "doc_title": r.payload.get("doc_title", ""),
-                "section": r.payload.get("section", ""),
-                "clause": r.payload.get("clause", ""),
-                "clause_number": r.payload.get("clause_number", ""),
-                "text": r.payload.get("text", ""),
-                "retrieval_score": round(r.score, 4),
-            }
-            for r in raw
-        ]
-
-        if settings.reranker_enabled and results:
-            from rag.reranker import rerank
-
-            results = rerank(input["question"], results, top_n=settings.reranker_top_n)
-
+        # The same call production makes -- rewrite, embed, fused search, rerank,
+        # floors. Tier1 used to carry its own copy of that path, which stopped
+        # being the shipped one the moment a step (the query rewrite) was added
+        # inside search_policies. `top_k` only matters with the reranker off.
+        sp.search_policies(input["question"], top_k=top_k)
+        if sp._retrieval_unavailable:
+            raise RuntimeError("retrieval unavailable (embeddings/qdrant) -- not a retrieval miss")
         return {
-            "search_results": [
-                {
-                    "doc_title": r["doc_title"],
-                    "section": r["section"],
-                    "clause": r.get("clause", ""),
-                    "clause_number": r.get("clause_number", ""),
-                    "retrieval_score": r.get("retrieval_score", 0),
-                    "rerank_score": r.get("rerank_score"),
-                    "original_rank": r.get("original_rank"),
-                }
-                for r in results
-            ]
+            "search_results": [dict(r) for r in sp._last_search_results],
+            "rewrite": dict(sp._last_rewrite),
         }
 
     return retrieval_task
@@ -134,6 +106,7 @@ def make_agent_task(verbose: bool = False):
             # ever had — the tool that used to be counted here was never called.
             return {
                 "search_queries": search_queries,
+                "rewrite": next((c.get("rewrite", {}) for c in tool_calls if c["tool"] == "search_policies"), {}),
                 "num_searches": len(search_queries),
                 "escalated": bool(escalation.get("needed")),
                 "escalation_reason": escalation.get("reason") or None,
@@ -216,6 +189,31 @@ def make_agent_task(verbose: bool = False):
             "agent_metadata": _agent_metadata(parsed["escalation"]),
         }
     return e2e_task
+
+
+def _reranker_meta() -> dict:
+    """The reranker parameters both tiers record; None/"none" with it off."""
+    on = settings.reranker_enabled
+    return {
+        "reranker": settings.reranker_model if on else "none",
+        "reranker_top_n": settings.reranker_top_n if on else None,
+        "reranker_candidates": settings.reranker_candidates if on else None,
+        "reranker_min_score": settings.reranker_min_score if on else None,
+        "reranker_doc_header": settings.reranker_doc_header if on else None,
+        "reranker_instruction": settings.reranker_instruction if on else None,
+    }
+
+
+def _auto_name(tier: str, candidates: int) -> str:
+    embed_short = settings.embedding_model.split("/")[-1]
+    search = "hybrid" if settings.bm25_enabled else "vector"
+    name = f"agentic_{tier}_{embed_short}_{search}_cand{candidates}"
+    if settings.reranker_enabled:
+        reranker_short = settings.reranker_model.replace("/", "-")
+        name += f"_{reranker_short}_top{settings.reranker_top_n}"
+        if settings.reranker_doc_header:
+            name += "_hdr"
+    return name
 
 
 def _prompt_meta() -> dict:
@@ -301,54 +299,90 @@ def _mirror_prompt_to_registry(client) -> dict:
     What it buys: the actual text visible beside each experiment, and Phoenix's
     diff between versions — so when a sweep moves a number you can see what the
     prompt change was, instead of diffing 2,350 characters by hand.
+    """
+    from rag.agent import SYSTEM_PROMPT
 
-    Idempotent: versions are tagged with the prompt's sha12, so re-running with an
+    return _mirror_to_registry(
+        client,
+        name=PROMPT_REGISTRY_NAME,
+        text=SYSTEM_PROMPT,
+        source="rag/agent.py SYSTEM_PROMPT",
+        id_key="system_prompt_version_id",
+    )
+
+
+REWRITE_REGISTRY_PREFIX = "compliance-rewrite-prompt-"
+
+
+def _mirror_rewrite_prompt_to_registry(client) -> dict:
+    """Mirror the active QUERY_REWRITE prompt template; {} when the rewrite is off.
+
+    One registry entry per mode, so Phoenix's version diff compares edits of one
+    prompt and never `multi` against `hyde`. The TEMPLATE is mirrored -- the same
+    text rewrite_prompt_sha12 hashes -- so `multi_titles` keeps its literal
+    {titles} placeholder (template_format NONE) rather than one day's titles.
+    """
+    from rag.query_rewrite import REWRITE_PROMPTS
+
+    mode = settings.query_rewrite
+    if mode not in REWRITE_PROMPTS:
+        return {}
+    return _mirror_to_registry(
+        client,
+        name=f"{REWRITE_REGISTRY_PREFIX}{mode}",
+        text=REWRITE_PROMPTS[mode],
+        source=f"rag/query_rewrite.py REWRITE_PROMPTS['{mode}']",
+        id_key="rewrite_prompt_version_id",
+    )
+
+
+def _mirror_to_registry(client, *, name: str, text: str, source: str, id_key: str) -> dict:
+    """Store `text` as a version of registry prompt `name`; return {id_key: version id}.
+
+    Idempotent: versions are tagged with the text's sha12, so re-running with an
     unchanged prompt reuses the existing version instead of piling up duplicates.
 
     Never raises. An eval run costs real GPU time on a shared host; a registry
     hiccup must degrade to "no version id in the metadata", not lose the run.
     """
-    from rag.agent import SYSTEM_PROMPT
-
-    sha = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12]
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
     try:
-        existing = client.prompts.get(prompt_identifier=PROMPT_REGISTRY_NAME, tag=sha)
-        return {"system_prompt_version_id": existing.id}
+        existing = client.prompts.get(prompt_identifier=name, tag=sha)
+        return {id_key: existing.id}
     except Exception:
         pass  # not registered yet (or the registry is unreachable) — try to create
 
     try:
-        from config import settings
         from phoenix.client.types import PromptVersion
 
         version = client.prompts.create(
-            name=PROMPT_REGISTRY_NAME,
+            name=name,
             prompt_description=(
-                "Read-only mirror of rag/agent.py SYSTEM_PROMPT. Nothing reads this at "
-                "runtime — editing it here changes nothing. Edit rag/agent.py."
+                f"Read-only mirror of {source}. Nothing reads this at runtime — "
+                "editing it here changes nothing. Edit the source file."
             ),
             version=PromptVersion(
-                [{"role": "system", "content": SYSTEM_PROMPT}],
+                [{"role": "system", "content": text}],
                 model_name=settings.llm_model,
                 model_provider="OLLAMA",
-                # NONE, not MUSTACHE/F_STRING: the prompt embeds a literal JSON
-                # block with { } braces. Any templating format would try to
-                # interpolate them and mangle the output contract.
+                # NONE, not MUSTACHE/F_STRING: SYSTEM_PROMPT embeds a literal JSON
+                # block and the rewrite template a literal {titles}. Any
+                # templating format would try to interpolate them.
                 template_format="NONE",
-                description=f"sha12={sha} · {len(SYSTEM_PROMPT)} chars",
+                description=f"sha12={sha} · {len(text)} chars",
             ),
         )
         try:
             client.prompts.tags.create(
                 prompt_version_id=version.id,
                 name=sha,
-                description="sha12 of rag/agent.py SYSTEM_PROMPT at the time of this run",
+                description=f"sha12 of {source} at the time of this run",
             )
         except Exception:
             pass  # the version exists either way; the tag is only for idempotency
-        return {"system_prompt_version_id": version.id}
+        return {id_key: version.id}
     except Exception as exc:
-        print(f"  WARNING: could not mirror the prompt into Phoenix "
+        print(f"  WARNING: could not mirror {source} into Phoenix "
               f"({type(exc).__name__}: {str(exc)[:80]}); the run continues without it")
         return {}
 
@@ -429,13 +463,7 @@ def main():
 
     # Auto-generate experiment name from config if not provided
     if not args.name:
-        embed_short = settings.embedding_model.split("/")[-1]
-        search = "hybrid" if settings.bm25_enabled else "vector"
-        if settings.reranker_enabled:
-            reranker_short = settings.reranker_model.replace("/", "-")
-            args.name = f"agentic_{args.tier}_{embed_short}_{search}_cand{candidates}_{reranker_short}_top{settings.reranker_top_n}"
-        else:
-            args.name = f"agentic_{args.tier}_{embed_short}_{search}_cand{candidates}"
+        args.name = _auto_name(args.tier, candidates)
 
     client_kwargs = {}
     if args.phoenix_url:
@@ -462,17 +490,29 @@ def main():
     print(f"  Ollama:      {settings.active_ollama_url} ({'remote' if settings.use_remote_ollama else 'local'}, timeout={settings.active_request_timeout}s)")
     print(f"  Candidates:  {candidates} (from {'--candidates' if args.candidates is not None else 'RERANKER_CANDIDATES in .env'}) — sizes both prefetches and the fused limit")
     print(f"  BM25:        {'on' if settings.bm25_enabled else 'off'}")
-    print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (top_n={settings.reranker_top_n})" if settings.reranker_enabled else ""))
+    print(f"  Reranker:    {settings.reranker_model if settings.reranker_enabled else 'off'}" + (f" (top_n={settings.reranker_top_n}{', doc header' if settings.reranker_doc_header else ''})" if settings.reranker_enabled else ""))
+    print(f"  Rewrite:     {settings.query_rewrite}")
 
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
-    reranker_info = settings.reranker_model if settings.reranker_enabled else "none"
     infra = "remote" if settings.use_remote_ollama else "local"
+    from rag.run_identity import reranker_identity, rewrite_identity
+
+    print(f"  Rerank prompt: {reranker_identity()['reranker_prompt_sha12'] or 'n/a'}")
+
     git_commit = _git_commit()
     print(f"  Commit:      {git_commit}")
     infra_meta = {
         # Which code ran. The prompt hashes below are exact for the prompt; this
         # covers everything else (retrieval, parsing, evaluators).
         "git_commit": git_commit,
+        # Applies to every tier: tier1 now retrieves through search_policies,
+        # which is where the rewrite runs.
+        **rewrite_identity(),
+        **_mirror_rewrite_prompt_to_registry(client),
+        # The reranker prompt as sent (instruction + backend wrapper). The
+        # instruction lives in .env, so without this two runs that differ only
+        # there were told apart by their names alone (2026-10-13).
+        **reranker_identity(),
         "infra": infra,
         "llm_backend": settings.llm_backend,
         "llm_url": settings.active_ollama_url,
@@ -492,9 +532,7 @@ def main():
         task = make_tier1_task(top_k=candidates)
         evaluators = TIER1_EVALUATORS
         metadata = {**infra_meta, "search_type": search_type, "embedding_model": settings.embedding_model,
-                     "reranker": reranker_info, "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
-                     "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
-                     "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
+                     **_reranker_meta(),
                      "min_confidence_score": settings.min_confidence_score if settings.cosine_floor_applies else None,
                      "candidates": candidates, "tier": "tier1"}
     else:
@@ -508,10 +546,7 @@ def main():
         metadata = {**infra_meta, "llm": settings.llm_model, **_llm_digest_meta(),
                      "search_type": search_type,
                      "embedding_model": settings.embedding_model,
-                     "reranker": reranker_info,
-                     "reranker_top_n": settings.reranker_top_n if settings.reranker_enabled else None,
-                     "reranker_candidates": settings.reranker_candidates if settings.reranker_enabled else None,
-                     "reranker_min_score": settings.reranker_min_score if settings.reranker_enabled else None,
+                     **_reranker_meta(),
                      "min_confidence_score": settings.min_confidence_score if settings.cosine_floor_applies else None,
                      "num_ctx": settings.ollama_num_ctx,
                      "temperature": settings.llm_temperature,

@@ -17,6 +17,8 @@ microseconds next to a multi-second answer.
 import hashlib
 
 import rag.agent as agent
+import rag.query_rewrite as query_rewrite
+import rag.reranker as reranker
 import rag.router as router
 import rag.search_first as search_first
 import rag.tools.search_policies as sp
@@ -66,6 +68,38 @@ def prompt_identity() -> dict[str, str]:
         "system_prompt_sha12": sha12(agent.SYSTEM_PROMPT),
         "agent_input_sha12": sha12(rendered),
     }
+
+
+def rewrite_identity() -> dict[str, str]:
+    """Which query-rewrite mode ran, and the exact prompt template it used.
+
+    The template, not the rendered prompt: `multi_titles` fills in titles read
+    from the collection, and the collection is already in the metadata. Reading
+    it here would put a Qdrant call on every request's span.
+    """
+    mode = settings.query_rewrite
+    prompt = query_rewrite.REWRITE_PROMPTS.get(mode, "")
+    return {"query_rewrite": mode, "rewrite_prompt_sha12": sha12(prompt) if prompt else ""}
+
+
+def reranker_identity() -> dict[str, str]:
+    """The reranker prompt as sent: instruction plus the backend's wrapper.
+
+    Hashed from rag/reranker.py's own builder, so an instruction edit in .env, a
+    backend switch, or a llama-server template change all show up -- each
+    changes what the model reads. Empty with the reranker off, as
+    rewrite_prompt_sha12 is with rewrite off. Only the query side: the document
+    wrapper is fixed in code, so git_commit already covers it.
+
+    Never raises: this runs on every message's span, greetings included, and a
+    malformed RERANKER_QUERY_TEMPLATE must cost the label, not the reply.
+    """
+    if not settings.reranker_enabled:
+        return {"reranker_prompt_sha12": ""}
+    try:
+        return {"reranker_prompt_sha12": sha12(reranker._build_query(""))}
+    except Exception as exc:
+        return {"reranker_prompt_sha12": f"error:{type(exc).__name__}"}
 
 
 def router_prompt_sha12() -> str:
