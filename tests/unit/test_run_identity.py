@@ -292,3 +292,12 @@ def test_the_header_flag_is_empty_with_the_reranker_off(monkeypatch):
     attrs = b._identity_attributes()
     assert attrs["identity.reranker_prompt_sha12"] == ""
     assert attrs["identity.reranker_doc_header"] == ""
+
+
+def test_a_malformed_template_costs_the_hash_not_the_message(monkeypatch):
+    """_identity_attributes runs on every message, greetings included. A template
+    with a stray brace must label the span, not stop the reply."""
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_backend", "llama-server")
+    monkeypatch.setattr(ri.settings, "reranker_query_template", '{"q": "{query}"}')
+    assert ri.reranker_identity() == {"reranker_prompt_sha12": "error:KeyError"}

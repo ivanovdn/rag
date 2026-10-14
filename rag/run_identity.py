@@ -88,11 +88,18 @@ def reranker_identity() -> dict[str, str]:
     Hashed from rag/reranker.py's own builder, so an instruction edit in .env, a
     backend switch, or a llama-server template change all show up -- each
     changes what the model reads. Empty with the reranker off, as
-    rewrite_prompt_sha12 is with rewrite off.
+    rewrite_prompt_sha12 is with rewrite off. Only the query side: the document
+    wrapper is fixed in code, so git_commit already covers it.
+
+    Never raises: this runs on every message's span, greetings included, and a
+    malformed RERANKER_QUERY_TEMPLATE must cost the label, not the reply.
     """
     if not settings.reranker_enabled:
         return {"reranker_prompt_sha12": ""}
-    return {"reranker_prompt_sha12": sha12(reranker._build_query(""))}
+    try:
+        return {"reranker_prompt_sha12": sha12(reranker._build_query(""))}
+    except Exception as exc:
+        return {"reranker_prompt_sha12": f"error:{type(exc).__name__}"}
 
 
 def router_prompt_sha12() -> str:
