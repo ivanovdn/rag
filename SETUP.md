@@ -468,6 +468,12 @@ LOST, BETTER or WORSE. The experiment metadata carries `reranker_doc_header`,
 and every `rerank` span carries `reranker.doc_header`. Stop rule: turn it on only
 if tier1 recovers ≥ 1 and loses 0, and no chatbot answer reads worse.
 
+`RERANKER_INSTRUCTION` is set in `.env`, not in the repo, so experiments record
+it both verbatim (`reranker_instruction`) and by hash (`reranker_prompt_sha12`,
+the instruction plus the backend's wrapper as sent); production spans carry
+`identity.reranker_prompt_sha12` and `identity.reranker_doc_header`. Quote an
+instruction that contains `;` or spaces: `-e "RERANKER_INSTRUCTION=…"`.
+
 `--phoenix-url` takes the compose network name `phoenix` — the same instance you
 reach at `172.20.1.10:6006` from outside. The `-e` overrides let one image
 measure several configurations without an edit or a rebuild, which is how a
