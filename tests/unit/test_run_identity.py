@@ -273,3 +273,22 @@ def test_experiments_record_the_reranker_identity_on_every_tier():
     src = inspect.getsource(rx.main)
     assert "**reranker_identity()" in src
     assert src.index("**reranker_identity()") < src.index('if args.tier == "tier1"')
+
+
+def test_production_spans_carry_the_reranker_identity(monkeypatch):
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_doc_header", True)
+    b = object.__new__(bot.TeamsBot)
+    b._llm_digest_at_startup = ""
+    attrs = b._identity_attributes()
+    assert attrs["identity.reranker_prompt_sha12"] == ri.reranker_identity()["reranker_prompt_sha12"]
+    assert attrs["identity.reranker_doc_header"] == "true"
+
+
+def test_the_header_flag_is_empty_with_the_reranker_off(monkeypatch):
+    monkeypatch.setattr(ri.settings, "reranker_enabled", False)
+    b = object.__new__(bot.TeamsBot)
+    b._llm_digest_at_startup = ""
+    attrs = b._identity_attributes()
+    assert attrs["identity.reranker_prompt_sha12"] == ""
+    assert attrs["identity.reranker_doc_header"] == ""

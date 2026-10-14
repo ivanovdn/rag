@@ -759,7 +759,12 @@ class TeamsBot:
         must describe the prompt this answer used, and they cost microseconds.
         The digest is the one read at startup -- the banner says so if it moved.
         """
-        from rag.run_identity import prompt_identity, rewrite_identity, router_prompt_sha12  # deferred: observability-first
+        from rag.run_identity import (  # deferred: observability-first
+            prompt_identity,
+            reranker_identity,
+            rewrite_identity,
+            router_prompt_sha12,
+        )
 
         return {
             "identity.git_commit": settings.git_commit,
@@ -767,6 +772,10 @@ class TeamsBot:
             "identity.router_prompt_sha12": router_prompt_sha12(),
             **{f"identity.{k}": v for k, v in prompt_identity().items()},
             **{f"identity.{k}": v for k, v in rewrite_identity().items()},
+            **{f"identity.{k}": v for k, v in reranker_identity().items()},
+            "identity.reranker_doc_header": (
+                str(settings.reranker_doc_header).lower() if settings.reranker_enabled else ""
+            ),
         }
 
     def _answer(self, chat_id, text, sender_name="Unknown", queued_at=None):
