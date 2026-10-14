@@ -533,11 +533,18 @@ first is earlier work, not this branch.
 
 ## Decision and what stays open
 
-- **Ships `QUERY_REWRITE=off`.** On well-formed questions there is almost
-  nothing for a rewrite to fix: the clean set's misses are few, partly label
-  noise, and recovered by luck of wording.
-- **`multi` is the only candidate** if rewriting is revisited; `multi_titles`
-  and `hyde` are rejected for the reasons above.
+- **Deployed 2026-10-14 (`22f9cf9`): `QUERY_REWRITE=multi`,
+  `RERANKER_DOC_HEADER=true`, `RERANKER_INSTRUCTION=<use_header>`**, candidates
+  25, top 6 — the best configuration above. The code defaults stay off; the
+  deployed `.env` turns them on. First production trace (`c89617bc…`) carries
+  `identity.reranker_prompt_sha12 = 69990c1bedf7`, `identity.rewrite_prompt_sha12
+  = e270ed7a00e0`, `identity.reranker_doc_header = "true"`, matching
+  `RXhwZXJpbWVudDoyNg==`.
+- *Superseded:* this section first shipped `QUERY_REWRITE=off`, because alone
+  `multi` recovered too little on well-formed questions. It cleared the stop
+  rule only on top of the header (see "header + `multi`").
+- **`multi` is the only rewrite mode in use**; `multi_titles` and `hyde` are
+  rejected for the reasons above.
 - **The question this was for is unanswered.** The motivation was users less
   precise than the dataset, and the dataset contains none. Per the stop rule
   the invented messy dataset is not built. The better evidence will be real:
