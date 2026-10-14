@@ -489,6 +489,48 @@ selection; the VM runs below are the check.
 top 6. Against production today: top 6 57 → 59/61, MRR 0.764 → 0.802, cited
 52 → 55/61, no answer worse on substance, ~0.8 s median added per answer.
 
+#### Against `main-baseline` (2026-09-25, `RXhwZXJpbWVudDo0`)
+
+`main-baseline` is not the bot deployed today: it predates search-first and
+BM25 hybrid, both on `main` since. So the comparison runs in two steps, and the
+first is earlier work, not this branch.
+
+| | `main-baseline` (09-25) | production today (`RXhwZXJpbWVudDoxOA==`) | best (`RXhwZXJpbWVudDoyNQ==`) |
+|---|---|---|---|
+| sources reach the agent | agent's search tool | search-first, always | search-first, always |
+| retrieval | dense only, top_k 20 | dense + BM25 RRF, v2, candidates 25 | + header, `multi`, `use_header` |
+| top 6 | 52/61 | 57/61 | **59/61** |
+| MRR@6 | 0.699 | 0.764 | **0.802** |
+| answer cites expected | 49/61 | 52/61 | **55/61** |
+| escalated, no citations | **6** | 0 | 0 |
+| median answer | 7.5 s | **5.0 s** | 6.3 s |
+
+- **`main-baseline` → production today (search-first, BM25 hybrid on v2, the
+  one-knob candidate fix):**
+  - All 6 citation-less escalations are gone, among them *client didn't mention
+    AI* and *does the company sell my personal data*. The policy covered all
+    six; the tool-calling agent escalated without retrieving usable sources.
+  - Top 6 52 → 57, MRR 0.699 → 0.764.
+  - Median answer 7.5 → 5.0 s: no agent round trip to decide to search.
+- **Production today → best (this branch):** the header and `use_header` raise
+  MRR; `multi` raises top 6 and is the only one that costs time. Per-row
+  `latency_ms` medians are 5.0 → 6.3 s; the same-day comparison above put the
+  answer-level cost at ~0.8 s (5.5 → 6.3 s).
+- **End to end:** 10 answers gained the expected citation and 2 lost it. Both
+  losses say the same thing; only a second, expected citation was dropped:
+  - *disable the 5-minute auto-lock*: still "no" from *Inactivity
+    Logoff/Lockout*, without *Computers*.
+  - *Teams chats private*: identical text, without the third citation
+    (*Monitoring Activities*).
+- **The largest gain was structural, not a setting.** Retrieval running before
+  the agent removed every citation-less escalation and cut 2.5 s per answer.
+- **Rank decides answers.** The model cites source 1 most often, so MRR
+  predicts citations better than top-6 hit; that is why 40 candidates lost
+  twice.
+- **What is left is mostly labels and the answer prompt, not retrieval.** In
+  6 of the 7 remaining misses the expected clause is at rank 1 or 2, and both
+  losses above are one valid citation among several (follow-up #10).
+
 ## Decision and what stays open
 
 - **Ships `QUERY_REWRITE=off`.** On well-formed questions there is almost
