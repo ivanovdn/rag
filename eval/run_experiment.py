@@ -200,6 +200,7 @@ def _reranker_meta() -> dict:
         "reranker_candidates": settings.reranker_candidates if on else None,
         "reranker_min_score": settings.reranker_min_score if on else None,
         "reranker_doc_header": settings.reranker_doc_header if on else None,
+        "reranker_instruction": settings.reranker_instruction if on else None,
     }
 
 
@@ -494,7 +495,9 @@ def main():
 
     search_type = "hybrid_rrf" if settings.bm25_enabled else "vector_only"
     infra = "remote" if settings.use_remote_ollama else "local"
-    from rag.run_identity import rewrite_identity
+    from rag.run_identity import reranker_identity, rewrite_identity
+
+    print(f"  Rerank prompt: {reranker_identity()['reranker_prompt_sha12'] or 'n/a'}")
 
     git_commit = _git_commit()
     print(f"  Commit:      {git_commit}")
@@ -506,6 +509,10 @@ def main():
         # which is where the rewrite runs.
         **rewrite_identity(),
         **_mirror_rewrite_prompt_to_registry(client),
+        # The reranker prompt as sent (instruction + backend wrapper). The
+        # instruction lives in .env, so without this two runs that differ only
+        # there were told apart by their names alone (2026-10-13).
+        **reranker_identity(),
         "infra": infra,
         "llm_backend": settings.llm_backend,
         "llm_url": settings.active_ollama_url,

@@ -246,6 +246,18 @@ def test_reranker_keys_are_none_with_the_reranker_off(monkeypatch):
     assert meta["reranker_top_n"] is None
 
 
+def test_the_instruction_text_is_recorded_verbatim(monkeypatch):
+    """A hash says THAT it changed; the text says to what, without git archaeology
+    -- the instruction lives in .env, not in the repo."""
+    from eval.run_experiment import _reranker_meta
+
+    monkeypatch.setattr(settings, "reranker_enabled", True)
+    monkeypatch.setattr(settings, "reranker_instruction", "Judge clauses; use the header")
+    assert _reranker_meta()["reranker_instruction"] == "Judge clauses; use the header"
+    monkeypatch.setattr(settings, "reranker_enabled", False)
+    assert _reranker_meta()["reranker_instruction"] is None
+
+
 def test_the_auto_name_marks_the_header(monkeypatch):
     from eval.run_experiment import _auto_name
 

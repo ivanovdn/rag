@@ -267,3 +267,9 @@ def test_changing_the_backend_changes_the_hash(monkeypatch):
     vllm = ri.reranker_identity()["reranker_prompt_sha12"]
     monkeypatch.setattr(ri.settings, "reranker_backend", "llama-server")
     assert ri.reranker_identity()["reranker_prompt_sha12"] != vllm
+
+
+def test_experiments_record_the_reranker_identity_on_every_tier():
+    src = inspect.getsource(rx.main)
+    assert "**reranker_identity()" in src
+    assert src.index("**reranker_identity()") < src.index('if args.tier == "tier1"')
