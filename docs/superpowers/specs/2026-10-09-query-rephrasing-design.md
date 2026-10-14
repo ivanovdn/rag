@@ -465,6 +465,25 @@ selection; the VM runs below are the check.
   *Thank-you fee* (3 → 4) and *why wasn't all my data deleted* (3 → 6) both
   kept their expected citation. Latency unchanged (median 6.3 s).
 
+#### Re-check and candidates 40 with `use_header` (2026-10-14, commit `bbe9ada`)
+
+| run | experiment id | top 6 | MRR@6 |
+|---|---|---|---|
+| `identity-best-tier1` (25) | `RXhwZXJpbWVudDoyNg==` | 0.967 | 0.802 |
+| `identity-best-c40-tier1` (40) | `RXhwZXJpbWVudDoyNw==` | **0.984** | ≈0.793 |
+
+- **The 25 re-run reproduced `RXhwZXJpbWVudDoyNA==` on 61/61**, and is the
+  first run whose metadata carries `reranker_prompt_sha12` (`69990c1bedf7`)
+  and the instruction verbatim.
+- **40 with the new instruction repeats the 10-13 pattern**: *vendor without a
+  contract* recovered (absent → 5), lost 0, but *thank-you fee* 4 → 6,
+  *emergency bypass of privacy controls* 2 → 3 (the two whose answers 40 cost
+  last time) and *blocked research site / mobile hotspot* 1 → 2.
+- **Not adopted; chatbot tier not run.** Adopting needed ≥ 56/61 cited with
+  none of the 55 lost, i.e. all three demotions holding their citation and the
+  vendor answer citing rank 5; two of the same demotions already cost their
+  answers once. Candidates stay 25.
+
 **Best configuration measured (2026-10-13):** `RERANKER_DOC_HEADER=true`,
 `QUERY_REWRITE=multi`, `RERANKER_INSTRUCTION=<use_header>`, candidates 25,
 top 6. Against production today: top 6 57 → 59/61, MRR 0.764 → 0.802, cited
