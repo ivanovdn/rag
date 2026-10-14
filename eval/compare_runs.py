@@ -7,19 +7,23 @@
 With 61 questions, one recovered miss and one new miss average to "no
 change". The query-rewrite decision (design 2026-10-09, Measurement 2 and the
 stop rule) is made on this listing: misses recovered, working questions lost,
-rank moves, and what the rewrite cost in latency. Read-only against Phoenix.
+rank moves, and what the rewrite cost in latency. It also lists, per question,
+what happened to the expected clause on its way into the answer (cited, or
+missed by selection / retrieval, or escalated), the citations gained and lost,
+and the per-status counts (#10). Read-only against Phoenix.
 """
 
 import argparse
 import statistics
 import sys
+from collections import Counter
 from pathlib import Path
 
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval.evaluators import _extract_expected, _match_result  # noqa: E402
+from eval.evaluators import _extract_expected, _match_result, citation_clause_accuracy  # noqa: E402
 
 
 def first_match_rank(output: dict | None, reference: dict) -> int | None:
@@ -30,6 +34,25 @@ def first_match_rank(output: dict | None, reference: dict) -> int | None:
         if any(_match_result(r, e) for e in expectations):
             return rank
     return None
+
+
+def citation_status(output: dict | None, reference: dict) -> str:
+    """What happened to the expected clause on its way into the answer.
+
+    Built on citation_clause_accuracy, so this listing and the Phoenix column
+    cannot disagree. 'selection' is #10's case: the clause was in the sources
+    and the model cited another one.
+    """
+    if not output:
+        return "retrieval"
+    if (output.get("escalation") or {}).get("needed") and not output.get("citations"):
+        return "escalated"
+    scored = citation_clause_accuracy(output, reference)
+    if scored["label"] == "skip":
+        return "unlabelled"
+    if scored["score"] == 1.0:
+        return "cited"
+    return "selection" if first_match_rank(output, reference) else "retrieval"
 
 
 def _key(run: dict) -> tuple[str, int]:
@@ -51,6 +74,7 @@ def compare(baseline: list[dict], candidate: list[dict]) -> dict:
     base = {_key(r): r for r in baseline}
     out = {k: [] for k in ("recovered", "lost", "better", "worse", "same", "errored")}
     latency, fallbacks, unmatched = [], 0, 0
+    cites = {"gained": [], "lost": [], "base": Counter(), "cand": Counter()}
     for run in candidate:
         key = _key(run)
         if key not in base:
@@ -60,6 +84,14 @@ def compare(baseline: list[dict], candidate: list[dict]) -> dict:
         if _failed(base[key]) or _failed(run):
             out["errored"].append((q, base[key].get("error"), run.get("error")))
             continue
+        bs = citation_status(base[key]["output"], base[key]["reference_output"])
+        cs = citation_status(run["output"], run["reference_output"])
+        cites["base"][bs] += 1
+        cites["cand"][cs] += 1
+        if cs == "cited" and bs != "cited":
+            cites["gained"].append((q, bs, cs))
+        elif bs == "cited" and cs != "cited":
+            cites["lost"].append((q, bs, cs))
         b = first_match_rank(base[key]["output"], base[key]["reference_output"])
         c = first_match_rank(run["output"], run["reference_output"])
         rewrite = run["output"].get("rewrite") or {}
@@ -78,6 +110,7 @@ def compare(baseline: list[dict], candidate: list[dict]) -> dict:
     out["latency_ms"] = latency
     out["fallbacks"] = fallbacks
     out["unmatched"] = unmatched
+    out["citations"] = cites
     return out
 
 
@@ -108,6 +141,16 @@ def main():
         lat = sorted(c["latency_ms"])
         p95 = lat[min(len(lat) - 1, round(0.95 * (len(lat) - 1)))]
         print(f"rewrite latency ms: p50 {statistics.median(lat):.0f}  p95 {p95}  max {lat[-1]}")
+    ct = c["citations"]
+    print("\nCITATIONS  (status: cited / selection / retrieval / escalated / unlabelled)")
+    for side in ("base", "cand"):
+        counts = ", ".join(f"{k} {ct[side][k]}" for k in
+                           ("cited", "selection", "retrieval", "escalated", "unlabelled"))
+        print(f"  {'baseline ' if side == 'base' else 'candidate'}: {counts}")
+    for key in ("gained", "lost"):
+        print(f"\n  CITATION {key.upper()} ({len(ct[key])})")
+        for q, b, n in ct[key]:
+            print(f"    {b:>10} -> {n:<10} {q}")
 
 
 if __name__ == "__main__":
