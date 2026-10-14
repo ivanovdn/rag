@@ -17,6 +17,7 @@ import eval.run_experiment as rx
 import rag.agent as agent
 import rag.model_digest as md
 import rag.query_rewrite as qr
+import rag.reranker as rr
 import rag.router as router
 import rag.run_identity as ri
 import rag.search_first as search_first
@@ -233,3 +234,36 @@ def test_experiments_record_the_rewrite_identity_on_every_tier():
     src = inspect.getsource(rx.main)
     assert "**rewrite_identity()" in src
     assert src.index("**rewrite_identity()") < src.index('if args.tier == "tier1"')
+
+
+# --- reranker ----------------------------------------------------------------------
+
+
+def test_reranker_off_has_no_prompt_hash(monkeypatch):
+    monkeypatch.setattr(ri.settings, "reranker_enabled", False)
+    assert ri.reranker_identity() == {"reranker_prompt_sha12": ""}
+
+
+def test_the_reranker_hash_is_of_the_query_as_sent(monkeypatch):
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_backend", "vllm-score")
+    assert ri.reranker_identity() == {"reranker_prompt_sha12": ri.sha12(rr._build_query(""))}
+
+
+def test_editing_the_instruction_changes_the_hash(monkeypatch):
+    """The 2026-10-13 instruction change moved MRR 0.782 -> 0.802 and was
+    recorded only in a run name."""
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_backend", "vllm-score")
+    before = ri.reranker_identity()["reranker_prompt_sha12"]
+    monkeypatch.setattr(ri.settings, "reranker_instruction", ri.settings.reranker_instruction + " ")
+    assert ri.reranker_identity()["reranker_prompt_sha12"] != before
+
+
+def test_changing_the_backend_changes_the_hash(monkeypatch):
+    """Same instruction, different wrapper: the model reads a different text."""
+    monkeypatch.setattr(ri.settings, "reranker_enabled", True)
+    monkeypatch.setattr(ri.settings, "reranker_backend", "vllm-score")
+    vllm = ri.reranker_identity()["reranker_prompt_sha12"]
+    monkeypatch.setattr(ri.settings, "reranker_backend", "llama-server")
+    assert ri.reranker_identity()["reranker_prompt_sha12"] != vllm

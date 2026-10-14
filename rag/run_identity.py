@@ -18,6 +18,7 @@ import hashlib
 
 import rag.agent as agent
 import rag.query_rewrite as query_rewrite
+import rag.reranker as reranker
 import rag.router as router
 import rag.search_first as search_first
 import rag.tools.search_policies as sp
@@ -79,6 +80,19 @@ def rewrite_identity() -> dict[str, str]:
     mode = settings.query_rewrite
     prompt = query_rewrite.REWRITE_PROMPTS.get(mode, "")
     return {"query_rewrite": mode, "rewrite_prompt_sha12": sha12(prompt) if prompt else ""}
+
+
+def reranker_identity() -> dict[str, str]:
+    """The reranker prompt as sent: instruction plus the backend's wrapper.
+
+    Hashed from rag/reranker.py's own builder, so an instruction edit in .env, a
+    backend switch, or a llama-server template change all show up -- each
+    changes what the model reads. Empty with the reranker off, as
+    rewrite_prompt_sha12 is with rewrite off.
+    """
+    if not settings.reranker_enabled:
+        return {"reranker_prompt_sha12": ""}
+    return {"reranker_prompt_sha12": sha12(reranker._build_query(""))}
 
 
 def router_prompt_sha12() -> str:
