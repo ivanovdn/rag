@@ -1,4 +1,9 @@
 from eval.evaluators import (
+    CHATBOT_EVALUATORS,
+    TIER1_EVALUATORS,
+    TIER2_EVALUATORS,
+    citation_doc_accuracy,
+    citation_section_accuracy,
     hit_evaluator,
     mrr_evaluator,
     citation_clause_accuracy,
@@ -92,3 +97,12 @@ def test_search_count_still_scores_a_single_prefetch():
 
     result = agent_search_count({"agent_metadata": {"num_searches": 1}}, {})
     assert result["score"] == 1.0
+
+
+def test_answer_tiers_score_what_the_model_cited():
+    """#10: with these off, a prompt change could degrade citations while every
+    reported number stayed the same (they were dropped 2026-09-25)."""
+    cited = {citation_doc_accuracy, citation_section_accuracy, citation_clause_accuracy}
+    assert cited <= set(CHATBOT_EVALUATORS)
+    assert cited <= set(TIER2_EVALUATORS)
+    assert not cited & set(TIER1_EVALUATORS)  # tier1 produces no citations
