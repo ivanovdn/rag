@@ -23,7 +23,12 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval.evaluators import _extract_expected, _match_result, citation_clause_accuracy  # noqa: E402
+from eval.evaluators import (  # noqa: E402
+    _extract_expected,
+    _match_result,
+    citation_clause_accuracy,
+    citation_section_accuracy,
+)
 
 
 def first_match_rank(output: dict | None, reference: dict) -> int | None:
@@ -39,15 +44,20 @@ def first_match_rank(output: dict | None, reference: dict) -> int | None:
 def citation_status(output: dict | None, reference: dict) -> str:
     """What happened to the expected clause on its way into the answer.
 
-    Built on citation_clause_accuracy, so this listing and the Phoenix column
-    cannot disagree. 'selection' is #10's case: the clause was in the sources
-    and the model cited another one.
+    Graded at the deepest level the label has. Not every policy has named
+    clauses (the AI policy, the Privacy Notice), and for those the section is
+    the label: citation_clause_accuracy skips them, so they fall back to
+    citation_section_accuracy. Built on those two Phoenix columns so the listing
+    cannot disagree with them. 'selection' is #10's case: the labelled clause
+    or section was in the sources and the model cited another one.
     """
     if not output:
         return "retrieval"
     if (output.get("escalation") or {}).get("needed") and not output.get("citations"):
         return "escalated"
     scored = citation_clause_accuracy(output, reference)
+    if scored["label"] == "skip":
+        scored = citation_section_accuracy(output, reference)
     if scored["label"] == "skip":
         return "unlabelled"
     if scored["score"] == 1.0:

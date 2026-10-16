@@ -90,9 +90,19 @@ def test_an_escalation_without_citations_is_not_a_selection_miss():
     assert citation_status(_out([], [HIT], escalated=True), REF) == "escalated"
 
 
-def test_a_case_with_no_expected_clause_is_never_counted_as_cited():
-    """Review focus 2: citation_clause_accuracy scores these 1.0 ('skip')."""
+def test_a_section_level_label_is_graded_at_section_level():
+    """Not every policy has named clauses (the AI policy, the Privacy Notice): for
+    those the section IS the label. citation_clause_accuracy skips them (1.0), so
+    the status must fall back to the section, not count them blindly as cited."""
     ref = {"expected_citations": [{"doc_id": "Doc A", "section": "Sec", "clause": ""}]}
+    elsewhere = {"doc_title": "Doc A", "section": "Elsewhere", "clause": ""}
+    assert citation_status(_out([HIT], [HIT]), ref) == "cited"
+    assert citation_status(_out([elsewhere], [elsewhere, HIT]), ref) == "selection"
+    assert citation_status(_out([elsewhere], [elsewhere]), ref) == "retrieval"
+
+
+def test_only_a_case_with_no_expected_document_is_unlabelled():
+    ref = {"expected_citations": [{"doc_id": "", "section": "", "clause": ""}]}
     assert citation_status(_out([HIT], [HIT]), ref) == "unlabelled"
 
 
