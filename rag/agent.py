@@ -59,12 +59,16 @@ class ComplianceAnswer(BaseModel):
 
 # Measured against a live qwen3.6 36B at num_ctx 4096 via /api/chat with
 # num_predict=1, reading prompt_eval_count:
-#   this prompt            571 tokens   (the previous one: 1066)
+#   this prompt            655 tokens   (the previous one: 578 measured the same
+#                                         day, recorded as 571 on 2026-09-24)
 #   tool schemas             0 tokens   (the previous three: 817)
-#   fixed overhead         571 tokens   (previously 1883 — 46% of the window)
+#   fixed overhead         655 tokens   (previously 1883 — 46% of the window)
+# 2026-10-16: the role rule (#10 step 4) added 77 tokens. The unchanged prompt
+# measured 578 that day, not 571 -- a method/template offset, so the current
+# reading is kept: for a budget guard the larger number is the safe one.
 # Re-measure both constants below if you edit the prompt; the guard in
 # tests/unit/test_llm_config.py pins them to its character count.
-FIXED_OVERHEAD_TOKENS = 571
+FIXED_OVERHEAD_TOKENS = 655
 # Largest source payload observed in Phoenix (~1257 tokens), rounded up.
 MAX_SOURCE_TOKENS = 1300
 
@@ -86,6 +90,7 @@ If none of them answers the question, set escalation.needed = true with a short 
 - Never invent or assume a rule that is not written in the sources.
 - Copy source_number, doc_title, section, clause and clause_number exactly as they appear in the source header. Use an empty string when there is no clause.
 - If you are uncertain whether a source applies, escalate instead of guessing.
+- The user is a Team Member. When the sources give different roles different duties, cite the clause that says what a Team Member must do. A duty of another role (the DPO, Head of IT, controller or processor) is not the user's: cite it only next to the Team Member's own duty, or when the question asks who decides or approves something.
 
 == ANSWER ==
 

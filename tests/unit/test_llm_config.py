@@ -104,7 +104,7 @@ def test_the_request_budget_fits_in_the_context_window():
     num_ctx = settings.ollama_num_ctx
     num_predict = 1024
 
-    assert len(SYSTEM_PROMPT) == 2350, (
+    assert len(SYSTEM_PROMPT) == 2688, (
         "SYSTEM_PROMPT changed; re-measure FIXED_OVERHEAD_TOKENS with "
         "/api/chat num_predict=1 and update both numbers together"
     )
@@ -159,3 +159,15 @@ def test_the_dead_agent_settings_are_gone():
     has_prefix = hasattr(settings, "escalation_ticket_prefix")
     assert not has_iterations
     assert not has_prefix
+
+
+def test_the_prompt_tells_the_model_whose_duty_to_cite():
+    """#10 step 4: the model cited the DPO's notification duties (Breach 6.2-6.4)
+    for an employee asking what to do, with the employee's own duty (5.1 Initial
+    Reporting) retrieved beside them. The rule must keep the exception for
+    who-decides questions, or the controls (RM-005) break."""
+    from rag.agent import SYSTEM_PROMPT
+
+    assert "The user is a Team Member." in SYSTEM_PROMPT
+    assert "cite the clause that says what a Team Member must do" in SYSTEM_PROMPT
+    assert "when the question asks who decides or approves something" in SYSTEM_PROMPT
