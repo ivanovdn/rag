@@ -106,3 +106,21 @@ def test_answer_tiers_score_what_the_model_cited():
     assert cited <= set(CHATBOT_EVALUATORS)
     assert cited <= set(TIER2_EVALUATORS)
     assert not cited & set(TIER1_EVALUATORS)  # tier1 produces no citations
+
+
+def test_a_clause_name_must_start_the_cited_clause_not_sit_inside_it():
+    """'Acceptable Use' is inside 'Unacceptable Use' (same AUP section) and
+    'Reporting' inside 'HIPAA Breach Consideration and Reporting': substring
+    matching graded those wrong clauses as correct (review finding 2). Stored
+    names can run on past the label ('Inactivity Logoff/Lockout: All systems…'),
+    so the label must match the start of the name."""
+    exp = {"expected_citations": [{"doc_id": "AUP", "section": "Email", "clause": "Acceptable Use"}]}
+    wrong = {"doc_title": "AUP", "section": "Email", "clause": "Unacceptable Use"}
+    right_long = {"doc_title": "AUP", "section": "Email", "clause": "Acceptable Use: corporate devices only"}
+
+    assert citation_clause_accuracy(_output(citations=[wrong]), exp)["score"] == 0.0
+    assert hit_evaluator(_output(search_results=[wrong]), exp)["score"] == 0.0
+    assert citation_clause_accuracy(_output(citations=[right_long]), exp)["score"] == 1.0
+    assert hit_evaluator(_output(search_results=[right_long]), exp)["score"] == 1.0
+    exp_any = dict(exp, match_mode="any")
+    assert citation_clause_accuracy(_output(citations=[wrong]), exp_any)["score"] == 0.0

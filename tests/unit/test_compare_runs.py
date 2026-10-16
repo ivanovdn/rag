@@ -126,3 +126,18 @@ def test_compare_lists_citations_gained_and_lost():
     assert c["gained"] == [("gain", "selection", "cited")]
     assert c["lost"] == [("lose", "cited", "selection")]
     assert c["base"]["cited"] == 2 and c["cand"]["cited"] == 2
+
+
+def test_an_outage_is_errored_not_a_lost_citation():
+    """The chatbot task does not raise on a retrieval outage; it returns
+    status 'unavailable' with nothing in it. An embedder blip in the candidate
+    run must not read as citations lost (review finding 1)."""
+    base = [{"input": {"question": "q"}, "reference_output": REF, "output": _out([HIT], [HIT])}]
+    down = {"status": "unavailable", "citations": [], "search_results": [],
+            "escalation": {"needed": False, "reason": ""}}
+    cand = [{"input": {"question": "q"}, "reference_output": REF, "output": down}]
+
+    c = compare(base, cand)
+
+    assert [q for q, *_ in c["errored"]] == ["q"]
+    assert c["lost"] == [] and c["citations"]["lost"] == []

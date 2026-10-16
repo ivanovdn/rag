@@ -70,7 +70,11 @@ def _key(run: dict) -> tuple[str, int]:
 
 
 def _failed(run: dict) -> bool:
-    return bool(run.get("error")) or run.get("output") is None
+    """Raised, or answered "service unavailable": the chatbot task does not raise
+    on an outage, it returns status 'unavailable' with nothing retrieved."""
+    if run.get("error") or run.get("output") is None:
+        return True
+    return run["output"].get("status") == "unavailable"
 
 
 def compare(baseline: list[dict], candidate: list[dict]) -> dict:

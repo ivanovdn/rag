@@ -480,6 +480,16 @@ across 5 source files.
       answers.
     - New `role-mismatch-v1` (`RGF0YXNldDo1`): RM-001..004 are traps, RM-005/006
       controls (the right clause *is* addressed to another role).
+    - **Clause matching is by prefix since 2026-10-16** (`_clause_match`): a
+      label must START the clause name. Substring matching had graded
+      *Unacceptable Use* as CB-010's *Acceptable Use* and *HIPAA Breach
+      Consideration and Reporting* as CB-042's *Reporting*. Re-scoring 13
+      recorded experiments (tier1 and chatbot) changed no rank and no status,
+      so every number above still stands. Corpus tests now require each clause
+      label to name exactly one clause, no document-only labels, and no case
+      mixing clause- and section-level alternatives.
+    - `compare_runs` counts an outage (`status: unavailable`) as ERRORED, never
+      as a lost citation.
     - The dataset JSON files stay gitignored with the policies. Upload them from
       the laptop (`make_dataset.py … --phoenix-url http://172.20.1.10:6006`); the
       VM reads them from Phoenix.

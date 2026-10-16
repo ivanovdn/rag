@@ -54,10 +54,21 @@ def _get_search_results(output):
     return output.get("search_results", [])
 
 
+def _clause_match(expected: str, actual: str) -> bool:
+    """The label must START the clause name, not sit anywhere inside it.
+
+    Stored names can run on past the label ("Inactivity Logoff/Lockout: All
+    systems ..."), so equality is too strict; but plain substring matching graded
+    "Unacceptable Use" as "Acceptable Use" and "HIPAA Breach Consideration and
+    Reporting" as "Reporting", wrong clauses in the same section (2026-10-16).
+    """
+    return actual.strip().lower().startswith(expected.strip().lower())
+
+
 def _match_result(r, exp):
     doc_match = not exp["doc"] or exp["doc"].lower() == r.get("doc_title", "").strip().lower()
     section_match = not exp["section"] or exp["section"].lower() in r.get("section", "").strip().lower()
-    clause_match = not exp["clause"] or exp["clause"].lower() in r.get("clause", "").strip().lower()
+    clause_match = not exp["clause"] or _clause_match(exp["clause"], r.get("clause", ""))
     return doc_match and section_match and clause_match
 
 
@@ -303,7 +314,7 @@ def citation_clause_accuracy(output, expected):
             found = any(
                 (not exp["doc"] or exp["doc"].lower() == c.get("doc_title", "").strip().lower())
                 and (not exp["section"] or exp["section"].lower() in c.get("section", "").strip().lower())
-                and exp["clause"].lower() in c.get("clause", "").strip().lower()
+                and _clause_match(exp["clause"], c.get("clause", ""))
                 for c in agent_citations)
             if found:
                 return {"score": 1.0, "label": "any_hit",
@@ -319,7 +330,7 @@ def citation_clause_accuracy(output, expected):
         found = any(
             (not exp["doc"] or exp["doc"].lower() == c.get("doc_title", "").strip().lower())
             and (not exp["section"] or exp["section"].lower() in c.get("section", "").strip().lower())
-            and exp["clause"].lower() in c.get("clause", "").strip().lower()
+            and _clause_match(exp["clause"], c.get("clause", ""))
             for c in agent_citations)
         key = f"{exp['doc']} > {exp['section']} > {exp['clause']}"
         (hits if found else misses).append(key)
