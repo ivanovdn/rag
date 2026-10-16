@@ -18,7 +18,7 @@ pytestmark = [
     pytest.mark.corpus,
     pytest.mark.skipif(not _DOCX, reason="policy corpus not present (gitignored/local-only)"),
 ]
-DATASETS = ["eval/datasets/chatbot_test_cases.json"]
+DATASETS = ["eval/datasets/chatbot_test_cases.json", "eval/datasets/role_mismatch_cases.json"]
 
 
 @pytest.fixture(scope="module")
