@@ -1,6 +1,6 @@
 """The decision rests on per-question movement, not means (design, Measurement 2)."""
 
-from eval.compare_runs import compare, first_match_rank
+from eval.compare_runs import citation_status, compare, first_match_rank
 
 REF = {"expected_citations": [{"doc_id": "Doc A", "section": "Sec", "clause": "Cl"}]}
 
@@ -68,3 +68,76 @@ def test_repetitions_are_compared_pairwise_not_overwritten():
 def test_unmatched_questions_are_counted():
     c = compare([_run("a", ["Doc A"])], [_run("a", ["Doc A"]), _run("only in candidate", ["Doc A"])])
     assert c["unmatched"] == 1
+
+
+HIT = {"doc_title": "Doc A", "section": "Sec", "clause": "Cl"}
+OTHER = {"doc_title": "Doc B", "section": "Sec", "clause": "Other"}
+
+
+def _out(citations, results, escalated=False):
+    return {"citations": citations, "search_results": results,
+            "escalation": {"needed": escalated, "reason": ""}}
+
+
+def test_citation_status_separates_selection_from_retrieval():
+    assert citation_status(_out([HIT], [HIT]), REF) == "cited"
+    assert citation_status(_out([OTHER], [OTHER, HIT]), REF) == "selection"
+    assert citation_status(_out([OTHER], [OTHER]), REF) == "retrieval"
+
+
+def test_an_escalation_without_citations_is_not_a_selection_miss():
+    """Review focus 1: a refusal is not the model picking the wrong clause."""
+    assert citation_status(_out([], [HIT], escalated=True), REF) == "escalated"
+
+
+def test_a_section_level_label_is_graded_at_section_level():
+    """Not every policy has named clauses (the AI policy, the Privacy Notice): for
+    those the section IS the label. citation_clause_accuracy skips them (1.0), so
+    the status must fall back to the section, not count them blindly as cited."""
+    ref = {"expected_citations": [{"doc_id": "Doc A", "section": "Sec", "clause": ""}]}
+    elsewhere = {"doc_title": "Doc A", "section": "Elsewhere", "clause": ""}
+    assert citation_status(_out([HIT], [HIT]), ref) == "cited"
+    assert citation_status(_out([elsewhere], [elsewhere, HIT]), ref) == "selection"
+    assert citation_status(_out([elsewhere], [elsewhere]), ref) == "retrieval"
+
+
+def test_only_a_case_with_no_expected_document_is_unlabelled():
+    ref = {"expected_citations": [{"doc_id": "", "section": "", "clause": ""}]}
+    assert citation_status(_out([HIT], [HIT]), ref) == "unlabelled"
+
+
+def test_any_mode_accepts_one_of_several_valid_clauses():
+    ref = {"match_mode": "any", "expected_citations": [
+        {"doc_id": "Doc A", "section": "Sec", "clause": "Cl"},
+        {"doc_id": "Doc B", "section": "Sec", "clause": "Other"},
+    ]}
+    assert citation_status(_out([OTHER], [OTHER]), ref) == "cited"
+
+
+def test_compare_lists_citations_gained_and_lost():
+    def run(q, cites, results):
+        return {"input": {"question": q}, "reference_output": REF,
+                "output": _out(cites, results)}
+    base = [run("gain", [OTHER], [HIT]), run("lose", [HIT], [HIT]), run("keep", [HIT], [HIT])]
+    cand = [run("gain", [HIT], [HIT]), run("lose", [OTHER], [HIT]), run("keep", [HIT], [HIT])]
+
+    c = compare(base, cand)["citations"]
+
+    assert c["gained"] == [("gain", "selection", "cited")]
+    assert c["lost"] == [("lose", "cited", "selection")]
+    assert c["base"]["cited"] == 2 and c["cand"]["cited"] == 2
+
+
+def test_an_outage_is_errored_not_a_lost_citation():
+    """The chatbot task does not raise on a retrieval outage; it returns
+    status 'unavailable' with nothing in it. An embedder blip in the candidate
+    run must not read as citations lost (review finding 1)."""
+    base = [{"input": {"question": "q"}, "reference_output": REF, "output": _out([HIT], [HIT])}]
+    down = {"status": "unavailable", "citations": [], "search_results": [],
+            "escalation": {"needed": False, "reason": ""}}
+    cand = [{"input": {"question": "q"}, "reference_output": REF, "output": down}]
+
+    c = compare(base, cand)
+
+    assert [q for q, *_ in c["errored"]] == ["q"]
+    assert c["lost"] == [] and c["citations"]["lost"] == []

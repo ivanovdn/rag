@@ -54,10 +54,21 @@ def _get_search_results(output):
     return output.get("search_results", [])
 
 
+def _clause_match(expected: str, actual: str) -> bool:
+    """The label must START the clause name, not sit anywhere inside it.
+
+    Stored names can run on past the label ("Inactivity Logoff/Lockout: All
+    systems ..."), so equality is too strict; but plain substring matching graded
+    "Unacceptable Use" as "Acceptable Use" and "HIPAA Breach Consideration and
+    Reporting" as "Reporting", wrong clauses in the same section (2026-10-16).
+    """
+    return actual.strip().lower().startswith(expected.strip().lower())
+
+
 def _match_result(r, exp):
     doc_match = not exp["doc"] or exp["doc"].lower() == r.get("doc_title", "").strip().lower()
     section_match = not exp["section"] or exp["section"].lower() in r.get("section", "").strip().lower()
-    clause_match = not exp["clause"] or exp["clause"].lower() in r.get("clause", "").strip().lower()
+    clause_match = not exp["clause"] or _clause_match(exp["clause"], r.get("clause", ""))
     return doc_match and section_match and clause_match
 
 
@@ -303,7 +314,7 @@ def citation_clause_accuracy(output, expected):
             found = any(
                 (not exp["doc"] or exp["doc"].lower() == c.get("doc_title", "").strip().lower())
                 and (not exp["section"] or exp["section"].lower() in c.get("section", "").strip().lower())
-                and exp["clause"].lower() in c.get("clause", "").strip().lower()
+                and _clause_match(exp["clause"], c.get("clause", ""))
                 for c in agent_citations)
             if found:
                 return {"score": 1.0, "label": "any_hit",
@@ -319,7 +330,7 @@ def citation_clause_accuracy(output, expected):
         found = any(
             (not exp["doc"] or exp["doc"].lower() == c.get("doc_title", "").strip().lower())
             and (not exp["section"] or exp["section"].lower() in c.get("section", "").strip().lower())
-            and exp["clause"].lower() in c.get("clause", "").strip().lower()
+            and _clause_match(exp["clause"], c.get("clause", ""))
             for c in agent_citations)
         key = f"{exp['doc']} > {exp['section']} > {exp['clause']}"
         (hits if found else misses).append(key)
@@ -371,22 +382,23 @@ RETRIEVAL_EVALUATORS = [
     retrieval_section_hit,
 ]
 
-# answer_coverage and the three citation_* evaluators are deliberately NOT in this
-# list (2026-09-25). They still exist above and can be put back by adding them here.
+# answer_coverage stays OUT (2026-09-25): it is a word-overlap heuristic that scores
+# an answer by how many significant words of a human-written expected_answer summary
+# appear in it. This system quotes policy text VERBATIM rather than paraphrasing, so
+# the two strings legitimately diverge -- it measured 0.4754 with 32 zeros on a run
+# whose citations were 0.81-0.88. It penalises the intended behaviour.
 #
-# answer_coverage is a word-overlap heuristic: it scores an answer by how many
-# significant words of a human-written expected_answer summary appear in it. This
-# system is built to quote policy text VERBATIM rather than paraphrase, so the two
-# strings legitimately diverge — it measured 0.4754 with 32 zeros on a run whose
-# citations were 0.81-0.88. It penalises the intended behaviour.
-#
-# The citation_* three measure what the MODEL cited, which is a different thing from
-# what RETRIEVAL returned (hit/mrr). Their last recorded values, chatbot-test-v1
-# 2026-09-25 on the search-first branch: doc 0.8770, section 0.8443, clause 0.8115.
-# Keep that datum — with these off, a later change to the prompt can degrade citation
-# quality without any evaluator noticing.
+# The citation_* three are back IN (2026-10-14, #10). They measure what the MODEL
+# cited, which is not what RETRIEVAL returned (hit/mrr): with them off, a prompt
+# change could degrade citations with every reported number unchanged. They ignore
+# extra citations, so an answer citing more than expected is not punished. Last
+# values before they were dropped, chatbot-test-v1 2026-09-25 on the search-first
+# branch: doc 0.8770, section 0.8443, clause 0.8115.
 GENERATION_EVALUATORS = [
     json_parse_success,
+    citation_doc_accuracy,
+    citation_section_accuracy,
+    citation_clause_accuracy,
 ]
 
 AGENT_EVALUATORS = [

@@ -464,6 +464,66 @@ across 5 source files.
        metadata.
     Analysis script: classify each run's citations against `expected_citations`
     from `GET /v1/experiments/<id>/json` on Phoenix.
+
+    **Steps 1-3 done 2026-10-14..16** (`feat/citation-measurement`, plan
+    `2026-10-14-citation-measurement.md`):
+    - The `citation_*` evaluators score chatbot and tier2 runs again.
+      `compare_runs.py` lists each question's citation status: cited /
+      **selection** (the labelled clause was in the sources, and the model cited
+      another) / retrieval / escalated. It grades at the deepest level the label
+      has: 8 chatbot cases are section-level, because their policies (AI Usage,
+      Privacy Notice) have no named clauses.
+    - Relabelled on the owner's sign-off as `chatbot-test-v2` (`RGF0YXNldDo0`),
+      `match_mode: any` plus an alternative: CB-014 + *Chat Messages*, CB-017 +
+      *Unacceptable Use*, CB-032 + *Inactivity Logoff/Lockout*, CB-047 + AUP
+      *Exceptions*. **v1 and v2 numbers are not comparable:** v2 accepts more
+      answers.
+    - New `role-mismatch-v1` (`RGF0YXNldDo1`): RM-001..004 are traps, RM-005/006
+      controls (the right clause *is* addressed to another role).
+    - **Clause matching is by prefix since 2026-10-16** (`_clause_match`): a
+      label must START the clause name. Substring matching had graded
+      *Unacceptable Use* as CB-010's *Acceptable Use* and *HIPAA Breach
+      Consideration and Reporting* as CB-042's *Reporting*. Re-scoring 13
+      recorded experiments (tier1 and chatbot) changed no rank and no status,
+      so every number above still stands. Corpus tests now require each clause
+      label to name exactly one clause, no document-only labels, and no case
+      mixing clause- and section-level alternatives.
+    - `compare_runs` counts an outage (`status: unavailable`) as ERRORED, never
+      as a lost citation.
+    - The dataset JSON files stay gitignored with the policies. Upload them from
+      the laptop (`make_dataset.py … --phoenix-url http://172.20.1.10:6006`); the
+      VM reads them from Phoenix.
+
+    Baseline, deployed config (`f2e6d6a`, rerank prompt `69990c1bedf7`, rewrite
+    `multi`, header on, candidates 25):
+
+    | dataset | experiment | cited | selection | retrieval | `citation_clause` | `citation_doc` |
+    |---|---|---|---|---|---|---|
+    | `chatbot-test-v2` | `RXhwZXJpbWVudDoyOA==` | **57/61** | 3 | 1 | 0.934 | 0.967 |
+    | `role-mismatch-v1` | `RXhwZXJpbWVudDoyOQ==` | 3/6 | 2 | 1 | — | — |
+
+    - **v2 against the same config on v1** (`RXhwZXJpbWVudDoyNQ==`): +3 from the
+      relabels alone (CB-014, CB-032, CB-047; answers unchanged), and 1 real loss.
+      *Sent personal data to the wrong person — should I wait?* cited *Initial
+      Reporting* on 10-13, and only *Removable Storage Devices* 6.5 on 10-16 (the
+      sender verifies the transfer), with the same six sources. Only ranks 5 and 6
+      swapped. 58/61 answers were word for word the same. So selection is
+      fragile: noise at the bottom of the list can flip a correct answer.
+    - **role-mismatch:** the model took the trap in all three breach questions.
+      RM-001 cited 6.4 (*Controller to Data Subject*) with *Initial Reporting* at
+      rank 6; RM-002 cited 6.2 (*Processor to Controller*) with it at rank 4.
+      RM-003 cited 6.3 (*Controller to Supervisory Authority*), and *Initial
+      Reporting* was not retrieved. RM-004 (password) and both controls were
+      cited correctly. The defect reproduces 3 times in 4, not once in 61.
+    - **Label to decide (owner):** RM-003 (*lost a laptop*) should probably also
+      accept Mobile Device 5.5 *Handling and Reporting* ("prompt reporting of any
+      lost, stolen … device … within 12 hours"), which was retrieved at rank 3. With
+      it, RM-003 is a selection miss rather than a retrieval miss. The model still
+      cited the trap either way.
+
+    Step 4 (the prompt rule) is planned next against `RXhwZXJpbWVudDoyOA==` and
+    `RXhwZXJpbWVudDoyOQ==`. Its stop rule must count both: role-mismatch traps
+    fixed, controls kept, and no v2 answer lost.
 11. **The startup clamp measures idle time, not downtime.** (Deploy audit,
     2026-10-08.) `_save_state` rewrites `bot_state.json` every poll but records
     only `last_check` and the processed ids — never *when* it saved. So
