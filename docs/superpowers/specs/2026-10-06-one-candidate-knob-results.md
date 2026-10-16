@@ -521,9 +521,76 @@ across 5 source files.
       it, RM-003 is a selection miss rather than a retrieval miss. The model still
       cited the trap either way.
 
-    Step 4 (the prompt rule) is planned next against `RXhwZXJpbWVudDoyOA==` and
-    `RXhwZXJpbWVudDoyOQ==`. Its stop rule must count both: role-mismatch traps
-    fixed, controls kept, and no v2 answer lost.
+    **Step 4: a prompt rule. Measured 2026-10-16, not adopted.** Branch
+    `feat/role-aware-citations` (`cdd1465`), plan
+    `docs/superpowers/plans/2026-10-16-role-aware-citations.md`. One rule was added
+    to the system prompt after the "escalate instead of guessing" line (+77 tokens,
+    `system_prompt_sha12` `e9962f859158` against `42d2fec870f6`):
+
+    > The user is a Team Member. When the sources give different roles different
+    > duties, cite the clause that says what a Team Member must do. A duty of
+    > another role (the DPO, Head of IT, controller or processor) is not the
+    > user's: cite it only next to the Team Member's own duty, or when the question
+    > asks who decides or approves something.
+
+    First, RM-003 was relabelled to also accept Mobile Device 5.5 *Handling and
+    Reporting* (owner's decision), giving `role-mismatch-v2`. It was re-baselined on
+    main as `RXhwZXJpbWVudDozMA==`: 3 cited, 3 selection. All three breach traps
+    are now selection misses, where the right clause is in the sources at rank 6,
+    4 and 3.
+
+    | run | experiment | breach traps cited | RM-004 | controls | v2 cited |
+    |---|---|---|---|---|---|
+    | baseline (main) | `RXhwZXJpbWVudDozMA==` / `RXhwZXJpbWVudDoyOA==` | 0/3 | ✓ | 2/2 | 57/61 |
+    | `role-rule-rm-1` | `RXhwZXJpbWVudDozMQ==` | **0/3** | ✓ | 2/2 | — |
+    | `role-rule-rm-2` | `RXhwZXJpbWVudDozMg==` | **0/3** | ✓ | 2/2 | — |
+    | `role-rule-v2` | `RXhwZXJpbWVudDozMw==` | — | — | — | 57/61 |
+
+    The metadata matches in all three runs: only the system prompt differs
+    (`reranker_prompt_sha12` `69990c1bedf7`, `query_rewrite` multi,
+    `agent_input_sha12` `e4720ee79a85`).
+
+    Stop rule:
+    - **Traps ≥2/3 in both runs: not met.** All six runs cited the same clause as
+      the baseline: 6.4, 6.2 and 6.3. RM-001 and RM-003 are word for word the
+      baseline's. RM-002 (should I email the client?) kept the processor clause
+      6.2 and added a Team Member duty, but the wrong one: AUP 5.3, "don't email
+      personal information to outside parties", not *Initial Reporting*. So the
+      rule nudged the model towards a Team Member clause without steering it to
+      the right one. The DPO and the supervisory authority are named in the quoted
+      text itself, and the model still cited them. (RM-004 kept both of its
+      clauses; it only quoted a shorter part of the IT procedure.)
+    - **RM-004 and the controls kept: met.** The citations are the same.
+    - **v2 cited ≥57: met (57).** One question gained and one lost:
+      - *Gained, CB-034 (sent personal data to the wrong person):* it now cites
+        General Personal Data Protection 5.4 *Team Members* and *Initial
+        Reporting* 5.1, where the baseline cited *Removable Storage Devices*. This
+        is the rule's intended behaviour. But this case flipped earlier on a
+        rank-5/6 swap alone, so one flip is not evidence.
+      - *Lost, "the client didn't mention AI":* it now cites AI Usage *Prohibited
+        Use* ("forbidden … unless explicitly allowed"), where the baseline cited
+        6.5 *Client-Approved AI Use*. That still answers "no, not without
+        approval", but it drops the clause that says how approval works. It is
+        slightly worse, not wrong.
+    - **Health: met.** No escalations, `json_parse` 61/61, p50 6.5 s (6.7 s
+      before).
+
+    **Verdict: not adopted.** The rule did not move any of the targets it was
+    written for, in either run. Its only v2 effect was one gain and one loss,
+    which is no more than the noise between runs. A prompt instruction does not
+    override the model's pull towards the clause whose wording matches the
+    question ("notify customers" → 6.4). The branch stays unmerged, and production
+    keeps `42d2fec870f6`.
+
+    **Closed (owner's decision, 2026-10-16): the defect is accepted.** On
+    realistic questions it shows up about once in 61 (CB-034), and that case
+    already flips between runs on noise alone. The answers are factually correct
+    about the organisation's duty and quote who acts. They miss only the
+    reporter's own first step (report to soc@). Reopen if Teams feedback
+    reports it. The option set aside: label each source with the role it
+    addresses (e.g. `(addresses: DPO)`), derived at format time with no
+    re-ingest. It would change `agent_input_sha12`, and the measured failure of
+    an instruction makes it a speculative fix.
 11. **The startup clamp measures idle time, not downtime.** (Deploy audit,
     2026-10-08.) `_save_state` rewrites `bot_state.json` every poll but records
     only `last_check` and the processed ids — never *when* it saved. So
