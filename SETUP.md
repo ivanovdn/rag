@@ -387,9 +387,13 @@ EVAL="-v /home/sa.ivanov/rag-eval/config.py:/app/config.py \
 docker compose -f docker-compose-remote.yml run --rm $EVAL --entrypoint python bot \
   -c "import rag.vector_store as vs; from rag.agent import ALL_TOOLS; print('tools:', ALL_TOOLS, '| RRF_K:', vs.RRF_K)"
 
-# 2. Upload the dataset (once per dataset change).
-docker compose -f docker-compose-remote.yml run --rm $EVAL --entrypoint python bot \
-  scripts/make_dataset.py eval/datasets/chatbot_test_cases.json --phoenix-url http://phoenix:6006
+# 2. Upload the dataset (once per dataset change). eval/datasets/*.json is
+#    gitignored with the policies, so the VM worktree has no copy: upload from the
+#    machine that has the files, straight to Phoenix, under a NEW name per label
+#    change (chatbot-test-v2, role-mismatch-v1) -- never --overwrite a set that
+#    experiments already point at.
+PYTHONPATH=. python scripts/make_dataset.py eval/datasets/chatbot_test_cases.json \
+  --name chatbot-test-v2 --phoenix-url http://172.20.1.10:6006
 
 # 3. Run.
 docker compose -f docker-compose-remote.yml run --rm $EVAL \
@@ -427,6 +431,12 @@ Then compare each against `rewrite-off` (ids from Phoenix → Datasets & Experim
 docker compose -f docker-compose-remote.yml run --rm $EVAL --entrypoint python bot \
   eval/compare_runs.py <rewrite-off id> <rewrite-multi id> --phoenix-url http://phoenix:6006
 ```
+
+On chatbot runs it also prints a CITATIONS block: each question's status
+(cited / **selection** = the labelled clause was in the sources and the model
+cited another / retrieval / escalated) and the citations gained and lost. A
+label change shows up there too, since each run is graded against its own
+dataset's labels, so compare runs on the same dataset version.
 
 Tier1 retrieves through `search_policies` since 2026-10-09, so it applies the
 relevance floors as production does. Run it on the production profile (reranker
